@@ -115,6 +115,10 @@
         hold(p, key); root.appendChild(p);
       });
       document.body.appendChild(root);
+      // paint the page's back layer the game's color, so no white strip shows around the edges on the iPad
+      const bg = getComputedStyle(document.body).backgroundColor;
+      document.documentElement.style.background = bg && bg !== 'rgba(0, 0, 0, 0)' ? bg : '#14102a';
+      document.body.style.minHeight = '100dvh';
     };
     document.body ? build() : addEventListener('DOMContentLoaded', build);
 
