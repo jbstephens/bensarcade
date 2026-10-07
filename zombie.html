@@ -1,0 +1,482 @@
+<meta charset="utf-8">
+<title>Zombie Maze</title>
+<style>
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: #0d0d1a; display: flex;
+    align-items: center; justify-content: center; overflow: hidden;
+  }
+  canvas {
+    width: min(100vw, calc(100vh * 960 / 520));
+    height: auto; display: block; border-radius: 12px;
+    box-shadow: 0 10px 40px rgba(0,0,0,.5);
+  }
+</style>
+<canvas id="game" width="960" height="520"></canvas>
+<script>
+const C = document.getElementById('game'), ctx = C.getContext('2d');
+const W = 960, H = 520, T = 32, MW = 29, MH = 15, OX = 16, OY = 40;
+
+// ---------- Sound ----------
+let actx = null;
+function note(freq, start, dur, wave = 'square', vol = 0.1, slideTo = null) {
+  if (!actx) return;
+  const t = actx.currentTime + start, o = actx.createOscillator(), g = actx.createGain();
+  o.type = wave; o.frequency.setValueAtTime(freq, t);
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g); g.connect(actx.destination); o.start(t); o.stop(t + dur);
+}
+const sfx = {
+  coin:     () => note(1300, 0, 0.06, 'square', 0.04),
+  treasure: () => [784, 988, 1175, 1568].forEach((f, i) => note(f, i * 0.07, 0.15, 'square', 0.07)),
+  unlock:   () => { note(300, 0, 0.15, 'square', 0.1); note(600, 0.15, 0.3, 'square', 0.1); },
+  throw:    () => note(600, 0, 0.15, 'sine', 0.1, 300),
+  splash:   () => { note(200, 0, 0.25, 'sawtooth', 0.08, 80); note(900, 0, 0.1, 'sine', 0.06, 400); },
+  ouch:     () => note(400, 0, 0.5, 'sawtooth', 0.12, 90),
+  groan:    () => note(110 + Math.random() * 30, 0, 0.7, 'sawtooth', 0.04, 80),
+  potion:   () => [523, 659, 784, 1047, 1319].forEach((f, i) => note(f, i * 0.06, 0.2, 'triangle', 0.1)),
+  cure:     () => { note(880, 0, 0.1, 'sine', 0.12); note(1320, 0.1, 0.2, 'sine', 0.12); },
+  pickup:   () => note(700, 0, 0.1, 'triangle', 0.1, 1000),
+  win:      () => [523, 659, 784, 1047, 784, 1047].forEach((f, i) => note(f, i * 0.12, 0.25, 'square', 0.09)),
+};
+// spooky-but-fun music
+let musicOn = true, nextNoteTime = 0, step = 0;
+const TUNE = [57, 0, 60, 0, 64, 0, 63, 0, 57, 0, 60, 0, 62, 0, 0, 0, 57, 0, 60, 0, 64, 0, 67, 0, 66, 0, 64, 0, 63, 0, 0, 0];
+function playMusic() {
+  if (!actx || !musicOn || scene !== 'play') return;
+  const fast = scaredT > 0, dur = fast ? 0.11 : 0.15;
+  if (nextNoteTime < actx.currentTime) nextNoteTime = actx.currentTime + 0.05;
+  while (nextNoteTime < actx.currentTime + 0.2) {
+    const t = nextNoteTime - actx.currentTime, m = TUNE[step % TUNE.length];
+    if (m) note(440 * Math.pow(2, (m + (fast ? 12 : 0) - 69) / 12), t, dur * 1.6, 'triangle', 0.05);
+    if (step % 4 === 0) note(440 * Math.pow(2, (45 - 69) / 12), t, dur * 2, 'sine', 0.08);
+    nextNoteTime += dur; step++;
+  }
+}
+
+// ---------- Input ----------
+const keys = {}, pressed = new Set();
+addEventListener('keydown', e => {
+  if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {} }
+  if (!keys[e.key]) pressed.add(e.key);
+  keys[e.key] = true;
+  if ([' ', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) e.preventDefault();
+  if (e.key === 'm' || e.key === 'M') musicOn = !musicOn;
+});
+addEventListener('keyup', e => { keys[e.key] = false; });
+const action = () => pressed.has(' ') || pressed.has('Enter');
+
+// ---------- Levels ----------
+const THEMES = [
+  { name: 'Spooky Graveyard', wall: '#546e7a', wallTop: '#78909c', floor: '#33402e', dark: false },
+  { name: 'Haunted House', wall: '#6a1b9a', wallTop: '#8e24aa', floor: '#3e2723', dark: false },
+  { name: 'Creepy Forest', wall: '#1b5e20', wallTop: '#2e7d32', floor: '#2b2b1e', dark: true },
+  { name: 'Dark Cave', wall: '#4e342e', wallTop: '#6d4c41', floor: '#1d1a17', dark: true },
+];
+const DIRS = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+const OPP = { up: 'down', down: 'up', left: 'right', right: 'left' };
+
+let scene = 'title', level = 1, score = 0, lives = 3, frame = 0;
+let maze, coins, items, treasures, zombies, player, balloons, exitOpen, levelT, msg, msgT, dist;
+let particles = [], scaredT = 0;
+
+function makeMaze() {
+  const m = Array.from({ length: MH }, () => Array(MW).fill(1));
+  const stack = [[1, 1]]; m[1][1] = 0;
+  while (stack.length) {
+    const [x, y] = stack[stack.length - 1];
+    const opts = [[2, 0], [-2, 0], [0, 2], [0, -2]].filter(([dx, dy]) => {
+      const nx = x + dx, ny = y + dy;
+      return nx > 0 && ny > 0 && nx < MW - 1 && ny < MH - 1 && m[ny][nx] === 1;
+    });
+    if (!opts.length) { stack.pop(); continue; }
+    const [dx, dy] = opts[Math.floor(Math.random() * opts.length)];
+    m[y + dy / 2][x + dx / 2] = 0; m[y + dy][x + dx] = 0;
+    stack.push([x + dx, y + dy]);
+  }
+  // knock out extra walls so there are loops (more ways to escape!)
+  for (let i = 0; i < 70; i++) {
+    const x = 1 + Math.floor(Math.random() * (MW - 2)), y = 1 + Math.floor(Math.random() * (MH - 2));
+    if (m[y][x] === 1 && ((m[y][x - 1] === 0 && m[y][x + 1] === 0) || (m[y - 1][x] === 0 && m[y + 1][x] === 0))) m[y][x] = 0;
+  }
+  // zombie graveyard in the middle
+  for (let y = 6; y <= 8; y++) for (let x = 12; x <= 16; x++) m[y][x] = 0;
+  return m;
+}
+const open = (x, y) => x >= 0 && y >= 0 && x < MW && y < MH && maze[y][x] === 0;
+
+function startLevel() {
+  maze = makeMaze();
+  const theme = THEMES[(level - 1) % THEMES.length];
+  player = { tx: 1, ty: 1, dir: null, wish: null, p: 0, face: 'right', inv: 90, speed: 2.4, ammo: 3, fast: 0 };
+  coins = new Set(); items = []; treasures = []; balloons = []; particles = [];
+  const free = [];
+  for (let y = 0; y < MH; y++) for (let x = 0; x < MW; x++)
+    if (maze[y][x] === 0 && !(y >= 6 && y <= 8 && x >= 12 && x <= 16) && !(x === 1 && y === 1) && !(x === MW - 2 && y === MH - 2)) free.push([x, y]);
+  free.sort(() => Math.random() - 0.5);
+  const far = free.filter(([x, y]) => Math.abs(x - 1) + Math.abs(y - 1) > 10);
+  for (let i = 0; i < 4; i++) { const [x, y] = far.splice(Math.floor(Math.random() * far.length), 1)[0]; treasures.push({ x, y, got: false }); }
+  const used = new Set(treasures.map(t => t.x + ',' + t.y));
+  const pick = () => { let c; do { c = free.pop(); } while (c && used.has(c[0] + ',' + c[1])); used.add(c[0] + ',' + c[1]); return c; };
+  for (let i = 0; i < 2; i++) { const [x, y] = pick(); items.push({ x, y, kind: 'potion' }); }
+  for (let i = 0; i < 3; i++) { const [x, y] = pick(); items.push({ x, y, kind: 'balloon' }); }
+  { const [x, y] = pick(); items.push({ x, y, kind: 'shoes' }); }
+  for (const [x, y] of free) if (!used.has(x + ',' + y) && Math.random() < 0.45) coins.add(x + ',' + y);
+  zombies = [];
+  const n = Math.min(8, 1 + level);
+  for (let i = 0; i < n; i++) {
+    const runner = level >= 2 && i % 3 === 2;
+    zombies.push({ tx: 13 + (i % 3), ty: 7, dir: null, p: 0, runner, wait: 60 + i * 90, stun: 0, cured: 0, color: runner ? '#ff8a65' : '#9ccc65', groanT: Math.random() * 300 });
+  }
+  exitOpen = false; scaredT = 0; levelT = 0;
+  showMsg(`Level ${level}: ${theme.name}`);
+}
+function showMsg(t) { msg = t; msgT = 150; }
+
+// distance from every tile to the player (zombies use this to chase)
+function computeDist() {
+  dist = Array.from({ length: MH }, () => Array(MW).fill(999));
+  const q = [[player.tx, player.ty]]; dist[player.ty][player.tx] = 0;
+  while (q.length) {
+    const [x, y] = q.shift();
+    for (const [dx, dy] of Object.values(DIRS)) {
+      const nx = x + dx, ny = y + dy;
+      if (open(nx, ny) && dist[ny][nx] > dist[y][x] + 1) { dist[ny][nx] = dist[y][x] + 1; q.push([nx, ny]); }
+    }
+  }
+}
+
+// ---------- Moving through the maze ----------
+function posOf(e) { const [dx, dy] = e.dir ? DIRS[e.dir] : [0, 0]; return [OX + (e.tx + dx * e.p) * T + T / 2, OY + (e.ty + dy * e.p) * T + T / 2]; }
+function canGo(e, d) { const [dx, dy] = DIRS[d]; return open(e.tx + dx, e.ty + dy); }
+
+function movePlayer() {
+  const p = player;
+  if (keys.ArrowUp || keys.w) p.wish = 'up'; else if (keys.ArrowDown || keys.s) p.wish = 'down';
+  else if (keys.ArrowLeft || keys.a) p.wish = 'left'; else if (keys.ArrowRight || keys.d) p.wish = 'right';
+  else p.wish = null;
+  if (p.dir && p.wish === OPP[p.dir]) { const [dx, dy] = DIRS[p.dir]; p.tx += dx; p.ty += dy; p.p = 1 - p.p; p.dir = p.wish; }
+  // forgiving corners: pressing a turn a little early or late still works
+  if (p.dir && p.wish && p.wish !== p.dir && p.wish !== OPP[p.dir]) {
+    const [dx, dy] = DIRS[p.dir], [wx, wy] = DIRS[p.wish];
+    if (p.p < 0.45 && canGo(p, p.wish)) { p.dir = p.wish; p.p = 0; }
+    else if (p.p > 0.55 && open(p.tx + dx + wx, p.ty + dy + wy)) { p.tx += dx; p.ty += dy; arrive(p.tx, p.ty); p.dir = p.wish; p.p = 0; }
+  }
+  if (!p.dir) { if (p.wish && canGo(p, p.wish)) { p.dir = p.wish; p.p = 0; } }
+  if (p.wish) p.face = p.wish;
+  if (!p.dir) return;
+  p.p += (p.fast > 0 ? 3.6 : p.speed) / T;
+  while (p.p >= 1) {
+    const [dx, dy] = DIRS[p.dir]; p.tx += dx; p.ty += dy; p.p -= 1;
+    arrive(p.tx, p.ty);
+    if (p.wish && canGo(p, p.wish)) p.dir = p.wish;
+    else if (!p.wish || !canGo(p, p.dir)) { p.dir = null; p.p = 0; break; }
+  }
+}
+
+function arrive(x, y) {
+  const k = x + ',' + y;
+  if (coins.has(k)) { coins.delete(k); score += 10; sfx.coin(); }
+  for (const t of treasures) if (!t.got && t.x === x && t.y === y) {
+    t.got = true; score += 500; sfx.treasure(); burst(x, y, ['#ffd740', '#fff', '#ff9800'], 20);
+    const left = treasures.filter(t => !t.got).length;
+    if (left === 0) { exitOpen = true; sfx.unlock(); showMsg('All treasure found! Run to the EXIT door! 🚪'); }
+    else showMsg(`Treasure! ${left} more to find!`);
+  }
+  for (const it of items) if (!it.got && it.x === x && it.y === y) {
+    it.got = true;
+    if (it.kind === 'potion') { scaredT = 420; sfx.potion(); showMsg('SUPER POTION! Tag the zombies to turn them back into people!'); }
+    if (it.kind === 'balloon') { player.ammo = Math.min(9, player.ammo + 3); sfx.pickup(); showMsg('+3 water balloons! Press SPACE to throw!'); }
+    if (it.kind === 'shoes') { player.fast = 480; sfx.pickup(); showMsg('ZOOM SHOES! You are super fast!'); }
+  }
+  if (exitOpen && x === MW - 2 && y === MH - 2) { scene = 'levelDone'; levelT = 0; sfx.win(); score += 1000; }
+}
+
+function moveZombie(z) {
+  if (z.wait > 0) { z.wait--; return; }
+  if (z.stun > 0) { z.stun--; return; }
+  if (z.cured > 0) { if (--z.cured === 0) { z.tx = 14; z.ty = 7; z.dir = null; z.p = 0; z.wait = 120; } return; }
+  const scared = scaredT > 0;
+  const speed = scared ? 0.9 : (z.runner ? 1.6 : 1.05) + Math.min(0.4, (level - 1) * 0.08);
+  if (!z.dir) chooseDir(z, scared);
+  if (!z.dir) return;
+  z.p += speed / T;
+  while (z.p >= 1) {
+    const [dx, dy] = DIRS[z.dir]; z.tx += dx; z.ty += dy; z.p -= 1;
+    chooseDir(z, scared);
+    if (!z.dir) { z.p = 0; break; }
+  }
+}
+function chooseDir(z, scared) {
+  let opts = Object.keys(DIRS).filter(d => canGo(z, d));
+  if (opts.length > 1 && z.dir) opts = opts.filter(d => d !== OPP[z.dir]);
+  if (!opts.length) { z.dir = null; return; }
+  const here = dist[z.ty][z.tx];
+  const chasing = here < (z.runner ? 16 : 10);
+  if ((chasing || scared) && Math.random() < (z.runner ? 0.85 : 0.7)) {
+    const score = d => { const [dx, dy] = DIRS[d]; return dist[z.ty + dy][z.tx + dx]; };
+    opts.sort((a, b) => scared ? score(b) - score(a) : score(a) - score(b));
+    z.dir = opts[0];
+  } else z.dir = opts[Math.floor(Math.random() * opts.length)];
+}
+
+function burst(tx, ty, colors, n = 12) {
+  const x = OX + tx * T + T / 2, y = OY + ty * T + T / 2;
+  burstXY(x, y, colors, n);
+}
+function burstXY(x, y, colors, n = 12) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * 7, s = Math.random() * 3 + 1;
+    particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 30 + Math.random() * 20, color: colors[i % colors.length], size: 3 + Math.random() * 4 });
+  }
+}
+
+function updatePlay() {
+  levelT++;
+  if (msgT > 0) msgT--;
+  if (scaredT > 0) scaredT--;
+  if (player.inv > 0) player.inv--;
+  if (player.fast > 0) player.fast--;
+  movePlayer();
+  if (frame % 6 === 0) computeDist();
+  for (const z of zombies) moveZombie(z);
+
+  // throw a water balloon
+  if (action() && player.ammo > 0) {
+    player.ammo--; sfx.throw();
+    const [x, y] = posOf(player), [dx, dy] = DIRS[player.face];
+    balloons.push({ x, y, vx: dx * 7, vy: dy * 7, life: 90 });
+  }
+  for (const b of balloons) {
+    b.x += b.vx; b.y += b.vy; b.life--;
+    const tx = Math.floor((b.x - OX) / T), ty = Math.floor((b.y - OY) / T);
+    if (!open(tx, ty)) { b.life = 0; sfx.splash(); burstXY(b.x - b.vx, b.y - b.vy, ['#40c4ff', '#b3e5fc', '#fff'], 10); }
+    for (const z of zombies) {
+      if (z.wait > 0 || z.cured) continue;
+      const [zx, zy] = posOf(z);
+      if (Math.hypot(zx - b.x, zy - b.y) < 22) {
+        b.life = 0; z.stun = 200; score += 50; sfx.splash();
+        burstXY(zx, zy, ['#40c4ff', '#b3e5fc', '#fff'], 14);
+      }
+    }
+  }
+  balloons = balloons.filter(b => b.life > 0);
+
+  // touching zombies
+  const [px, py] = posOf(player);
+  for (const z of zombies) {
+    if (z.wait > 0 || z.cured) continue;
+    const [zx, zy] = posOf(z);
+    if (Math.hypot(zx - px, zy - py) < 22) {
+      if (scaredT > 0) {
+        z.cured = 240; score += 300; sfx.cure();
+        burstXY(zx, zy, ['#ff80ab', '#fff', '#ffd740'], 16);
+      } else if (z.stun === 0 && player.inv === 0) {
+        lives--; sfx.ouch(); player.inv = 120;
+        burstXY(px, py, ['#ff5252', '#fff'], 16);
+        if (lives <= 0) { scene = 'over'; levelT = 0; return; }
+        Object.assign(player, { tx: 1, ty: 1, dir: null, p: 0 });
+        for (const zz of zombies) if (!zz.cured) Object.assign(zz, { tx: 13 + Math.floor(Math.random() * 3), ty: 7, dir: null, p: 0, wait: 90 });
+        showMsg('Yikes! A zombie got you! Back to the start!');
+        break;
+      }
+    }
+    if (--z.groanT <= 0) { z.groanT = 300 + Math.random() * 400; if (Math.hypot(zx - px, zy - py) < 300) { sfx.groan(); z.say = 90; } }
+    if (z.say > 0) z.say--;
+  }
+}
+
+function update() {
+  frame++;
+  for (const p of particles) { p.x += p.vx; p.y += p.vy; p.vx *= 0.93; p.vy *= 0.93; p.life--; }
+  particles = particles.filter(p => p.life > 0);
+  if (scene === 'title') { if (action()) { level = 1; score = 0; lives = 3; startLevel(); computeDist(); scene = 'play'; } }
+  else if (scene === 'play') updatePlay();
+  else if (scene === 'levelDone') {
+    levelT++;
+    if (frame % 20 === 0) burstXY(Math.random() * W, Math.random() * 300 + 60, ['#ffd740', '#69f0ae', '#40c4ff', '#ff4081'], 18);
+    if (levelT > 90 && action()) { level++; lives = Math.min(5, lives + 1); startLevel(); computeDist(); scene = 'play'; }
+  } else if (scene === 'over') {
+    levelT++;
+    if (levelT > 60 && action()) { lives = 3; score = Math.floor(score / 2); startLevel(); computeDist(); scene = 'play'; }
+  }
+  pressed.clear();
+}
+
+// ---------- Drawing ----------
+function roundRect(x, y, w, h, r, fill) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); ctx.fillStyle = fill; ctx.fill(); }
+function circle(x, y, r, color) { ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); }
+function text(str, x, y, size, color = '#fff', align = 'center') {
+  ctx.font = `bold ${size}px "Comic Sans MS", "Chalkboard SE", sans-serif`;
+  ctx.textAlign = align; ctx.lineJoin = 'round';
+  ctx.lineWidth = size / 5; ctx.strokeStyle = '#1b1b2f'; ctx.strokeText(str, x, y);
+  ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function drawHeart(x, y, fill) {
+  ctx.fillStyle = fill; ctx.beginPath(); ctx.moveTo(x, y + 5);
+  ctx.bezierCurveTo(x, y + 2, x - 9, y - 2, x - 9, y + 5); ctx.bezierCurveTo(x - 9, y + 10, x, y + 14, x, y + 18);
+  ctx.bezierCurveTo(x, y + 14, x + 9, y + 10, x + 9, y + 5); ctx.bezierCurveTo(x + 9, y - 2, x, y + 2, x, y + 5); ctx.fill();
+}
+
+function drawMaze(theme) {
+  ctx.fillStyle = theme.floor; ctx.fillRect(OX, OY, MW * T, MH * T);
+  for (let y = 0; y < MH; y++) for (let x = 0; x < MW; x++) {
+    const px = OX + x * T, py = OY + y * T;
+    if (maze[y][x]) {
+      if (theme.name === 'Creepy Forest') {
+        ctx.fillStyle = '#3e2723'; ctx.fillRect(px + 13, py + 18, 6, 14);
+        circle(px + 16, py + 14, 15, theme.wall); circle(px + 11, py + 10, 6, theme.wallTop);
+      } else {
+        ctx.fillStyle = theme.wall; ctx.fillRect(px, py, T, T);
+        ctx.fillStyle = theme.wallTop; ctx.fillRect(px, py, T, 6);
+        ctx.fillStyle = 'rgba(0,0,0,.2)'; ctx.fillRect(px + (y % 2 ? 8 : 20), py + 8, 2, 24); ctx.fillRect(px, py + 19, T, 2);
+        if (theme.name === 'Spooky Graveyard' && (x * 7 + y * 3) % 11 === 0) {   // a little tombstone
+          roundRect(px + 9, py + 8, 14, 18, [7, 7, 1, 1], '#b0bec5'); ctx.fillStyle = '#78909c'; ctx.fillRect(px + 15, py + 12, 2, 8); ctx.fillRect(px + 12, py + 14, 8, 2);
+        }
+      }
+    }
+  }
+  // graveyard gate where zombies come from
+  ctx.strokeStyle = 'rgba(255,255,255,.12)'; ctx.lineWidth = 2; ctx.strokeRect(OX + 12 * T + 2, OY + 6 * T + 2, 5 * T - 4, 3 * T - 4);
+  // exit door
+  const ex = OX + (MW - 2) * T, ey = OY + (MH - 2) * T;
+  roundRect(ex + 4, ey + 2, 24, 30, [10, 10, 0, 0], exitOpen ? '#69f0ae' : '#795548');
+  if (exitOpen) { text('EXIT', ex + 16, ey - 4 + Math.sin(frame * 0.15) * 2, 13, '#69f0ae'); }
+  else { circle(ex + 16, ey + 18, 4, '#ffd740'); ctx.fillStyle = '#000'; ctx.fillRect(ex + 15, ey + 18, 2, 6); }
+}
+
+function drawPlayer() {
+  const p = player, [x, y] = posOf(p);
+  if (p.inv > 0 && Math.floor(frame / 4) % 2) return;
+  const walk = p.dir ? Math.sin(frame * 0.4) * 2 : 0;
+  if (p.fast > 0) for (let i = 1; i < 4; i++) { const [dx, dy] = p.dir ? DIRS[p.dir] : [0, 0]; circle(x - dx * i * 7, y - dy * i * 7, 9 - i * 2, `rgba(255,214,0,${0.4 - i * 0.1})`); }
+  ctx.fillStyle = '#1565c0'; ctx.fillRect(x - 6, y + 6 + walk, 5, 7); ctx.fillRect(x + 1, y + 6 - walk, 5, 7);
+  roundRect(x - 9, y - 4, 18, 13, 4, '#ff7043');
+  circle(x, y - 9, 8, '#ffcc99');
+  ctx.fillStyle = '#5d4037'; ctx.beginPath(); ctx.arc(x, y - 11, 8.5, Math.PI, 0); ctx.fill();
+  const [fx, fy] = DIRS[p.face];
+  if (p.face !== 'up') { circle(x - 3 + fx * 2, y - 9 + fy, 1.6, '#000'); circle(x + 3 + fx * 2, y - 9 + fy, 1.6, '#000'); }
+  // flashlight beam in dark levels
+}
+
+function drawZombie(z) {
+  if (z.wait > 0 && Math.floor(frame / 15) % 2 === 0 && z.wait < 60) return;
+  const [x, y] = posOf(z);
+  if (z.cured) {                                         // a happy person again!
+    const up = Math.min(30, (240 - z.cured) * 0.3);
+    ctx.globalAlpha = Math.min(1, z.cured / 60);
+    roundRect(x - 8, y - 4 - up, 16, 13, 4, '#ffd740');
+    circle(x, y - 10 - up, 7, '#ffcc99'); circle(x - 2.5, y - 11 - up, 1.4, '#000'); circle(x + 2.5, y - 11 - up, 1.4, '#000');
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y - 9 - up, 3, 0.2, Math.PI - 0.2); ctx.stroke();
+    text('Thanks!', x, y - 24 - up, 12, '#ff80ab');
+    ctx.globalAlpha = 1;
+    return;
+  }
+  const scared = scaredT > 0, body = scared ? (scaredT < 90 && frame % 20 < 10 ? '#fff' : '#7986cb') : z.color;
+  const wob = Math.sin(frame * 0.15 + z.tx) * 2;
+  ctx.fillStyle = '#4e342e'; ctx.fillRect(x - 6, y + 6, 5, 7); ctx.fillRect(x + 1, y + 6, 5, 7);
+  roundRect(x - 9, y - 4, 18, 13, 3, scared ? '#5c6bc0' : '#6d4c41');   // torn shirt
+  ctx.strokeStyle = body; ctx.lineWidth = 5; ctx.lineCap = 'round';      // arms out
+  const [dx] = z.dir ? DIRS[z.dir] : [1];
+  ctx.beginPath(); ctx.moveTo(x - 6, y - 1); ctx.lineTo(x - 6 + (dx || 1) * 10, y - 2 + wob); ctx.moveTo(x + 6, y - 1); ctx.lineTo(x + 6 + (dx || 1) * 10, y + 1 - wob); ctx.stroke();
+  circle(x, y - 10, 9, body);
+  if (scared) { circle(x - 3, y - 11, 2.5, '#fff'); circle(x + 3, y - 11, 2.5, '#fff'); ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x - 4, y - 5); ctx.lineTo(x - 2, y - 7); ctx.lineTo(x, y - 5); ctx.lineTo(x + 2, y - 7); ctx.lineTo(x + 4, y - 5); ctx.stroke(); }
+  else {
+    circle(x - 3, y - 11, 3, '#fff'); circle(x + 3, y - 12, 2.2, '#fff');
+    circle(x - 3, y - 11, 1.4, '#c62828'); circle(x + 3, y - 12, 1.1, '#c62828');
+    ctx.fillStyle = '#33691e'; ctx.fillRect(x - 4, y - 5, 8, 2);
+  }
+  if (z.runner && !scared) { ctx.fillStyle = '#d84315'; ctx.fillRect(x - 9, y - 19, 18, 4); }   // runner headband
+  if (z.stun > 0) { for (let i = 0; i < 3; i++) { const a = frame * 0.15 + i * 2.1; text('★', x + Math.cos(a) * 12, y - 22 + Math.sin(a) * 4, 11, '#40c4ff'); } }
+  if (z.say > 0 && !scared && !z.stun) text('braaains...', x, y - 26, 12, '#c5e1a5');
+}
+
+function drawItems() {
+  for (const k of coins) { const [x, y] = k.split(',').map(Number); circle(OX + x * T + 16, OY + y * T + 16, 3.5, '#ffd740'); }
+  for (const t of treasures) if (!t.got) {
+    const x = OX + t.x * T, y = OY + t.y * T, glow = 0.3 + 0.2 * Math.sin(frame * 0.1);
+    circle(x + 16, y + 16, 16, `rgba(255,215,64,${glow})`);
+    roundRect(x + 5, y + 9, 22, 17, 3, '#8d5a2b'); ctx.fillStyle = '#ffd740'; ctx.fillRect(x + 5, y + 15, 22, 3); ctx.fillRect(x + 14, y + 13, 4, 7);
+  }
+  for (const it of items) if (!it.got) {
+    const x = OX + it.x * T + 16, y = OY + it.y * T + 16 + Math.sin(frame * 0.1 + it.x) * 2;
+    if (it.kind === 'potion') { circle(x, y + 3, 9, '#e040fb'); ctx.fillStyle = '#eee'; ctx.fillRect(x - 3, y - 11, 6, 7); circle(x - 3, y + 1, 2.5, 'rgba(255,255,255,.7)'); }
+    if (it.kind === 'balloon') { circle(x, y, 9, '#40c4ff'); circle(x - 3, y - 3, 3, 'rgba(255,255,255,.7)'); ctx.fillStyle = '#0288d1'; ctx.fillRect(x - 1, y + 8, 2, 4); }
+    if (it.kind === 'shoes') { roundRect(x - 10, y - 2, 14, 9, 4, '#ff1744'); roundRect(x - 2, y + 1, 12, 6, 3, '#ff1744'); ctx.fillStyle = '#fff'; ctx.fillRect(x - 10, y + 6, 20, 2); text('⚡', x + 6, y - 4, 10, '#ffd740'); }
+  }
+}
+
+function draw() {
+  ctx.fillStyle = '#0d0d1a'; ctx.fillRect(0, 0, W, H);
+  if (scene === 'title') {
+    for (let i = 0; i < 40; i++) circle((i * 137) % W, (i * 71) % H, 1.5, `rgba(255,255,255,${0.3 + 0.3 * Math.sin(frame * 0.05 + i)})`);
+    circle(800, 100, 50, '#fff9c4');
+    text('ZOMBIE MAZE', W / 2, 150 + Math.sin(frame * 0.05) * 5, 84, '#9ccc65');
+    // a little parade of zombies
+    for (let i = 0; i < 5; i++) {
+      const fake = { tx: 0, ty: 0, dir: 'right', p: 0, color: i % 2 ? '#ff8a65' : '#9ccc65', runner: i % 2 === 1, stun: 0, cured: 0, wait: 0 };
+      const x = ((frame * 0.8 + i * 200) % (W + 100)) - 50;
+      ctx.save(); ctx.translate(x - OX - 16, 260 - OY - 16); drawZombie(fake); ctx.restore();
+    }
+    text('Find all 4 treasure chests, then escape through the EXIT!', W / 2, 340, 24);
+    text('💧 SPACE throws water balloons   🧪 Potions turn zombies back into people!', W / 2, 380, 20, '#b3e5fc');
+    if (Math.floor(frame / 30) % 2) text('Press SPACE to start!', W / 2, 450, 34, '#ffd740');
+    text('Arrow keys to move    M = music', W / 2, 495, 16, '#aaa');
+    return;
+  }
+  const theme = THEMES[(level - 1) % THEMES.length];
+  drawMaze(theme);
+  drawItems();
+  for (const b of balloons) { circle(b.x, b.y, 7, '#40c4ff'); circle(b.x - 2, b.y - 2, 2.5, '#fff'); }
+  for (const z of zombies) drawZombie(z);
+  drawPlayer();
+  for (const pt of particles) { ctx.globalAlpha = Math.min(1, pt.life / 15); ctx.fillStyle = pt.color; ctx.fillRect(pt.x, pt.y, pt.size, pt.size); }
+  ctx.globalAlpha = 1;
+  if (theme.dark && scene === 'play') {                 // dark levels: you can only see near you
+    const [px, py] = posOf(player), r = scaredT > 0 ? 260 : 150;
+    const g = ctx.createRadialGradient(px, py, r * 0.5, px, py, r);
+    g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,.88)');
+    ctx.fillStyle = g; ctx.fillRect(0, OY, W, H - OY);
+    ctx.fillStyle = 'rgba(0,0,0,.88)';
+    ctx.beginPath(); ctx.rect(0, OY, W, H - OY); ctx.moveTo(px + r, py); ctx.arc(px, py, r, 0, Math.PI * 2, true); ctx.fill();
+    for (const t of treasures) if (!t.got) circle(OX + t.x * T + 16, OY + t.y * T + 16, 4, `rgba(255,215,64,${0.5 + 0.4 * Math.sin(frame * 0.1)})`);   // treasure sparkles show in the dark
+    if (exitOpen) circle(OX + (MW - 2) * T + 16, OY + (MH - 2) * T + 16, 6, '#69f0ae');
+  }
+  // HUD
+  ctx.fillStyle = '#0d0d1a'; ctx.fillRect(0, 0, W, OY);
+  for (let i = 0; i < lives; i++) drawHeart(26 + i * 24, 10, '#ff1744');
+  text(`Level ${level}`, 170, 29, 20, '#9ccc65', 'left');
+  text(`Score ${score}`, 280, 29, 20, '#ffd740', 'left');
+  text(`💰 ${treasures.filter(t => t.got).length}/4`, 470, 29, 20, '#ffd740', 'left');
+  text(`💧 ${player.ammo}`, 580, 29, 20, '#40c4ff', 'left');
+  if (scaredT > 0) text(`🧪 ${Math.ceil(scaredT / 60)}`, 660, 29, 20, '#e040fb', 'left');
+  if (player.fast > 0) text(`⚡ ${Math.ceil(player.fast / 60)}`, 740, 29, 20, '#ffd740', 'left');
+  text(musicOn ? '♪ M' : '♪ off', W - 16, 29, 16, '#aaa', 'right');
+  if (msgT > 0 && scene === 'play') { ctx.globalAlpha = Math.min(1, msgT / 30); roundRect(W / 2 - 330, H - 64, 660, 44, 12, 'rgba(0,0,0,.75)'); text(msg, W / 2, H - 34, 20, '#fff'); ctx.globalAlpha = 1; }
+  if (scene === 'levelDone') {
+    ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(0, 0, W, H);
+    for (const pt of particles) { ctx.fillStyle = pt.color; ctx.fillRect(pt.x, pt.y, pt.size, pt.size); }
+    text('YOU ESCAPED!! 🎉', W / 2, 200, 70, '#69f0ae');
+    text(`Score: ${score}`, W / 2, 260, 34, '#ffd740');
+    text('+1 heart for the next level ❤️', W / 2, 305, 24);
+    if (levelT > 90) text(`Press SPACE for Level ${level + 1}`, W / 2, 400, 30, '#fff');
+  }
+  if (scene === 'over') {
+    ctx.fillStyle = 'rgba(0,0,0,.65)'; ctx.fillRect(0, 0, W, H);
+    text('The zombies got you!', W / 2, 210, 56, '#9ccc65');
+    text('Don\'t give up! Try this level again!', W / 2, 270, 28);
+    if (levelT > 60) text('Press SPACE to try again', W / 2, 380, 30, '#ffd740');
+  }
+}
+
+let last = performance.now(), acc = 0;
+function loop(now) {
+  acc += Math.min(100, now - last); last = now;
+  while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; }
+  playMusic();
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
