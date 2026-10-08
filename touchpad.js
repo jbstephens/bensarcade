@@ -9,6 +9,7 @@
 //   south / east / west / north:  [key, label] for the four face buttons
 //   start: key for the START pill (default 'Enter'),  back: key for the BACK pill (default 'Escape')
 //   Set start or back to null to hide that pill.
+//   two: { p1: {...}, p2: {...} }  optional 2-player layout; the game calls touchpadMode('two' | 'one') to switch.
 //
 // What it does:
 //   - On touchscreens, draws the D-pad + buttons over the game. They send the same key presses the keyboard would,
@@ -53,6 +54,7 @@
       html, body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; touch-action: none; overscroll-behavior: none; }
       canvas { touch-action: none; }
       #tp { position: fixed; inset: 0; pointer-events: none; z-index: 99999; font-family: 'Arial Rounded MT Bold', 'Trebuchet MS', sans-serif; }
+      #tp [hidden] { display: none !important; }
       #tp .tp-btn, #tp .tp-dpad { pointer-events: auto; touch-action: none; position: absolute; }
       #tp .tp-dpad { left: calc(18px + env(safe-area-inset-left)); bottom: calc(18px + env(safe-area-inset-bottom)); width: 170px; height: 170px; }
       #tp .tp-arm { position: absolute; background: rgba(30,30,50,.45); border: 3px solid rgba(255,255,255,.55); border-radius: 14px; }
@@ -75,11 +77,11 @@
         const off = e => { e.preventDefault(); el.classList.remove('on'); press(key, false); };
         el.addEventListener('pointerdown', on); ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => el.addEventListener(t, off));
       };
-      if (cfg.dpad) {
-        const pad = document.createElement('div'); pad.className = 'tp-dpad';
+      // a D-pad that presses the keys in KEY (arrow keys unless a game says otherwise)
+      const makeDpad = (KEY, css, parent) => {
+        const pad = document.createElement('div'); pad.className = 'tp-dpad'; if (css) pad.style.cssText = css;
         const arms = {};
         for (const d of ['up', 'down', 'left', 'right']) { const a = document.createElement('div'); a.className = 'tp-arm tp-' + d; pad.appendChild(a); arms[d] = a; }
-        const KEY = { up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight' };
         let held = new Set(), finger = null;
         const aim = e => {   // works out the direction(s) from where the finger is, so sliding and diagonals work
           const r = pad.getBoundingClientRect(), x = e.clientX - (r.left + r.width / 2), y = e.clientY - (r.top + r.height / 2);
@@ -97,23 +99,44 @@
         pad.addEventListener('pointerdown', e => { e.preventDefault(); finger = e.pointerId; try { pad.setPointerCapture(e.pointerId); } catch (_) {} aim(e); });
         pad.addEventListener('pointermove', e => { if (e.pointerId === finger) aim(e); });
         pad.addEventListener('pointerup', stop); pad.addEventListener('pointercancel', stop);
-        root.appendChild(pad);
-      }
-      // face buttons in a diamond, bottom right
+        parent.appendChild(pad);
+      };
+      const makeBtn = (key, label, css, cls, parent) => {
+        const b = document.createElement('div'); b.className = 'tp-btn ' + cls; b.textContent = label || ''; b.style.cssText = css;
+        hold(b, key); parent.appendChild(b);
+      };
+      const ARROWS = { up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight' };
+
+      // ----- one-player controls: D-pad bottom left, face buttons in a diamond bottom right -----
+      const one = document.createElement('div'); one.className = 'tp-set';
+      if (cfg.dpad) makeDpad(ARROWS, '', one);
       const FACE = { north: [86, 150, '#fbc02d'], west: [150, 86, '#1e88e5'], east: [22, 86, '#e53935'], south: [86, 22, '#43a047'] };
       for (const side in FACE) {
         if (!cfg[side]) continue;
         const [key, label] = cfg[side], [right, bottom, col] = FACE[side];
-        const b = document.createElement('div'); b.className = 'tp-btn tp-face'; b.textContent = label || '';
-        b.style.cssText = `right: calc(${right}px + env(safe-area-inset-right)); bottom: calc(${bottom}px + env(safe-area-inset-bottom)); background: ${col}cc;`;
-        hold(b, key); root.appendChild(b);
+        makeBtn(key, label, `right: calc(${right}px + env(safe-area-inset-right)); bottom: calc(${bottom}px + env(safe-area-inset-bottom)); background: ${col}cc;`, 'tp-face', one);
       }
+      root.appendChild(one);
+
+      // ----- two-player controls (if the game has them): each player gets a D-pad + buttons on their own side -----
+      //   TOUCHPAD.two = { p1: { dpad: {up, down, left, right}, buttons: [[key, label], ...] }, p2: { ... } }
+      //   The game switches with touchpadMode('two') / touchpadMode('one').
+      let two = null;
+      if (cfg.two) {
+        two = document.createElement('div'); two.className = 'tp-set'; two.hidden = true;
+        [['p1', 'left', '#1e88e5'], ['p2', 'right', '#e53935']].forEach(([who, side, col]) => {
+          const P = cfg.two[who]; if (!P) return;
+          makeDpad(P.dpad || ARROWS, `${side}: calc(14px + env(safe-area-inset-${side})); left: ${side === 'left' ? '' : 'auto'}; width: 150px; height: 150px; transform: scale(.88); transform-origin: bottom ${side};`, two);
+          (P.buttons || []).forEach(([key, label], i) => makeBtn(key, label,
+            `${side}: calc(${10 + i * 62}px + env(safe-area-inset-${side})); bottom: calc(${150 + (i === 1 ? 36 : 0)}px + env(safe-area-inset-bottom)); width: 58px; height: 58px; font-size: 11px; background: ${col}cc;`, 'tp-face', two));
+          makeBtn(null, who.toUpperCase(), `${side}: calc(12px + env(safe-area-inset-${side})); bottom: calc(${250}px + env(safe-area-inset-bottom)); padding: 2px 8px; border-radius: 8px; background: ${col}; color: #fff; font: bold 13px sans-serif; pointer-events: none;`, '', two);
+        });
+        root.appendChild(two);
+      }
+      window.touchpadMode = m => { if (!two) return; for (const k of [...down]) press(k, false); one.hidden = m === 'two'; two.hidden = m !== 'two'; };
+
       const pills = [[cfg.back, '✕ BACK'], [cfg.start, 'START ▶']].filter(p => p[0]);
-      pills.forEach(([key, label], i) => {
-        const p = document.createElement('div'); p.className = 'tp-btn tp-pill'; p.textContent = label;
-        p.style.right = `calc(${12 + (pills.length - 1 - i) * 112}px + env(safe-area-inset-right))`;
-        hold(p, key); root.appendChild(p);
-      });
+      pills.forEach(([key, label], i) => makeBtn(key, label, `right: calc(${12 + (pills.length - 1 - i) * 112}px + env(safe-area-inset-right))`, 'tp-pill', root));
       document.body.appendChild(root);
       // paint the page's back layer the game's color, so no white strip shows around the edges on the iPad
       const bg = getComputedStyle(document.body).backgroundColor;
