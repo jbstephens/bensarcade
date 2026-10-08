@@ -145,6 +145,13 @@
     };
     document.body ? build() : addEventListener('DOMContentLoaded', build);
 
+    // stop the iPad from zooming in on the game when you tap fast (double-tap zoom) or pinch.
+    // (Safari ignores user-scalable=no, so this has to be done here.)
+    ['gesturestart', 'gesturechange', 'gestureend', 'dblclick'].forEach(t => document.addEventListener(t, e => e.preventDefault(), { passive: false }));
+    let lastTouchEnd = 0;
+    document.addEventListener('touchend', e => { const now = Date.now(); if (now - lastTouchEnd < 350) e.preventDefault(); lastTouchEnd = now; }, { passive: false });
+    document.addEventListener('touchmove', e => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
+
     // finger on a canvas = mouse (so drag, hover and press-and-hold work, not just taps)
     let finger = null, target = null, sx = 0, sy = 0;
     const mouse = (type, t, el, buttons) => el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: t.clientX, clientY: t.clientY, screenX: t.screenX, screenY: t.screenY, button: 0, buttons, view: window }));
