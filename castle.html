@@ -16,6 +16,32 @@ const pick = a => a[Math.floor(Math.random() * a.length)];
 const dist = (a, b, c, d) => Math.hypot(a - c, b - d);
 
 // ---------- Sound ----------
+function bankCoin(n = 1) { try { const c = JSON.parse(localStorage.getItem('gfCoins') || '{}'); c.castle = (c.castle || 0) + n; localStorage.setItem('gfCoins', JSON.stringify(c)); } catch (_) {} }   // coins for the Bundle Room in the Game Factory book
+function bundleHas(j) { try { return (JSON.parse(localStorage.getItem('gfBundles') || '{}').opened || []).includes('castle-' + j); } catch (_) { return false; } }   // unlocked in the Bundle Room
+// Tower hats (Bundle Room) - every tower you build wears the hat you pick on the title screen
+const LOOKS = [
+  { id: 'normal', name: 'No Hat', b: -1 },
+  { id: 'party', name: 'Party Hats', b: 0 }, { id: 'tophat', name: 'Top Hats', b: 0 },
+  { id: 'crown', name: 'Crowns', b: 1 }, { id: 'cowboy', name: 'Cowboy Hats', b: 1 },
+];
+const BUNDLE_NAMES = ['Tower Hat Pack', 'Royal Hat Pack', 'MEGA Robo Tower Pack'];
+const lookOpen = L => L.b < 0 || bundleHas(L.b);
+const roboOpen = () => bundleHas(2);   // the Robo Laser Tower
+function loadLook() {
+  try {
+    const id = (JSON.parse(localStorage.getItem('gfLooks') || '{}') || {}).castle;
+    const L = LOOKS.find(o => o.id === id);
+    return L && lookOpen(L) ? L.id : 'normal';
+  } catch (_) { return 'normal'; }
+}
+function saveLook() {
+  try { const o = JSON.parse(localStorage.getItem('gfLooks') || '{}') || {}; o.castle = myLook; localStorage.setItem('gfLooks', JSON.stringify(o)); } catch (_) {}
+}
+let myLook = loadLook(), lookView = Math.max(0, LOOKS.findIndex(o => o.id === myLook));
+function cycleLook(d) {   // browse hats; only unlocked ones get picked
+  lookView = (lookView + d + LOOKS.length) % LOOKS.length;
+  if (lookOpen(LOOKS[lookView])) { myLook = LOOKS[lookView].id; saveLook(); }
+}
 let actx = null, musicOn = true, nextNote = 0, mStep = 0;
 function audio() { if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {} } return actx; }
 function note(f, start, dur, wave = 'square', vol = 0.06, slide = null) {
@@ -40,6 +66,7 @@ const sfx = {
   boom: () => { if (sndBudget-- > 0) { noise(0.3, 0.5, 300); } },
   ice: () => { if (sndBudget-- > 0) note(1800, 0, 0.1, 'sine', 0.03, 2600); },
   zap: () => { if (sndBudget-- > 0) note(200, 0, 0.12, 'sawtooth', 0.04, 1200); },
+  laser: () => { if (sndBudget-- > 0) note(1400, 0, 0.1, 'square', 0.03, 500); },
   poof: () => { if (sndBudget-- > 0) note(500, 0, 0.1, 'triangle', 0.06, 900); },
   coin: () => note(1500, 0, 0.05, 'square', 0.025),
   ouch: () => { noise(0.2, 0.4, 200); note(200, 0, 0.3, 'sawtooth', 0.08, 80); },
@@ -77,6 +104,7 @@ const TOWERS = {
   cannon:    { name: 'Cannon', icon: '💣', cost: 50, up: [40, 60], range: [110, 125, 140], dmg: [9, 15, 24], rate: [70, 62, 54], color: '#546e7a', desc: 'BOOM! Hits a group' },
   ice:       { name: 'Ice', icon: '❄️', cost: 40, up: [30, 45], range: [100, 115, 130], dmg: [1, 2, 3], rate: [45, 42, 38], color: '#4fc3f7', desc: 'Freezes monsters slow' },
   lightning: { name: 'Lightning', icon: '⚡', cost: 80, up: [60, 90], range: [130, 145, 160], dmg: [6, 9, 14], rate: [52, 46, 40], color: '#ab47bc', desc: 'Zaps 3+ monsters' },
+  robo:      { name: 'Robo Laser', icon: '🤖', cost: 60, up: [45, 70], range: [140, 155, 170], dmg: [7, 11, 17], rate: [46, 41, 36], color: '#2979ff', desc: 'Robo zaps LASERS far away' },   // MEGA Robo Tower Pack
 };
 const MONSTERS = {
   slime: { hp: 14, speed: 0.9, reward: 4, size: 15 },
@@ -160,7 +188,7 @@ function hurt(m, dmg) {
   if (m.dead) return;
   m.hp -= dmg; m.flash = 6;
   if (m.hp <= 0) {
-    m.dead = true; gold += m.reward; sfx.poof(); sfx.coin();
+    m.dead = true; gold += m.reward; sfx.poof(); sfx.coin(); bankCoin();
     floaters.push({ x: m.x, y: m.y - 20, t: `+${m.reward}`, life: 45 });
     for (let i = 0; i < 10; i++) { const a = Math.random() * 7, s = Math.random() * 3 + 1; particles.push({ x: m.x, y: m.y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 30, c: pick(['#fff', '#ffd740', '#b2ff59']), star: Math.random() < 0.5 }); }
     if (m.type === 'boss') { for (let i = 0; i < 40; i++) { const a = Math.random() * 7, s = Math.random() * 6 + 1; particles.push({ x: m.x, y: m.y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 60, c: pick(['#ffd740', '#e040fb', '#fff']), star: true }); } }
@@ -180,6 +208,11 @@ function fire(t) {
   if (t.type === 'archer') { shots.push({ kind: 'arrow', x: cx, y: cy - 10, m, dmg, speed: 9 }); sfx.arrow(); }
   if (t.type === 'ice') { shots.push({ kind: 'ice', x: cx, y: cy - 10, m, dmg, speed: 7, slow: [0.55, 0.45, 0.35][t.level - 1], slowT: [90, 120, 150][t.level - 1] }); sfx.ice(); }
   if (t.type === 'cannon') { shots.push({ kind: 'ball', sx: cx, sy: cy - 8, tx: m.x, ty: m.y, t: 0, dur: 30, dmg, splash: 48 + t.level * 6 }); sfx.boom(); }
+  if (t.type === 'robo') {   // instant laser beam from Robo's eyes
+    effects.push({ kind: 'laser', x1: cx + Math.cos(t.aim) * 4, y1: cy - 25, x2: m.x, y2: m.y, life: 10 });
+    for (let i = 0; i < 5; i++) particles.push({ x: m.x, y: m.y, vx: Math.random() * 3 - 1.5, vy: Math.random() * 3 - 1.5, life: 16, c: pick(['#ff5252', '#40c4ff', '#fff']) });
+    hurt(m, dmg); sfx.laser();
+  }
   if (t.type === 'lightning') {
     const chain = [m], n = 2 + t.level;
     while (chain.length < n) {
@@ -252,12 +285,18 @@ let buttons = [];
 function btn(x, y, w, h, o) { buttons.push({ x, y, w, h, ...o }); }
 function buildButtons() {
   buttons = [];
-  if (scene === 'title') { btn(W / 2 - 150, 390, 300, 70, { label: '▶ Defend the castle!', fn: () => { scene = 'maps'; }, color: '#e53935', big: true }); }
+  if (scene === 'title') {
+    btn(W / 2 - 150, 390, 300, 70, { label: '▶ Defend the castle!', fn: () => { scene = 'maps'; }, color: '#e53935', big: true });
+    btn(686, 236, 52, 52, { label: '◀', fn: () => cycleLook(-1), color: '#7e57c2', big: true });   // tower hat picker
+    btn(862, 236, 52, 52, { label: '▶', fn: () => cycleLook(1), color: '#7e57c2', big: true });
+  }
   else if (scene === 'maps') {
     MAPS.forEach((m, i) => { const open = i === 0 || SAVE.stars[i - 1] > 0; btn(60 + i * 290, 150, 260, 230, { mapCard: i, open, fn: () => { if (open) startMap(i); else sfx.ouch(); } }); });
     btn(20, 20, 120, 44, { label: '◀ Back', fn: () => { scene = 'title'; }, color: '#546e7a' });
   } else if (scene === 'play') {
-    Object.keys(TOWERS).forEach((k, i) => btn(812, 120 + i * 66, 136, 60, { tower: k, fn: () => { placing = placing === k ? null : k; selected = null; } }));
+    Object.keys(TOWERS).forEach((k, i) => btn(812, 108 + i * 56, 136, 52, { tower: k, fn: () => {
+      if (k === 'robo' && !roboOpen()) { placing = null; sfx.ouch(); return say(`🔒 Open the ${BUNDLE_NAMES[2]} in the Bundle Room!`); }
+      placing = placing === k ? null : k; selected = null; } }));
     btn(812, 392, 136, 52, { label: waveActive ? `Wave ${wave}...` : wave >= WAVES ? 'Done!' : '▶ START WAVE', fn: startWave, color: waveActive ? '#78909c' : '#e53935', bold: true });
     btn(812, 452, 64, 40, { label: speed === 1 ? '▶ 1x' : '⏩ 2x', fn: () => { speed = speed === 1 ? 2 : 1; }, color: '#5c6bc0' });
     btn(884, 452, 64, 40, { label: musicOn ? '♪' : '♪̸', fn: () => { musicOn = !musicOn; }, color: '#546e7a' });
@@ -301,7 +340,8 @@ addEventListener('keydown', e => {
   if (e.key === 'Escape') { placing = null; selected = null; }
   if (e.key === 'm' || e.key === 'M') musicOn = !musicOn;
   if (scene === 'play' && e.key === ' ') { e.preventDefault(); startWave(); }
-  if (scene === 'play' && e.key >= '1' && e.key <= '4') placing = Object.keys(TOWERS)[+e.key - 1];
+  if (scene === 'play' && e.key >= '1' && e.key <= '5') { const k = Object.keys(TOWERS)[+e.key - 1]; if (k !== 'robo' || roboOpen()) placing = k; else say(`🔒 Open the ${BUNDLE_NAMES[2]} in the Bundle Room!`); }
+  if (scene === 'title' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'l' || e.key === 'L')) { cycleLook(e.key === 'ArrowLeft' ? -1 : 1); sfx.click(); }   // change tower hat
   if (scene === 'title' && e.key === 'Enter') scene = 'maps';
 });
 
@@ -352,8 +392,50 @@ function drawTower(t, ghost) {
   if (t.type === 'cannon') { circle(cx, cy - 12, 12, '#455a64'); ctx.save(); ctx.translate(cx, cy - 12); ctx.rotate(t.aim); rr(0, -5, 20, 10, 3, '#263238'); ctx.restore(); }
   if (t.type === 'ice') { ctx.fillStyle = '#81d4fa'; ctx.beginPath(); ctx.moveTo(cx, cy - 36); ctx.lineTo(cx + 11, cy - 14); ctx.lineTo(cx, cy - 4); ctx.lineTo(cx - 11, cy - 14); ctx.fill(); ctx.fillStyle = 'rgba(255,255,255,.7)'; ctx.beginPath(); ctx.moveTo(cx, cy - 36); ctx.lineTo(cx + 4, cy - 16); ctx.lineTo(cx - 4, cy - 16); ctx.fill(); }
   if (t.type === 'lightning') { rr(cx - 5, cy - 26, 10, 22, 3, '#7e57c2'); for (let k = 0; k < 3; k++) el(cx, cy - 10 - k * 6, 9, 2.5, '#b39ddb'); circle(cx, cy - 30, 7, `rgba(234,128,252,${0.7 + 0.3 * Math.sin(frame * 0.3)})`); }
+  if (t.type === 'robo') {   // Robo on top of the tower (same Robo as in Robo Jump)
+    const ex = Math.cos(t.aim) * 2.5;
+    rr(cx - 9, cy - 17, 18, 12, 4, '#f5f7ff', '#90a4ae', 1); circle(cx, cy - 11, 2.5, '#2979ff');   // body + chest light
+    rr(cx - 15, cy - 29, 5, 8, 2, '#2979ff'); rr(cx + 10, cy - 29, 5, 8, 2, '#2979ff');                // ear pods
+    rr(cx - 12, cy - 34, 24, 19, 8, '#ffffff', '#90a4ae', 1);                                           // big round head
+    rr(cx - 9, cy - 31, 18, 12, 6, '#111827');                                                          // visor
+    const blink = frame % 170 < 6 ? 0.6 : 2.6;
+    ctx.fillStyle = '#40c4ff'; ctx.beginPath(); ctx.ellipse(cx - 4 + ex, cy - 25, 2.2, blink, 0, 0, Math.PI * 2); ctx.ellipse(cx + 4 + ex, cy - 25, 2.2, blink, 0, 0, Math.PI * 2); ctx.fill();
+  }
+  const hat = t.hat || myLook;
+  if (hat !== 'normal') drawTowerHat(hat, cx, cy + HAT_TOP[t.type]);
   for (let k = 0; k < t.level; k++) text('★', cx - 10 + k * 10, cy + 20, 11, '#ffd740', 'center', '#5d4037');
   ctx.globalAlpha = 1;
+}
+const HAT_TOP = { archer: -31, cannon: -23, ice: -33, lightning: -36, robo: -33 };   // where each tower's head is (from its middle)
+function drawTowerHat(id, x, y) {   // a little hat sitting on a tower; y = top of the tower
+  const ink = '#3e2723';
+  const line = () => { ctx.strokeStyle = ink; ctx.lineWidth = 1.5; ctx.stroke(); };
+  if (id === 'party') {
+    ctx.beginPath(); ctx.moveTo(x - 9, y + 2); ctx.lineTo(x, y - 20); ctx.lineTo(x + 9, y + 2); ctx.closePath();
+    ctx.fillStyle = '#ec407a'; ctx.fill(); line();
+    ctx.save(); ctx.clip(); ctx.fillStyle = '#ffeb3b';
+    for (let k = 0; k < 3; k++) ctx.fillRect(x - 12, y - 14 + k * 6, 24, 2.5);   // stripes
+    ctx.restore();
+    circle(x, y - 20, 3.5, '#69f0ae'); circle(x - 1, y - 21, 1.2, '#fff');      // pompom
+  } else if (id === 'tophat') {
+    ctx.beginPath(); ctx.rect(x - 7, y - 18, 14, 18); ctx.fillStyle = '#212121'; ctx.fill(); line();
+    ctx.fillStyle = '#e53935'; ctx.fillRect(x - 7, y - 5, 14, 3.5);
+    ctx.beginPath(); ctx.roundRect(x - 12, y - 1, 24, 4, 2); ctx.fillStyle = '#212121'; ctx.fill(); line();
+    ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.fillRect(x - 5, y - 16, 2, 9);
+  } else if (id === 'crown') {
+    ctx.beginPath(); ctx.moveTo(x - 11, y + 2); ctx.lineTo(x - 11, y - 9); ctx.lineTo(x - 5.5, y - 3); ctx.lineTo(x, y - 13);
+    ctx.lineTo(x + 5.5, y - 3); ctx.lineTo(x + 11, y - 9); ctx.lineTo(x + 11, y + 2); ctx.closePath();
+    ctx.fillStyle = '#ffd740'; ctx.fill(); line();
+    circle(x, y - 2, 2.2, '#e53935'); circle(x - 6.5, y - 1, 1.6, '#40c4ff'); circle(x + 6.5, y - 1, 1.6, '#40c4ff');
+    circle(x, y - 13, 1.8, '#fff59d'); circle(x - 11, y - 9, 1.6, '#fff59d'); circle(x + 11, y - 9, 1.6, '#fff59d');
+  } else if (id === 'cowboy') {
+    ctx.beginPath(); ctx.moveTo(x - 7, y); ctx.lineTo(x - 6, y - 12); ctx.quadraticCurveTo(x - 3, y - 15, x, y - 11); ctx.quadraticCurveTo(x + 3, y - 15, x + 6, y - 12); ctx.lineTo(x + 7, y); ctx.closePath();
+    ctx.fillStyle = '#a1662f'; ctx.fill(); line();
+    ctx.fillStyle = '#5d4037'; ctx.fillRect(x - 7, y - 4, 14, 3);   // band
+    ctx.beginPath(); ctx.moveTo(x - 16, y - 4); ctx.quadraticCurveTo(x - 13, y + 3, x, y + 2); ctx.quadraticCurveTo(x + 13, y + 3, x + 16, y - 4);
+    ctx.quadraticCurveTo(x + 12, y + 6, x, y + 5); ctx.quadraticCurveTo(x - 12, y + 6, x - 16, y - 4); ctx.closePath();
+    ctx.fillStyle = '#8d5524'; ctx.fill(); line();   // curly brim
+  }
 }
 function drawMonster(m) {
   const x = m.x, y = m.y + Math.sin(m.wob) * (m.type === 'bat' || m.type === 'ghost' ? 4 : 1.5), s = m.size;
@@ -389,11 +471,18 @@ function drawButtons() {
       continue;
     }
     if (b.tower) {
-      const info = TOWERS[b.tower], on = placing === b.tower, can = gold >= info.cost;
-      rr(b.x, b.y, b.w, b.h, 10, on ? '#fff59d' : can ? '#efebe9' : '#8d8d8d', on ? '#ff9800' : hover ? '#ffb300' : '#5d4037', on ? 4 : 2);
-      ctx.save(); ctx.translate(b.x + 26 - 20, b.y + 34 - FY - 20); drawTower({ type: b.tower, x: 0, y: 0, level: 0, aim: -0.5 }, false); ctx.restore();
-      text(info.name, b.x + 88, b.y + 24, 15, '#3e2723', 'center', null);
-      text(`🪙 ${info.cost}`, b.x + 88, b.y + 46, 15, can ? '#e65100' : '#424242', 'center', null);
+      const info = TOWERS[b.tower], on = placing === b.tower, can = gold >= info.cost, locked = b.tower === 'robo' && !roboOpen();
+      rr(b.x, b.y, b.w, b.h, 10, locked ? '#6d6d6d' : on ? '#fff59d' : can ? '#efebe9' : '#8d8d8d', on ? '#ff9800' : hover ? '#ffb300' : '#5d4037', on ? 4 : 2);
+      ctx.save(); ctx.translate(b.x + 26 - 20, b.y + 36 - FY - 20); drawTower({ type: b.tower, x: 0, y: 0, level: 0, aim: -0.5, hat: 'normal' }, locked); ctx.restore();
+      if (locked) {   // MEGA Robo Tower Pack not opened yet
+        text('🔒', b.x + 26, b.y + 34, 22, '#fff', 'center', null);
+        text('Robo Laser', b.x + 90, b.y + 18, 14, '#fff', 'center', null);
+        text('Open the MEGA', b.x + 90, b.y + 33, 10, '#ffe082', 'center', null);
+        text('Robo Tower Pack!', b.x + 90, b.y + 45, 10, '#ffe082', 'center', null);
+        continue;
+      }
+      text(info.name, b.x + 88, b.y + 22, 15, '#3e2723', 'center', null);
+      text(`🪙 ${info.cost}`, b.x + 88, b.y + 42, 15, can ? '#e65100' : '#424242', 'center', null);
       continue;
     }
     rr(b.x, b.y + 4, b.w, b.h, 14, 'rgba(0,0,0,.3)'); rr(b.x, b.y - (hover ? 2 : 0), b.w, b.h, 14, b.color || '#5c6bc0', '#fff', 2.5);
@@ -411,6 +500,16 @@ function draw() {
       for (let k = 0; k < 4; k++) { fake.type = ['slime', 'bat', 'troll', 'ghost'][k]; fake.size = MONSTERS[fake.type].size; fake.x = ((frame * 0.8 + k * 70) % 330); fake.y = 410 + (k % 2) * 14; fake.wob = frame * 0.15 + k; drawMonster(fake); }
       text('CASTLE DEFENSE', W / 2, 90, 70, '#ffd740', 'center', '#5d4037');
       text('Build towers to stop the silly monsters!', W / 2, 135, 24, '#fff', 'center', '#5d4037');
+      // tower hat picker: a big tower wearing the hat
+      const LK = LOOKS[lookView], open = lookOpen(LK);
+      rr(676, 158, 248, 232, 18, 'rgba(255,255,255,.55)', '#5d4037', 3);
+      text('Tower Hats', 800, 186, 22, '#5d4037', 'center', null);
+      ctx.save(); ctx.translate(800, 308); ctx.scale(1.9, 1.9); ctx.translate(-20, -FY - 20);
+      drawTower({ type: 'archer', x: 0, y: 0, level: 0, aim: Math.sin(frame * 0.03), hat: LK.id }, !open); ctx.restore();
+      if (!open) text('🔒', 800, 296, 40, '#fff', 'center', null);
+      if (open) text(`${LK.name}${LK.id === myLook ? ' ✔' : ''}`, 800, 362, 20, '#2e7d32', 'center', null);
+      else { text(`🔒 ${LK.name}: Open the`, 800, 356, 15, '#5d4037', 'center', null); text(`${BUNDLE_NAMES[LK.b]} in the Bundle Room!`, 800, 375, 15, '#5d4037', 'center', null); }
+      text('◀ ▶ change hat', 800, 412, 16, '#fff', 'center', '#5d4037');
     } else text('Pick a land to defend!', W / 2, 90, 48, '#ffd740', 'center', '#5d4037');
     drawButtons(); drawParticles(); return;
   }
@@ -432,6 +531,9 @@ function draw() {
   }
   for (const e of effects) {
     if (e.kind === 'boom') { ctx.globalAlpha = e.life / 18; circle(e.x, e.y, e.r * (1 - e.life / 24), '#ffab40'); circle(e.x, e.y, e.r * 0.6 * (1 - e.life / 24), '#ffeb3b'); ctx.globalAlpha = 1; }
+    if (e.kind === 'laser') { const a = e.life / 10; ctx.lineCap = 'round';
+      ctx.strokeStyle = `rgba(255,82,82,${a * 0.6})`; ctx.lineWidth = 7; ctx.beginPath(); ctx.moveTo(e.x1, e.y1); ctx.lineTo(e.x2, e.y2); ctx.stroke();
+      ctx.strokeStyle = `rgba(255,255,255,${a})`; ctx.lineWidth = 2.5; ctx.stroke(); ctx.lineCap = 'butt'; circle(e.x2, e.y2, 6 * a + 2, `rgba(255,138,128,${a})`); }
     if (e.kind === 'zap') { ctx.strokeStyle = `rgba(234,128,252,${e.life / 10})`; ctx.lineWidth = 3; ctx.beginPath(); e.pts.forEach(([x, y], k) => { if (!k) ctx.moveTo(x, y); else { const [px, py] = e.pts[k - 1]; ctx.lineTo((px + x) / 2 + (Math.random() - .5) * 14, (py + y) / 2 + (Math.random() - .5) * 14); ctx.lineTo(x, y); } }); ctx.stroke(); }
   }
   drawParticles();
