@@ -23,6 +23,22 @@
   // tap-only games get no START / BACK pills unless they ask for them
   const cfg = Object.assign({ dpad: false, start: hasPad ? 'Enter' : null, back: hasPad ? 'Escape' : null }, T);
   const forced = /[?&]touch=1/.test(location.search);
+
+  // ---------- 👾 Glitch Mode: a secret from the Game Factory book's Glitch Hole makes every game look glitchy ----------
+  let glitchOn = false; try { glitchOn = localStorage.getItem('gfGlitch') === 'true'; } catch (_) {}
+  if (glitchOn && !/(arcade|index)\.html$|\/$/.test(location.pathname)) {
+    const st = document.createElement('style');
+    st.textContent = `canvas { animation: tpGlitch 3.7s infinite steps(1); }
+      @keyframes tpGlitch { 0%, 70%, 100% { transform: none; filter: none; }
+        72% { transform: translate(-6px, 2px) skewX(4deg); filter: drop-shadow(5px 0 #ff00ff) drop-shadow(-5px 0 #00e5ff); }
+        74% { transform: translate(5px, -2px); filter: hue-rotate(120deg); }
+        76% { transform: none; filter: none; }
+        88% { transform: translate(0, 3px) scaleY(.98); filter: drop-shadow(-4px 0 #76ff03) contrast(1.4); }
+        89% { transform: none; filter: none; } }
+      html::after { content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 99998;
+        background: repeating-linear-gradient(0deg, rgba(0,0,0,.12) 0 2px, transparent 2px 4px); }`;
+    document.head.appendChild(st);
+  }
   const isTouch = forced || (navigator.maxTouchPoints > 0 && matchMedia('(pointer: coarse)').matches);
 
   // ---------- pretend key presses ----------

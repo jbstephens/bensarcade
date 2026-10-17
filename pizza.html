@@ -17,6 +17,7 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 // ---------- Sound ----------
 function bankCoin(n = 1) { try { const c = JSON.parse(localStorage.getItem('gfCoins') || '{}'); c.pizza = (c.pizza || 0) + n; localStorage.setItem('gfCoins', JSON.stringify(c)); } catch (_) {} }   // coins for the Bundle Room in the Game Factory book
+function labClue(n) { try { const c = JSON.parse(localStorage.getItem('gfLabClues') || '{}'); c[n] = 1; localStorage.setItem('gfLabClues', JSON.stringify(c)); } catch (_) {} }   // Mad Science Lab clue seen (Game Factory book)
 function bundleHas(j) { try { return (JSON.parse(localStorage.getItem('gfBundles') || '{}').opened || []).includes('pizza-' + j); } catch (_) { return false; } }   // unlocked in the Bundle Room
 // ---------- Chef looks (hats + Chef Robo from the Bundle Room) ----------
 const LOOKS = [
@@ -82,7 +83,7 @@ const TOPS = {
   moonrock: { name: 'Moon Rocks', day: 3 }, stars: { name: 'Star Bits', day: 3 }, eyes: { name: 'Googly Eyes', day: 4 },
 };
 const GOALS = [40, 60, 80, 100, 120];
-const goalFor = d => d <= GOALS.length ? GOALS[d - 1] : 120 + (d - GOALS.length) * 20;
+const goalFor = d => d <= GOALS.length ? GOALS[d - 1] : Math.min(140, 120 + (d - GOALS.length) * 5);   // after day 5 the goal only grows a tiny bit (Ben found day 7 too hard)
 const DAY_NAMES = ['Grand Opening!', 'Comet Sauce Day', 'Nebula Night', 'Googly Eye Day', 'Super Busy Saturday'];
 
 let S = { day: 1, coins: 0, upgrades: { oven: false, chairs: false, tips: false, sign: false }, best: 0 };
@@ -120,7 +121,7 @@ function spawnCustomer() {
   const free = [0, 1, 2].filter(i => i < maxSlots && !customers[i]);
   if (!free.length) return;
   const i = pick(free), kind = pick(ALIENS);
-  const patience = (S.upgrades.chairs ? 70 : 52) * 60;
+  const patience = ((S.upgrades.chairs ? 70 : 52) + (S.day > 5 ? 12 : 0)) * 60;   // busy days 6+ get extra-patient aliens
   customers[i] = { kind, name: NAMES[kind], color: pick(['#76ff03', '#ff80ab', '#40c4ff', '#ffd740', '#b388ff', '#ff9e40']), order: makeOrder(), patience, max: patience, y: -120, state: 'arrive', t: 0, face: 'happy' };
   sfx.arrive();
 }
@@ -210,7 +211,7 @@ function updatePlay() {
 function endDay() {
   const goal = goalFor(S.day);
   dayWon = earned >= goal;
-  if (dayWon) { S.day++; sfx.win(); confetti(); } else sfx.sad();
+  if (dayWon) { S.day++; sfx.win(); confetti(); labClue(3); } else sfx.sad();   // 🧪 secret lab clue on the day-complete screen
   if (earned > S.best) S.best = earned;
   save(); scene = 'dayEnd';
 }
@@ -438,6 +439,32 @@ function drawButton(b) {
   text(b.label, b.x + b.w / 2, b.y + b.h / 2 + (b.big ? 10 : 7) - (hover ? 2 : 0), b.big ? 28 : 18, '#fff');
 }
 
+// 🧪 Mad Science Lab clue: a glowing, bubbly panel (a flask + bubbles drawn with shapes)
+function drawLabClue(cx, cy, w, h, msg, liquid, t) {
+  const x = cx - w / 2, y = cy - h / 2, glow = 0.5 + 0.5 * Math.sin(t * 0.08), k = h / 54;
+  ctx.save();
+  ctx.shadowColor = liquid; ctx.shadowBlur = 14 + glow * 16;
+  rr(x, y, w, h, h / 2, 'rgba(30,14,56,.93)');
+  ctx.shadowBlur = 0;
+  rr(x, y, w, h, h / 2, null, liquid, 3 + glow * 2);
+  for (let i = 0; i < 9; i++) {                     // bubbles floating up inside the panel
+    const bx = x + 20 + ((i * 97) % (w - 40)), by = y + h - ((t * 0.6 + i * 23) % h);
+    ctx.globalAlpha = 0.35; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(bx, by, 3 + (i % 3) * 2, 0, 7); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.translate(x + h * 0.55, cy + 2 * k); ctx.scale(k, k);   // the flask
+  const flask = () => { ctx.beginPath(); ctx.moveTo(-4, -20); ctx.lineTo(-4, -10); ctx.lineTo(-15, 14); ctx.lineTo(15, 14); ctx.lineTo(4, -10); ctx.lineTo(4, -20); };
+  flask(); ctx.fillStyle = 'rgba(255,255,255,.25)'; ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-9, 1); ctx.lineTo(-15, 14); ctx.lineTo(15, 14); ctx.lineTo(9, 1); ctx.closePath(); ctx.fillStyle = liquid; ctx.fill();
+  flask(); ctx.lineWidth = 2; ctx.strokeStyle = '#fff'; ctx.stroke();
+  for (let i = 0; i < 3; i++) circle(-5 + i * 5, -24 - ((t * 0.5 + i * 9) % 18), 2.5 + i * 0.5, liquid);
+  ctx.restore();
+  let size = 22; const room = w - h * 1.5;
+  ctx.font = `bold ${size}px "Comic Sans MS", "Chalkboard SE", sans-serif`;
+  const mw = ctx.measureText(msg).width; if (mw > room) size = Math.max(12, Math.floor(size * room / mw));
+  text(msg, cx + h * 0.4, cy + size * 0.35, size, '#fff');
+}
 function drawSpaceBg() {
   const g = ctx.createLinearGradient(0, 0, 0, 230); g.addColorStop(0, '#0b1026'); g.addColorStop(1, '#3a1d6e');
   ctx.fillStyle = g; ctx.fillRect(0, 0, W, 230);
@@ -461,9 +488,11 @@ function draw() {
   }
   if (scene === 'dayEnd') {
     drawSpaceBg(); ctx.fillStyle = '#2a1650'; ctx.fillRect(0, 230, W, H);
-    text(dayWon ? 'DAY COMPLETE! 🎉' : 'Almost!', W / 2, 80, 56, dayWon ? '#69f0ae' : '#ffd740');
-    text(`You earned ${earned} coins and served ${served} pizzas!`, W / 2, 130, 26, '#fff');
-    text(dayWon ? 'The aliens LOVE your pizza shop!' : `You needed ${goalFor(S.day)} coins. You can do it!`, W / 2, 170, 22, '#e1bee7', 'center', null);
+    const up = dayWon ? 14 : 0;   // scoot up a bit to make room for the secret lab clue
+    text(dayWon ? 'DAY COMPLETE! 🎉' : 'Almost!', W / 2, 80 - up, 56, dayWon ? '#69f0ae' : '#ffd740');
+    text(`You earned ${earned} coins and served ${served} pizzas!`, W / 2, 130 - up * 1.4, 26, '#fff');
+    text(dayWon ? 'The aliens LOVE your pizza shop!' : `You needed ${goalFor(S.day)} coins. You can do it!`, W / 2, 170 - up * 1.6, 22, '#e1bee7', 'center', null);
+    if (dayWon) drawLabClue(W / 2, 192, 700, 42, '🧪 SECRET LAB CLUE 3 of 3: The THIRD potion is ORANGE! 🟠', '#ff9100', frame);
     text(`🪙 ${S.coins} coins to spend on upgrades:`, W / 2, 238, 20, '#ffd740', 'center', null);
     drawAllButtons(); drawParticles(); return;
   }
