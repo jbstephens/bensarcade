@@ -14,7 +14,8 @@
 <canvas id="game" width="960" height="520"></canvas>
 <script>
 'use strict';
-const C = document.getElementById('game'), ctx = C.getContext('2d');
+const C = document.getElementById('game');
+let ctx = C.getContext('2d');   // 'let' so a gold hero can be drawn on a little side canvas
 const W = 960, H = 520, FLOOR = 450, LEFT = 50, RIGHT = 910;
 let frame = 0;
 
@@ -24,6 +25,53 @@ const ri = (a, b) => Math.floor(rand(a, b + 1));
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const pick = a => a[Math.floor(Math.random() * a.length)];
 function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }
+function sticker(id) { try { const s = JSON.parse(localStorage.getItem('gfStickers') || '{}'); if (!s[id]) { s[id] = 1; localStorage.setItem('gfStickers', JSON.stringify(s)); stickerNew = 90; } } catch (_) {} }   // for the Sticker Book in the Game Factory book
+let stickerNew = 0;
+// ---------- ✨ Gold: when all 5 secret golden keys are found, the hero you pick can be shiny gold ----------
+function goldOpen() { try { return Object.keys(JSON.parse(localStorage.getItem('gfKeys') || '{}')).length >= 5; } catch (_) { return false; } }   // all 5 secret keys found → gold heroes
+let goldOn = false, goldUnlocked = goldOpen(), goldHintT = 0;
+try { goldOn = !!(JSON.parse(localStorage.getItem('gfGold') || '{}') || {}).battle; } catch (_) {}
+function saveGold() { try { const o = JSON.parse(localStorage.getItem('gfGold') || '{}') || {}; o.battle = goldOn; localStorage.setItem('gfGold', JSON.stringify(o)); } catch (_) {} }
+const isGold = () => goldOn && goldUnlocked;
+function toggleGold() { goldUnlocked = goldOpen(); if (!goldUnlocked) { goldHintT = 150; sfx.click(); return; } goldOn = !goldOn; saveGold(); sfx.pick(); }
+const goldCv = document.createElement('canvas'); goldCv.width = goldCv.height = 320;
+const goldCtx = goldCv.getContext('2d');
+// turn every colour into a gold shade (dark bits like eyes stay dark), plus a moving shine streak
+function goldify(g) {
+  const im = g.getImageData(0, 0, 320, 320), d = im.data, mix = (a, b, t) => a + (b - a) * t;
+  for (let i = 0; i < d.length; i += 4) {
+    if (!d[i + 3]) continue;
+    const L = (d[i] * 0.3 + d[i + 1] * 0.59 + d[i + 2] * 0.11) / 255;
+    let r, gg, b;
+    if (L < 0.2) { r = 70 + L * 250; gg = 40 + L * 150; b = 10; }
+    else if (L < 0.5) { const t = (L - 0.2) / 0.3; r = 255; gg = mix(143, 179, t); b = 0; }                // #ff8f00 → #ffb300
+    else if (L < 0.8) { const t = (L - 0.5) / 0.3; r = 255; gg = mix(179, 215, t); b = mix(0, 64, t); }    // #ffb300 → #ffd740
+    else { const t = (L - 0.8) / 0.2; r = 255; gg = mix(215, 250, t); b = mix(64, 220, t); }               // → white highlight
+    d[i] = r; d[i + 1] = gg; d[i + 2] = b;
+  }
+  g.putImageData(im, 0, 0);
+  const sx = (frame * 5) % 520 - 100;
+  g.save(); g.globalCompositeOperation = 'source-atop'; g.globalAlpha = 0.55; g.fillStyle = '#fff';
+  g.beginPath(); g.moveTo(sx, 0); g.lineTo(sx + 26, 0); g.lineTo(sx - 70, 320); g.lineTo(sx - 96, 320); g.closePath(); g.fill(); g.restore();
+}
+// draw a hero (ctx is already moved to their feet and scaled); R = how many screen pixels one hero unit is
+function drawHeroBody(d, p, R, gold) {
+  if (!gold || !goldCtx || !goldCtx.getImageData) { d.draw(p); return; }
+  const main = ctx;
+  goldCtx.setTransform(1, 0, 0, 1, 0, 0); goldCtx.clearRect(0, 0, 320, 320);
+  goldCtx.setTransform(R, 0, 0, R, 160, 280);
+  ctx = goldCtx;
+  try { d.draw(p); } finally { ctx = main; goldCtx.setTransform(1, 0, 0, 1, 0, 0); }
+  goldify(goldCtx);
+  ctx.drawImage(goldCv, -160 / R, -280 / R, 320 / R, 320 / R);
+  const u = 1 / d.sc;                                     // little twinkles around the hero now and then
+  for (let k = 0; k < 2; k++) {
+    const t = (frame + k * 37) % 60; if (t > 16) continue;
+    const n = Math.floor((frame + k * 37) / 60) * 5 + k * 3, a = n * 2.4;
+    star(Math.cos(a) * 45 * u, -50 * u + Math.sin(a) * 55 * u, 9 * u * Math.sin(t / 16 * Math.PI), k ? '#fff' : '#fff59d');
+  }
+}
+const STICKER_IDS = { gloop: 'king-gloop', pinch: 'captain-pinch', teddy: 'mecha-teddy', worm: 'bookworm-king', glitch: 'big-glitch', dragon: 'dragon-king', zorg: 'emperor-zorg', king: 'mega-robo-king', factory: 'factory-glitch' };
 
 function rrPath(x, y, w, h, r) {
   r = Math.max(0, Math.min(r, w / 2, h / 2));
@@ -509,7 +557,7 @@ function hurtVillain(dmg, x, y, big = false) {
   pop(x + rand(-20, 20), y - 30, big ? 'KA-BOOM!' : pick(BONKS), big ? '#ff4081' : '#ffeb3b', big ? 44 : 30);
   F.shake = Math.max(F.shake, big ? 16 : 5);
   big ? sfx.bigbonk() : sfx.bonk();
-  if (v.hp <= 0) { F.phase = 'ko'; F.t = 0; v.ai = 'ko'; v.pose = 'dizzy'; v.hidden = false; v.y = FLOOR; F.shots = []; F.haz = []; sfx.ko(); F.shake = 20; }
+  if (v.hp <= 0) { F.phase = 'ko'; F.t = 0; v.ai = 'ko'; v.pose = 'dizzy'; v.hidden = false; v.y = FLOOR; F.shots = []; F.haz = []; sfx.ko(); F.shake = 20; sticker('battle-' + (STICKER_IDS[v.def.id] || v.def.id)); }
   return true;
 }
 function hurtHero(dmg, fromX) {
@@ -811,7 +859,7 @@ function drawHeroFighter(h) {
   if (h.pose === 'ko') ctx.rotate(-1.3 * Math.min(1, F.t / 20));
   if (h.pose === 'hurt') ctx.rotate(-0.2);
   if (h.inv > 0 && frame % 6 < 3 && h.hp > 0) ctx.globalAlpha = 0.45;
-  d.draw({ pose: h.pose === 'dance' ? 'walk' : h.pose, t: frame, k: h.k });
+  drawHeroBody(d, { pose: h.pose === 'dance' ? 'walk' : h.pose, t: frame, k: h.k }, sc, isGold());
   ctx.restore();
   if (h.pose === 'ko') for (let i = 0; i < 3; i++) { const a = frame * 0.1 + i * 2.1; star(h.x + Math.cos(a) * 26, h.y - 60 + Math.sin(a) * 8, 9, '#ffeb3b'); }
 }
@@ -939,7 +987,7 @@ let scene = 'title', sceneT = 0, sel = 0, btns = [], paused = false;
 let mode = 'tower', heroPick = 0, vilPick = 0;
 const tower = { hero: null, list: [], i: 0 };
 const TOWER_ORDER = ['gloop', 'pinch', 'worm', 'teddy', 'glitch', 'dragon', 'zorg', 'king'];
-function go(s) { scene = s; sceneT = 0; sel = 0; paused = false; if (s !== 'fight') fast = false; }
+function go(s) { goldUnlocked = goldOpen(); scene = s; sceneT = 0; sel = 0; paused = false; if (s !== 'fight') fast = false; }
 function allVillains() { return save.champ ? VILLAINS.concat([BOSS]) : VILLAINS; }
 function startTower(hero) {
   tower.hero = hero; tower.i = 0;
@@ -1012,6 +1060,8 @@ function tapAnywhere() { if (scene === 'vs' && sceneT > 20) startFight(nextHero(
 // ---------- update ----------
 function update() {
   frame++; sceneT++;
+  if (stickerNew > 0) stickerNew--;
+  if (goldHintT > 0) goldHintT--;
   if (scene === 'fight' && F && !paused) updateFight();
   if (scene === 'vs' && sceneT === 150) startFight(nextHero(), nextVillain(), mode);
   if (scene === 'champ' && sceneT % 40 === 1) for (let i = 0; i < 12; i++) confetti.push({ x: rand(0, W), y: -10, vx: rand(-1, 1), vy: rand(2, 5), c: pick(['#ff4081', '#ffea00', '#00e5ff', '#76ff03', '#e040fb']), r: rand(0, 7) });
@@ -1021,7 +1071,7 @@ function update() {
 let confetti = [];
 
 // ---------- mini portraits ----------
-function miniHero(d, x, y, size = 1, pose = 'idle') { ctx.save(); ctx.translate(x, y); ctx.scale(d.sc * size, d.sc * size); d.draw({ pose, t: frame, k: 0 }); ctx.restore(); }
+function miniHero(d, x, y, size = 1, pose = 'idle', gold = false) { ctx.save(); ctx.translate(x, y); ctx.scale(d.sc * size, d.sc * size); drawHeroBody(d, { pose, t: frame, k: 0 }, d.sc * size, gold); ctx.restore(); }
 function miniVillain(d, x, y, hgt, face = 1) { const s = hgt / d.h; ctx.save(); ctx.translate(x, y); ctx.scale(d.sc * s * face, d.sc * s); d.draw({ pose: 'idle', t: frame }); ctx.restore(); }
 function backBtn() { button(20, 20, 120, 50, '◀ BACK', '#546e7a', () => go('title'), 22); }
 function drawTitle() {
@@ -1047,13 +1097,16 @@ function drawHeroSel() {
     const col = i % 4, row = Math.floor(i / 4), x = 80 + col * 205, y = 86 + row * 168;
     button(x, y, 185, 150, (bx, by) => {
       ctx.save(); rrPath(bx + 4, by + 4, 177, 142, 14); ctx.clip();
-      miniHero(d, bx + 92, by + 112, d.id === 'ninja' || d.id === 'wizard' ? 0.75 : 0.85, i === sel ? 'walk' : 'idle'); ctx.restore();
+      miniHero(d, bx + 92, by + 112, d.id === 'ninja' || d.id === 'wizard' ? 0.75 : 0.85, i === sel ? 'walk' : 'idle', isGold() && i === sel); ctx.restore();
       text(d.name, bx + 92, by + 124, 20); text('from ' + d.game, bx + 92, by + 142, 13, '#ffd740');
       if (save.towerWins[d.id]) text('🏆', bx + 160, by + 22, 22);
     }, d.color, () => { heroPick = i; if (mode === 'tower') startTower(d); else { vilPick = 0; go('vilSel'); } });
   });
   const d = HEROES[sel] || HEROES[heroPick];
   if (HEROES[sel]) text('X = ' + d.special + '   •   C = ' + d.superName, W / 2, 448, 22, '#fff');
+  // ✨ Gold on/off (needs all 5 golden keys) - tap it or press G
+  button(W - 210, 456, 190, 50, goldUnlocked ? (isGold() ? '✨ GOLD: ON' : '✨ GOLD: OFF') : '🔒 ✨ GOLD', goldUnlocked ? (isGold() ? '#ffb300' : '#6d4c41') : '#455a64', toggleGold, 20);
+  if (goldHintT > 0) { rr(W / 2 - 290, 60, 580, 44, 14, 'rgba(0,0,0,.85)'); text('🔒 Find all 5 golden keys to unlock!', W / 2, 82, 22, '#ffd740'); }
   text(mode === 'tower' ? 'Villain Tower: beat every villain from the OTHER games!' : 'Quick Battle: pick a hero, then pick a villain!', W / 2, 482, 18, '#b3e5fc');
   backBtn();
 }
@@ -1085,7 +1138,7 @@ function drawTower() {
     if (d.boss) text('BOSS', x, 258, 16, '#ffea00');
   });
   const d = tower.list[tower.i];
-  miniHero(tower.hero, 140, 440, 0.9, 'idle');
+  miniHero(tower.hero, 140, 440, 0.9, 'idle', isGold());
   text('Next: ' + d.name, W / 2, 312, 34, '#fff');
   text('from ' + d.game, W / 2, 348, 20, '#ffd740');
   button(W / 2 - 130, 380, 260, 64, '⚔️ FIGHT!', '#e53935', () => { go('vs'); sfx.vs(); }, 30);
@@ -1096,7 +1149,7 @@ function drawVs() {
   const g = ctx.createLinearGradient(0, 0, W, 0); g.addColorStop(0, h.color); g.addColorStop(0.5, '#1b1b2f'); g.addColorStop(1, v.color);
   ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
   for (let i = 0; i < 14; i++) { ctx.fillStyle = 'rgba(255,255,255,.08)'; ctx.fillRect(((i * 90 + frame * 6) % (W + 200)) - 100, 0, 30, H); }
-  miniHero(h, -100 + 340 * k, 380, 1.3, 'idle');
+  miniHero(h, -100 + 340 * k, 380, 1.3, 'idle', isGold());
   miniVillain(v, W + 100 - 360 * k, 400, 230, -1);
   text(h.name, 240, 430, 34); text('from ' + h.game, 240, 465, 18, '#ffd740');
   text(v.name, 720, 440, 34); text('from ' + v.game, 720, 475, 18, '#ffd740');
@@ -1140,7 +1193,7 @@ function drawChamp() {
   text('🏆 CHAMPION! 🏆', W / 2, 80, 70, '#ffea00', 'center', '#d50000');
   text(tower.hero.name + ' beat the whole Villain Tower!', W / 2, 150, 32, '#fff');
   text('The Factory Glitch went POOF! The factory is safe!', W / 2, 192, 22, '#b3e5fc');
-  ctx.save(); ctx.translate(0, -Math.abs(Math.sin(frame * 0.12)) * 30); miniHero(tower.hero, W / 2, 400, 1.3, 'walk'); ctx.restore();
+  ctx.save(); ctx.translate(0, -Math.abs(Math.sin(frame * 0.12)) * 30); miniHero(tower.hero, W / 2, 400, 1.3, 'walk', isGold()); ctx.restore();
   button(W / 2 - 130, 430, 260, 60, '🏠 MENU', '#43a047', () => go('title'), 26);
 }
 function draw() {
@@ -1152,6 +1205,7 @@ function draw() {
   else if (scene === 'vs') drawVs();
   else if (scene === 'fight') { drawFight(); drawFightOverlay(); }
   else if (scene === 'champ') drawChamp();
+  if (stickerNew > 0) text('⭐ NEW STICKER! ⭐', W / 2, 120, 40, '#ffea00');
   if (sel >= btns.length) sel = Math.max(0, btns.length - 1);
 }
 
@@ -1172,6 +1226,7 @@ addEventListener('keydown', e => {
   if (held[k]) return;            // ignore auto-repeat
   held[k] = true;
   if (k === 'm') { toggleMusic(); return; }
+  if (k === 'g' && scene === 'heroSel') { toggleGold(); return; }   // G = gold on/off
   keyPress(k);
 });
 addEventListener('keyup', e => { held[keyName(e.key)] = false; });

@@ -9,6 +9,25 @@
 </style>
 <canvas id="game" width="960" height="520"></canvas>
 <script>
+function sticker(id) { try { const s = JSON.parse(localStorage.getItem('gfStickers') || '{}'); if (!s[id]) { s[id] = 1; localStorage.setItem('gfStickers', JSON.stringify(s)); stickerNew = 90; } } catch (_) {} }   // for the Sticker Book in the Game Factory book
+let stickerNew = 0;
+function foundKey() { try { const k = JSON.parse(localStorage.getItem('gfKeys') || '{}'); if (!k['bookcat']) { k['bookcat'] = 1; localStorage.setItem('gfKeys', JSON.stringify(k)); } return Object.keys(k).length; } catch (_) { return 1; } }
+function hasKey() { try { return !!JSON.parse(localStorage.getItem('gfKeys') || '{}')['bookcat']; } catch (_) { return false; } }
+let goldKey = null, keyBanner = 0, keyCount = 0;     // the secret golden key (page 1, way up high to the left of the start)
+// ✨ Gold Pages: find all 5 secret golden keys → play as a shiny gold cat (pick it on the title page: tap or press G)
+function goldOpen() { try { return Object.keys(JSON.parse(localStorage.getItem('gfKeys') || '{}')).length >= 5; } catch (_) { return false; } }   // all 5 secret keys found → gold heroes
+let goldOn = false, goldDraw = false, goldNope = 0;   // goldOn = picked gold, goldDraw = drawing in gold right now
+try { goldOn = !!(JSON.parse(localStorage.getItem('gfGold') || '{}') || {}).bookcat; } catch (_) {}
+const isGold = () => goldOn && goldOpen();
+const gc = (c, g) => goldDraw ? g : c;                 // normal color, or the gold one while drawing Gold Pages
+const GOLD_BTNS = [{ x: 112, y: 420, w: 150, h: 40, gold: false }, { x: 278, y: 420, w: 170, h: 40, gold: true }];   // Normal / ✨ Gold buttons on the title page
+function setGold(on) {
+  if (on && !goldOpen()) { goldNope = 120; try { sfx.blip(false); } catch (_) {} return; }
+  if (goldOn === on) return;
+  goldOn = on;
+  try { const o = JSON.parse(localStorage.getItem('gfGold') || '{}') || {}; o.bookcat = goldOn; localStorage.setItem('gfGold', JSON.stringify(o)); } catch (_) {}
+  try { sfx.coin(); } catch (_) {}
+}
 const C = document.getElementById('game'), ctx = C.getContext('2d');
 const W = 960, H = 520, T = 40, ROWS = 13, LEN = 96;
 let LW = LEN;   // how wide the current page is (the boss page is just one screen)
@@ -80,6 +99,7 @@ function rng(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let
 let tiles, items, enemies, bubbles, gate, portal, cat, cam, lv, P, particles = [], arrows = [], hurtFlash = 0, levelTime = 0, collected = 0, totalItems = 0;
 function buildLevel(i) {
   P = PAGES[i]; lv = i; boss = null; inks = []; LW = LEN;
+  goldKey = i === 0 ? { x: 1 * T, y: 6 * T + 10, got: hasKey() } : null;
   if (P.boss) return buildBoss();
   const R = rng(1000 + i * 77), ri = (a, b) => a + Math.floor(R() * (b - a + 1));
   tiles = Array.from({ length: ROWS }, () => Array(LEN).fill(0));
@@ -165,7 +185,7 @@ function updateBoss() {
     if (b.hurt === 0 && c.vy > 0 && Math.abs(cx - b.x) < 42 && bottom > b.headY - 40 && bottom - c.vy <= b.headY) {
       b.hp--; b.hurt = 45; c.vy = -11.5; c.jumps = 1; sfx.stomp(); sfx.roar();
       for (let k = 0; k < 16; k++) particles.push({ x: b.x, y: b.headY - 20, vx: Math.random() * 8 - 4, vy: -Math.random() * 6, life: 35, c: pick(['#ffd740', '#fff', '#9ccc65']) });
-      if (b.hp <= 0) { b.state = 'defeated'; b.t = 0; inks = []; sfx.win(); }
+      if (b.hp <= 0) { b.state = 'defeated'; b.t = 0; inks = []; sfx.win(); sticker('bookcat-bookworm-king'); }
       else { b.state = 'dive'; b.t = 0; toast(b.hp <= 2 ? 'He is getting ANGRY! Keep going!' : `BONK! ${b.hp} more!`); }
     }   // touching his body is safe, only the ink blobs hurt!
   }
@@ -235,6 +255,14 @@ addEventListener('keydown', e => {
   keys[e.key] = true;
   if ([' ', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) e.preventDefault();
   if (e.key === 'm' || e.key === 'M') musicOn = !musicOn;
+  if ((e.key === 'g' || e.key === 'G') && scene === 'title' && !e.repeat) setGold(!isGold());   // ✨ Normal / Gold
+});
+C.addEventListener('mousedown', e => {                 // tap Normal / ✨ Gold on the title page (touches become mouse events)
+  if (scene !== 'title') return;
+  audio();
+  const r = C.getBoundingClientRect();
+  const mx = (e.clientX - r.left) * W / r.width, my = (e.clientY - r.top) * H / r.height;
+  for (const b of GOLD_BTNS) if (mx >= b.x && mx <= b.x + b.w && my >= b.y - 6 && my <= b.y + b.h + 6) setGold(b.gold);
 });
 addEventListener('keyup', e => { keys[e.key] = false; });
 
@@ -263,6 +291,12 @@ function updatePlay() {
   if (c.y > H + 40) { hurtCat(); Object.assign(c, { x: c.safeX - c.face * 40, y: c.safeY - 20, vx: 0, vy: 0 }); if (hit(c)) c.x = c.safeX; }
   // items
   for (const it of items) if (!it.got && Math.abs(it.x - (c.x + 15)) < 24 && Math.abs(it.y - (c.y + 14)) < 26) { it.got = true; collected++; sfx.coin(); for (let k = 0; k < 6; k++) particles.push({ x: it.x, y: it.y, vx: Math.random() * 4 - 2, vy: -Math.random() * 3, life: 25, c: '#ffd740' }); }
+  // the secret golden key
+  if (goldKey && !goldKey.got && Math.abs(goldKey.x - (c.x + 15)) < 30 && Math.abs(goldKey.y - (c.y + 14)) < 32) {
+    goldKey.got = true; keyCount = foundKey(); keyBanner = 150;
+    [784, 988, 1175, 1568, 1319, 1568].forEach((f, i) => note(f, i * 0.08, 0.18, 'square', 0.07));
+    for (let k = 0; k < 24; k++) particles.push({ x: goldKey.x, y: goldKey.y, vx: Math.random() * 8 - 4, vy: Math.random() * 8 - 5, life: 40, c: pick(['#ffd700', '#fff59d', '#fff']) });
+  }
   // enemies
   for (const e of enemies) {
     if (e.dead) { e.dead++; continue; }
@@ -313,6 +347,9 @@ function update() {
   for (const p of particles) { p.x += p.vx; p.y += p.vy; p.vy += 0.2; p.life--; }
   particles = particles.filter(p => p.life > 0);
   if (toastT > 0) toastT--;
+  if (keyBanner > 0) keyBanner--;
+  if (goldNope > 0) goldNope--;
+  if (stickerNew > 0) stickerNew--;
   if (flip > 0) { flip--; if (flip === 15) { if (flipTo === 'end') { scene = 'end'; } else { buildLevel(flipTo); scene = 'play'; toast(`Page ${flipTo + 1}: ${PAGES[flipTo].game}! ${PAGES[flipTo].note}`); } sceneT = 0; } pressed.clear(); return; }
   const ok = pressed.has(' ') || pressed.has('Enter');
   if (scene === 'title') {
@@ -338,24 +375,58 @@ function text(s, x, y, size, color = '#fff', align = 'center', outline = '#1b1b2
 }
 function emoji(s, x, y, size) { ctx.font = `${size}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(s, x, y); ctx.textBaseline = 'alphabetic'; }
 
+function drawGoldKey(x, y) {      // a shiny golden key with a glow
+  const bob = Math.sin(frame * 0.07) * 5, gl = 0.35 + 0.2 * Math.sin(frame * 0.12);
+  ctx.save(); ctx.translate(x, y + bob);
+  const g = ctx.createRadialGradient(0, 0, 4, 0, 0, 30); g.addColorStop(0, `rgba(255,236,120,${gl})`); g.addColorStop(1, 'rgba(255,236,120,0)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, 30, 0, 7); ctx.fill();
+  ctx.rotate(-0.5);
+  ctx.fillStyle = '#ffc107'; ctx.strokeStyle = '#b8860b'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(-10, 0, 8, 0, 7); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#fff8e1'; ctx.beginPath(); ctx.arc(-10, 0, 3.2, 0, 7); ctx.fill();
+  ctx.fillStyle = '#ffc107'; ctx.fillRect(-2, -2.5, 18, 5); ctx.strokeRect(-2, -2.5, 18, 5);
+  ctx.fillRect(10, 2, 3, 6); ctx.fillRect(14, 2, 3, 4);
+  ctx.fillStyle = 'rgba(255,255,255,.7)'; ctx.fillRect(-1, -2, 14, 1.5);
+  ctx.restore();
+  const tw = (frame % 60) / 60, sx = x + Math.cos(frame * 0.05) * 18, sy = y + bob - 14 + Math.sin(frame * 0.05) * 6;
+  ctx.fillStyle = `rgba(255,255,255,${1 - tw})`; ctx.fillRect(sx - 1, sy - 6, 2, 12); ctx.fillRect(sx - 6, sy - 1, 12, 2);
+}
 function drawCat(x, y, face, t, airborne, s = 1) {
+  const gold = goldDraw = isGold();
   ctx.save(); ctx.translate(x + 15, y + 28); ctx.scale(face * s, s);
   const run = airborne ? 0 : Math.sin(t * 0.4) * 4;
-  ctx.strokeStyle = '#ff9800'; ctx.lineWidth = 6; ctx.lineCap = 'round';                // tail
+  ctx.strokeStyle = gc('#ff9800', '#ffb300'); ctx.lineWidth = 6; ctx.lineCap = 'round';                // tail
   ctx.beginPath(); ctx.moveTo(-14, -14); ctx.quadraticCurveTo(-30, -20, -26, -38 + Math.sin(t * 0.1) * 4); ctx.stroke();
-  ctx.fillStyle = '#e65100'; ctx.fillRect(-11 + run, -8, 6, 8); ctx.fillRect(5 - run, -8, 6, 8);   // legs
-  el(0, -14, 17, 10, '#ff9800');                                                          // body
-  ctx.fillStyle = '#e65100'; for (let k = -1; k <= 1; k++) ctx.fillRect(k * 6 - 1, -23, 3, 8); // stripes
-  circle(12, -28, 11, '#ff9800');                                                          // head
-  ctx.fillStyle = '#ff9800';
+  ctx.fillStyle = gc('#e65100', '#ff8f00'); ctx.fillRect(-11 + run, -8, 6, 8); ctx.fillRect(5 - run, -8, 6, 8);   // legs
+  el(0, -14, 17, 10, gc('#ff9800', '#ffd740'));                                           // body
+  ctx.fillStyle = gc('#e65100', '#ffb300'); for (let k = -1; k <= 1; k++) ctx.fillRect(k * 6 - 1, -23, 3, 8); // stripes
+  circle(12, -28, 11, gc('#ff9800', '#ffd740'));                                           // head
+  ctx.fillStyle = gc('#ff9800', '#ffd740');
   ctx.beginPath(); ctx.moveTo(4, -35); ctx.lineTo(5, -46); ctx.lineTo(11, -38); ctx.fill();
   ctx.beginPath(); ctx.moveTo(14, -38); ctx.lineTo(20, -46); ctx.lineTo(21, -34); ctx.fill();
+  if (gold) {                                          // ✨ a shiny streak slides across + a white highlight
+    ctx.save(); ctx.beginPath(); ctx.ellipse(0, -14, 17, 10, 0, 0, Math.PI * 2); ctx.moveTo(23, -28); ctx.arc(12, -28, 11, 0, Math.PI * 2); ctx.clip();
+    const st = (t % 140) / 90;
+    if (st <= 1) { const sx = -30 + st * 70; ctx.fillStyle = 'rgba(255,255,255,.6)'; ctx.beginPath(); ctx.moveTo(sx, -40); ctx.lineTo(sx + 7, -40); ctx.lineTo(sx - 9, -4); ctx.lineTo(sx - 16, -4); ctx.fill(); }
+    ctx.restore();
+    ctx.fillStyle = 'rgba(255,255,255,.85)'; ctx.beginPath(); ctx.ellipse(7, -35, 3, 1.5, -0.6, 0, Math.PI * 2); ctx.fill();
+  }
   circle(10, -29, 2.2, '#1b1b2f'); circle(17, -29, 2.2, '#1b1b2f');
   circle(14, -25, 1.6, '#ff80ab');
   ctx.strokeStyle = '#5d4037'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(16, -24); ctx.lineTo(27, -26); ctx.moveTo(16, -23); ctx.lineTo(27, -21); ctx.stroke();
   ctx.fillStyle = '#e53935'; ctx.fillRect(4, -19, 14, 3);                                  // a red bookmark scarf
   if (SAVE.boss) { ctx.fillStyle = '#ffd740'; ctx.beginPath(); ctx.moveTo(4, -38); ctx.lineTo(5, -48); ctx.lineTo(9, -42); ctx.lineTo(12, -50); ctx.lineTo(15, -42); ctx.lineTo(19, -48); ctx.lineTo(20, -38); ctx.closePath(); ctx.fill(); circle(12, -42, 1.6, '#e53935'); }
+  if (gold) for (let i = 0; i < 3; i++) {              // little twinkles pop up around the cat now and then
+    const n = t + i * 41, ph = n % 70; if (ph > 24) continue;
+    const sd = Math.floor(n / 70) * 3.7 + i * 1.9;
+    const sx = 0 + 26 * Math.sin(sd * 12.99), sy = -24 + 24 * Math.sin(sd * 78.23);
+    const r = Math.sin(ph / 24 * Math.PI) * 5 + 0.5, q = r * 0.28;
+    ctx.fillStyle = i ? '#fff' : '#fff59d';
+    ctx.beginPath(); ctx.moveTo(sx, sy - r); ctx.lineTo(sx + q, sy - q); ctx.lineTo(sx + r, sy); ctx.lineTo(sx + q, sy + q);
+    ctx.lineTo(sx, sy + r); ctx.lineTo(sx - q, sy + q); ctx.lineTo(sx - r, sy); ctx.lineTo(sx - q, sy - q); ctx.fill();
+  }
   ctx.restore();
+  goldDraw = false;
 }
 function drawEnemy(e) {
   const x = e.x + 15, y = e.y + 28 - e.bounce, sq = e.dead ? 0.3 : 1;
@@ -417,6 +488,7 @@ function drawPlay() {
   for (const it of items) if (!it.got) emoji(P.item, it.x - cam, it.y + Math.sin(frame * 0.08 + it.x) * 3, 24);
   for (const e of enemies) { ctx.save(); ctx.translate(-cam, 0); drawEnemy(e); ctx.restore(); }
   drawBoss();
+  if (goldKey && !goldKey.got) drawGoldKey(goldKey.x - cam, goldKey.y);
   for (const a of arrows) { const ax = a.x - cam; ctx.fillStyle = '#5d4037'; ctx.fillRect(ax, a.y - 1, 26, 3); ctx.fillStyle = '#9e9e9e'; ctx.beginPath(); ctx.moveTo(ax - 8, a.y); ctx.lineTo(ax, a.y - 5); ctx.lineTo(ax, a.y + 5); ctx.fill(); ctx.fillStyle = '#e53935'; ctx.fillRect(ax + 22, a.y - 4, 6, 9); }
   if (!(cat.inv > 0 && Math.floor(frame / 4) % 2)) drawCat(cat.x - cam, cat.y, cat.face, frame, !cat.onGround);
   for (const p of particles) { ctx.globalAlpha = Math.min(1, p.life / 15); ctx.fillStyle = p.c; ctx.fillRect(p.x - (scene === 'play' ? cam : 0), p.y, 5, 5); }
@@ -431,6 +503,8 @@ function drawPlay() {
   rr(W - 300, 10, 110, 44, 12, 'rgba(255,250,240,.92)', '#c9b89a', 3);
   ctx.font = '22px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(P.item, W - 276, 40); text(`${collected}`, W - 232, 40, 20, '#5d4037', 'center', null);
   if (toastT > 0) { ctx.globalAlpha = Math.min(1, toastT / 20); ctx.font = 'bold 19px "Comic Sans MS", sans-serif'; const w = ctx.measureText(toastMsg).width + 36; rr(W / 2 - w / 2, 66, w, 38, 19, 'rgba(255,255,255,.95)', '#ff9800', 3); text(toastMsg, W / 2, 92, 19, '#5d4037', 'center', null); ctx.globalAlpha = 1; }
+  if (keyBanner > 0) { ctx.globalAlpha = Math.min(1, keyBanner / 20); const kw = keyCount >= 5 ? 330 : 240; rr(W / 2 - kw, 300, kw * 2, 50, 16, 'rgba(0,0,0,.6)'); text(keyCount >= 5 ? '🔑 ALL 5 KEYS! Open the Secret Door in the book! ✨' : `🔑 SECRET KEY! You found ${keyCount} of 5!`, W / 2, 336, keyCount >= 5 ? 21 : 28, '#ffd740'); ctx.globalAlpha = 1; }
+  if (stickerNew > 0) { ctx.globalAlpha = Math.min(1, stickerNew / 20); rr(W / 2 - 170, 120, 340, 46, 14, 'rgba(0,0,0,.55)'); text('⭐ NEW STICKER! ⭐', W / 2, 153, 28, '#ffeb3b'); ctx.globalAlpha = 1; }
   if (levelTime < 300 && lv === 0) text('← → run    SPACE jump (press again in the air to DOUBLE JUMP!)', W / 2, H - 20, 18, '#fff');
 }
 function drawBookPage(title, lines) {      // an open-book look for menus
@@ -452,6 +526,13 @@ function draw() {
     text('Run through every game', 278, 236, 18, '#7a6a58', 'center', null);
     text('and reach the last page!', 278, 260, 18, '#7a6a58', 'center', null);
     drawCat(250, 380 + Math.sin(frame * 0.08) * 8, 1, frame, false, 2.2);
+    const gOpen = goldOpen(), gOn = isGold();                // ✨ Normal / Gold Pages picker
+    for (const b of GOLD_BTNS) {
+      const on = b.gold === gOn;
+      rr(b.x, b.y, b.w, b.h, 12, on ? (b.gold ? '#ffd740' : '#fff3b0') : b.gold && !gOpen ? '#e0d8c8' : '#fff', on ? '#ff9800' : '#c9b89a', on ? 3 : 1.5);
+      text(b.gold ? (gOpen ? '✨ Gold Pages' : '🔒 ✨ Gold Pages') : '🐱 Normal', b.x + b.w / 2, b.y + 27, 17, b.gold && !gOpen ? '#9e9e9e' : '#5d4037', 'center', null);
+    }
+    text(gOpen ? 'Tap one, or press G' : 'Find all 5 golden keys to unlock!', 280, 476, 13, goldNope > 0 && frame % 20 < 10 ? '#ff5aa5' : '#7a6a58', 'center', null);
     text('Pick a page:', 682, 82, 22, '#ff5aa5', 'center', null);
     PAGES.forEach((p, i) => {
       const secret = p.secret, col = i < 7 ? 0 : 1, row = i % 7, x = secret ? 500 : 500 + col * 195, y = secret ? 418 : 94 + row * 46, w = secret ? 380 : 185, open = i < SAVE.unlocked, on = i === menuSel;

@@ -22,7 +22,8 @@
 //  Z = hop (hold Z while turning to DRIFT, let go for a mini-boost!)
 // =====================================================================
 function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }   // for the Trophy Room in the Game Factory book
-const C = document.getElementById('game'), ctx = C.getContext('2d');
+const C = document.getElementById('game');
+let ctx = C.getContext('2d');   // 'let' so a gold racer can be drawn on a little side canvas
 const W = 960, H = 520, ROAD = 230, LAPS = 3, STEP = 12, ZOOM = 0.8;
 
 // ---------- Save ----------
@@ -47,6 +48,13 @@ function saveLook() { try { const o = JSON.parse(localStorage.getItem('gfLooks')
 function cycleLook(d) { lookSel = (lookSel + d + LOOKS.length) % LOOKS.length; if (lookOpen(LOOKS[lookSel])) { myLook = LOOKS[lookSel].id; saveLook(); } }
 function checkLook() { const L = LOOKS.find(L => L.id === myLook); if (!L || !lookOpen(L)) myLook = 'normal'; }   // a look that got locked again goes back to normal
 const teddyOpen = () => bundleHas(2);
+// ---------- ✨ Gold: when all 5 secret golden keys are found, YOUR racer + kart can be shiny gold (and still wear hats) ----------
+function goldOpen() { try { return Object.keys(JSON.parse(localStorage.getItem('gfKeys') || '{}')).length >= 5; } catch (_) { return false; } }   // all 5 secret keys found → gold heroes
+let goldOn = false, goldUnlocked = goldOpen(), goldHintT = 0;
+try { goldOn = !!(JSON.parse(localStorage.getItem('gfGold') || '{}') || {}).kart; } catch (_) {}
+function saveGold() { try { const o = JSON.parse(localStorage.getItem('gfGold') || '{}') || {}; o.kart = goldOn; localStorage.setItem('gfGold', JSON.stringify(o)); } catch (_) {} }
+const isGold = () => goldOn && goldUnlocked;
+function toggleGold() { sfx.click(); if (!goldUnlocked) { goldHintT = 150; return; } goldOn = !goldOn; saveGold(); }
 let actx = null;
 function wakeAudio() { if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {} } }
 function note(freq, start, dur, wave = 'square', vol = 0.1, slideTo = null) {
@@ -259,7 +267,7 @@ let frame = 0, countdown = 0, raceTime = 0, finishOrder = [], particles = [], do
 let boxes = [], coins = [], bananas = [], rockets = [], popups = [], glitchFx = 0, lastResults = [], newBest = false, cupWon = false;
 let cam = { x: 0, y: 0 }, buttons = [], menuSel = 0, sceneT = 0, hintT = 0;
 
-function setScene(s) { scene = s; buttons = []; menuSel = s === 'char' ? charSel : 0; sceneT = 0; if (s === 'char') { checkLook(); lookSel = Math.max(0, LOOKS.findIndex(L => L.id === myLook)); } }
+function setScene(s) { goldUnlocked = goldOpen(); scene = s; buttons = []; menuSel = s === 'char' ? charSel : 0; sceneT = 0; if (s === 'char') { checkLook(); lookSel = Math.max(0, LOOKS.findIndex(L => L.id === myLook)); } }
 
 const wrap = (i, N) => ((i % N) + N) % N;
 function pointAt(i, lateral = 0) {
@@ -699,6 +707,8 @@ function update() {
   } else if (scene === 'race') updateRace();
   else {
     if (lockHintT > 0) lockHintT--;
+    if (goldHintT > 0) goldHintT--;
+    if (scene === 'char' && (pressed.has('g') || pressed.has('G'))) toggleGold();   // G = gold on/off
     if (scene === 'char' && (pressed.has('l') || pressed.has('L'))) { sfx.click(); cycleLook(1); }   // L = next look
     menuInput();
   }
@@ -729,9 +739,58 @@ function tracePath(t, scale = 1, ox = 0, oy = 0, from = 0, to = t.N) {
 }
 
 // ---------- Character heads (drawn upright so you can always see who is who) ----------
-function drawHead(ch, x, y, s = 1, look) {
+const goldCv = document.createElement('canvas'); goldCv.width = goldCv.height = 128;
+const goldCtx = goldCv.getContext('2d');
+// turn every colour on the little canvas into a gold shade (darks stay dark so eyes are easy to see), plus a moving shine streak
+function goldify(g) {
+  const im = g.getImageData(0, 0, 128, 128), d = im.data;
+  const mix = (a, b, t) => a + (b - a) * t;
+  for (let i = 0; i < d.length; i += 4) {
+    if (!d[i + 3]) continue;
+    const L = (d[i] * 0.3 + d[i + 1] * 0.59 + d[i + 2] * 0.11) / 255;
+    let r, gg, b;
+    if (L < 0.2) { r = 70 + L * 250; gg = 40 + L * 150; b = 10; }                                         // dark bits (eyes) stay dark
+    else if (L < 0.5) { const t = (L - 0.2) / 0.3; r = 255; gg = mix(143, 179, t); b = 0; }                // #ff8f00 → #ffb300
+    else if (L < 0.8) { const t = (L - 0.5) / 0.3; r = 255; gg = mix(179, 215, t); b = mix(0, 64, t); }    // #ffb300 → #ffd740
+    else { const t = (L - 0.8) / 0.2; r = 255; gg = mix(215, 250, t); b = mix(64, 220, t); }               // → white highlight
+    d[i] = r; d[i + 1] = gg; d[i + 2] = b;
+  }
+  g.putImageData(im, 0, 0);
+  const sx = (frame * 3) % 260 - 66;                                                                       // shine streak sweeping across
+  g.save(); g.globalCompositeOperation = 'source-atop'; g.globalAlpha = 0.55; g.fillStyle = '#fff';
+  g.beginPath(); g.moveTo(sx, 0); g.lineTo(sx + 14, 0); g.lineTo(sx - 26, 128); g.lineTo(sx - 40, 128); g.closePath(); g.fill(); g.restore();
+}
+function twinkles(x, y, r, seed = 0) {   // little gold sparkles that pop up now and then
+  for (let k = 0; k < 2; k++) {
+    const t = (frame + seed * 13 + k * 47) % 70;
+    if (t > 18) continue;
+    const n = Math.floor((frame + seed * 13 + k * 47) / 70) * 7 + k * 3 + seed, a = n * 2.4, d = r * (0.7 + (n % 3) * 0.15);
+    const sz = r * 0.22 * Math.sin(t / 18 * Math.PI);
+    star(x + Math.cos(a) * d, y + Math.sin(a) * d, sz, k ? '#fff' : '#fff59d');
+  }
+}
+function drawHead(ch, x, y, s = 1, look, gold) {
   if (look === undefined) look = ch === charSel && scene !== 'title' ? myLook : 'normal';   // only YOUR racer wears your hat
+  if (gold === undefined) gold = ch === charSel && scene !== 'title' && isGold();           // ...and only YOUR racer is gold
+  if (gold && goldCtx && goldCtx.getImageData) {
+    const main = ctx;
+    goldCtx.setTransform(1, 0, 0, 1, 0, 0); goldCtx.clearRect(0, 0, 128, 128);
+    ctx = goldCtx; ctx.save(); ctx.translate(64, 64); ctx.scale(2, 2);
+    try { headBody(ch); } finally { ctx.restore(); ctx = main; }
+    goldify(goldCtx);
+    ctx.save(); ctx.translate(x, y); ctx.scale(s / 2, s / 2); ctx.drawImage(goldCv, -64, -64); ctx.restore();
+    ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+    if (look && look !== 'normal') drawHat(look, 0, HAT_Y[RACERS[ch].id] || -12);
+    twinkles(0, -2, 24, ch);
+    ctx.restore();
+    return;
+  }
   ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  headBody(ch);
+  if (look && look !== 'normal') drawHat(look, 0, HAT_Y[RACERS[ch].id] || -12);
+  ctx.restore();
+}
+function headBody(ch) {
   const blink = (frame + ch * 37) % 200 < 6;
   const eyes = (lx, rx, ey, r = 2.4, col = '#1b1b2f') => { if (blink) { ctx.fillStyle = col; ctx.fillRect(lx - r, ey, r * 2, 1.5); ctx.fillRect(rx - r, ey, r * 2, 1.5); } else { circle(lx, ey, r, col); circle(rx, ey, r, col); } };
   const id = RACERS[ch].id;
@@ -809,8 +868,6 @@ function drawHead(ch, x, y, s = 1, look) {
     ctx.strokeStyle = '#3e2723'; ctx.lineWidth = 1.3; ctx.beginPath(); ctx.arc(0, 6, 2.6, 0.3, Math.PI - 0.3); ctx.stroke();
     circle(-10, 5, 2.2, 'rgba(255,82,82,.45)'); circle(10, 5, 2.2, 'rgba(255,82,82,.45)');     // rosy cheeks
   }
-  if (look && look !== 'normal') drawHat(look, 0, HAT_Y[id] || -12);
-  ctx.restore();
 }
 // how high each racer's head top is (where a hat sits)
 const HAT_Y = { robo: -13, sparks: -12, pages: -11, ember: -10, dino: -12, hero: -14, zombie: -12, alien: -11, teddy: -12 };
@@ -847,10 +904,17 @@ function drawKart(c, x, y, ang, s = 1) {
   ctx.save(); ctx.translate(x, y); ctx.scale(s, s); ctx.rotate(ang);
   ctx.fillStyle = '#212121';
   for (const [wx, wy] of [[-14, -15], [13, -15], [-14, 15], [13, 15]]) roundRect(wx - 7, wy - 5, 14, 10, 3, '#212121');
-  roundRect(-23, -12, 46, 24, 9, c.color || RACERS[c.ch].kart);
+  const gold = c.ch !== undefined && c.ch === charSel && scene !== 'title' && isGold();   // YOUR kart is gold too
+  if (gold) {
+    const gr = ctx.createLinearGradient(0, -12, 0, 12); gr.addColorStop(0, '#ffd740'); gr.addColorStop(0.5, '#ffb300'); gr.addColorStop(1, '#ff8f00');
+    roundRect(-23, -12, 46, 24, 9, gr);
+    ctx.save(); ctx.beginPath(); ctx.rect(-23, -12, 46, 24); ctx.clip();                    // shine streak sweeping over the kart
+    const sx = (frame * 2) % 120 - 50; ctx.fillStyle = 'rgba(255,255,255,.6)';
+    ctx.beginPath(); ctx.moveTo(sx, -12); ctx.lineTo(sx + 8, -12); ctx.lineTo(sx - 4, 12); ctx.lineTo(sx - 12, 12); ctx.closePath(); ctx.fill(); ctx.restore();
+  } else roundRect(-23, -12, 46, 24, 9, c.color || RACERS[c.ch].kart);
   ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.fillRect(-17, -9, 30, 4);
-  roundRect(-26, -13, 6, 26, 3, '#263238');                                       // spoiler
-  roundRect(19, -9, 7, 18, 3, '#eceff1');                                          // front bumper
+  roundRect(-26, -13, 6, 26, 3, gold ? '#ff8f00' : '#263238');                    // spoiler
+  roundRect(19, -9, 7, 18, 3, gold ? '#fff8e1' : '#eceff1');                       // front bumper
   ctx.restore();
 }
 
@@ -1236,8 +1300,13 @@ function drawChar() {
   text(`Look: ${L.name}`, 445, 436, 28, open ? '#fff' : '#b0bec5');
   if (open) text(L.id === myLook ? '✔ Wearing it!   (L = next look)' : 'Tap ◀ ▶ or press L', 445, 470, 16, '#b2dfdb');
   else text(`🔒 Open the ${BUNDLE_NAMES[L.b]} in the Bundle Room!`, 445, 470, 15, '#ffab91');
-  text('Tap a racer, then GO!', 850, 418, 17, '#b2dfdb');
-  text('(← → ↑ ↓ and SPACE)', 850, 442, 15, '#b2dfdb');
+  // ----- ✨ Gold on/off (needs all 5 golden keys) -----
+  btn(762, 398, 176, 52, goldUnlocked ? (isGold() ? '✨ Gold: ON' : '✨ Gold: OFF') : '🔒 ✨ Gold', goldUnlocked ? (isGold() ? '#ffb300' : '#6d4c41') : 'rgba(0,0,0,.4)', () => toggleGold(), { size: 22 });
+  text(goldUnlocked ? 'G = gold on/off' : 'Tap a racer, then GO!', 850, 474, 15, '#b2dfdb');
+  if (goldHintT > 0) {
+    roundRect(W / 2 - 300, 74, 600, 44, 14, 'rgba(0,0,0,.8)');
+    text('🔒 Find all 5 golden keys to unlock!', W / 2, 104, 22, '#ffd740');
+  }
   if (lockHintT > 0) {
     roundRect(W / 2 - 330, 74, 660, 44, 14, 'rgba(0,0,0,.8)');
     text(`🔒 Open the ${BUNDLE_NAMES[2]} in the Bundle Room!`, W / 2, 104, 22, '#ffab91');

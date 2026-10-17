@@ -17,6 +17,27 @@
 <canvas id="game" width="960" height="520"></canvas>
 <script>
 function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }   // for the Trophy Room in the Game Factory book
+function foundKey() { try { const k = JSON.parse(localStorage.getItem('gfKeys') || '{}'); if (!k['zombie']) { k['zombie'] = 1; localStorage.setItem('gfKeys', JSON.stringify(k)); } return Object.keys(k).length; } catch (_) { return 1; } }
+function hasKey() { try { return !!JSON.parse(localStorage.getItem('gfKeys') || '{}')['zombie']; } catch (_) { return false; } }
+function goldOpen() { try { return Object.keys(JSON.parse(localStorage.getItem('gfKeys') || '{}')).length >= 5; } catch (_) { return false; } }   // all 5 secret keys found → gold heroes
+function goldPaint(x, y, w, h, dark) {                 // shiny gold "paint" for the gold hero: a gold gradient with a bright shine streak sliding across
+  const g = ctx.createLinearGradient(x, y, x + w, y + h), s = (frame % 110) / 110 * 1.6 - 0.3;
+  g.addColorStop(0, dark ? '#ffb300' : '#ffe57f'); g.addColorStop(1, dark ? '#e65100' : '#ff8f00');
+  if (s > 0.1 && s < 0.9) { g.addColorStop(s - 0.1, dark ? '#ff8f00' : '#ffd740'); g.addColorStop(s, '#fffde7'); g.addColorStop(s + 0.1, dark ? '#ff8f00' : '#ffc400'); }
+  return g;
+}
+function goldTwinkle(x, y, w, h) {                     // little sparkles that pop up around the gold hero now and then
+  const t = Math.floor(frame / 14), ph = (frame % 14) / 14, fr = v => v - Math.floor(v);
+  for (let i = 0; i < 3; i++) {
+    const a = fr(Math.sin((t + i * 37) * 12.9898) * 43758.5453), b = fr(Math.sin((t + i * 37) * 78.233) * 43758.5453);
+    if (a > 0.45) continue;
+    const sx = x - 6 + b * (w + 12), sy = y - 6 + (a / 0.45) * (h + 12), r = 5 * Math.sin(ph * Math.PI);
+    ctx.fillStyle = i ? '#fff' : '#fff59d';
+    ctx.beginPath(); ctx.moveTo(sx, sy - r * 1.6); ctx.lineTo(sx + r * 0.35, sy - r * 0.35); ctx.lineTo(sx + r * 1.6, sy); ctx.lineTo(sx + r * 0.35, sy + r * 0.35);
+    ctx.lineTo(sx, sy + r * 1.6); ctx.lineTo(sx - r * 0.35, sy + r * 0.35); ctx.lineTo(sx - r * 1.6, sy); ctx.lineTo(sx - r * 0.35, sy - r * 0.35); ctx.closePath(); ctx.fill();
+  }
+}
+let goldKey = null, keyBanner = 0, keyCount = 0;     // the secret golden key: hidden in a dead end of the level 1 maze
 const C = document.getElementById('game'), ctx = C.getContext('2d');
 const W = 960, H = 520, T = 32, MW = 29, MH = 15, OX = 16, OY = 40;
 
@@ -30,9 +51,10 @@ const LOOKS = [
   { id: 'pumpkin', name: 'Pumpkin Hat', b: 0 }, { id: 'cap', name: 'Cap', b: 0 },
   { id: 'wizard', name: 'Wizard Hat', b: 1 }, { id: 'tophat', name: 'Top Hat', b: 1 },
   { id: 'zeke', name: 'Zeke the friendly zombie', b: 2 },
+  { id: 'gold', name: '✨ Gold Kid', b: -2 },            // unlocked by finding all 5 golden keys
 ];
 const BUNDLE_NAMES = ['Spooky Hat Pack', 'Magic Hat Pack', 'MEGA Zeke Pack'];
-const lookOpen = l => l.b < 0 || bundleHas(l.b);
+const lookOpen = l => l.id === 'gold' ? goldOpen() : l.b < 0 || bundleHas(l.b);
 let lookIdx = 0, look = 'normal';                      // lookIdx = shown in the picker, look = the one you play with
 try {
   const saved = (JSON.parse(localStorage.getItem('gfLooks') || '{}') || {}).zombie;
@@ -161,6 +183,17 @@ function startLevel() {
   for (let i = 0; i < 3; i++) { const [x, y] = pick(); items.push({ x, y, kind: 'balloon' }); }
   { const [x, y] = pick(); items.push({ x, y, kind: 'shoes' }); }
   for (const [x, y] of free) if (!used.has(x + ',' + y) && Math.random() < 0.45) coins.add(x + ',' + y);
+  // the secret golden key: a dead end (only one way in) on level 1, not too close to the start
+  goldKey = null;
+  if (level === 1 && !hasKey()) {
+    const d = Array.from({ length: MH }, () => Array(MW).fill(-1)), q = [[1, 1]]; d[1][1] = 0;
+    while (q.length) { const [x, y] = q.shift(); for (const [dx, dy] of Object.values(DIRS)) { const nx = x + dx, ny = y + dy; if (open(nx, ny) && d[ny][nx] < 0) { d[ny][nx] = d[y][x] + 1; q.push([nx, ny]); } } }
+    const ok = ([x, y]) => d[y][x] > 0 && !used.has(x + ',' + y);
+    const ends = free.filter(c => ok(c) && Object.values(DIRS).filter(([dx, dy]) => open(c[0] + dx, c[1] + dy)).length === 1);
+    const pool = ends.filter(([x, y]) => d[y][x] >= 8).length ? ends.filter(([x, y]) => d[y][x] >= 8) : ends.length ? ends : free.filter(ok);
+    pool.sort((a, b) => d[a[1]][a[0]] - d[b[1]][b[0]]);
+    if (pool.length) { const [x, y] = pool[0]; goldKey = { x, y, got: false }; coins.delete(x + ',' + y); }
+  }
   zombies = [];
   // levels 1-4: 2, 3, 4, 5 zombies. Level 5 and up has fewer (Ben's rule), then slowly more: 4, 5, 5, 6...
   const n = level <= 4 ? 1 + level : Math.min(6, 4 + Math.floor((level - 4) / 2));
@@ -223,6 +256,11 @@ function arrive(x, y) {
     if (left === 0) { exitOpen = true; sfx.unlock(); showMsg('All treasure found! Run to the EXIT door! 🚪'); }
     else showMsg(`Treasure! ${left} more to find!`);
   }
+  if (goldKey && !goldKey.got && goldKey.x === x && goldKey.y === y) {
+    goldKey.got = true; keyCount = foundKey(); keyBanner = 150; score += 100;
+    [784, 988, 1175, 1568, 1319, 1568].forEach((f, i) => note(f, i * 0.08, 0.18, 'square', 0.08));
+    burst(x, y, ['#ffd700', '#fff59d', '#fff'], 24);
+  }
   for (const it of items) if (!it.got && it.x === x && it.y === y) {
     it.got = true;
     if (it.kind === 'potion') { scaredT = 420; sfx.potion(); showMsg('SUPER POTION! Tag the zombies to turn them back into people!'); }
@@ -280,6 +318,7 @@ function burstXY(x, y, colors, n = 12) {
 function updatePlay() {
   levelT++;
   if (msgT > 0) msgT--;
+  if (keyBanner > 0) keyBanner--;
   if (scaredT > 0) scaredT--;
   if (player.inv > 0) player.inv--;
   if (player.fast > 0) player.fast--;
@@ -398,19 +437,21 @@ function drawPlayer(p = player, lk = look) {
   const walk = p.dir ? Math.sin(frame * 0.4) * 2 : 0;
   if (p.fast > 0) for (let i = 1; i < 4; i++) { const [dx, dy] = p.dir ? DIRS[p.dir] : [0, 0]; circle(x - dx * i * 7, y - dy * i * 7, 9 - i * 2, `rgba(255,214,0,${0.4 - i * 0.1})`); }
   if (lk === 'zeke') { drawZeke(x, y, walk, p.face); return; }
-  ctx.fillStyle = '#1565c0'; ctx.fillRect(x - 6, y + 6 + walk, 5, 7); ctx.fillRect(x + 1, y + 6 - walk, 5, 7);
-  roundRect(x - 9, y - 4, 18, 13, 4, '#ff7043');
-  circle(x, y - 9, 8, '#ffcc99');
-  ctx.fillStyle = '#5d4037'; ctx.beginPath(); ctx.arc(x, y - 11, 8.5, Math.PI, 0); ctx.fill();
+  const gold = lk === 'gold';                          // gold kid: same kid, shiny gold paint
+  ctx.fillStyle = gold ? goldPaint(x - 10, y - 18, 20, 32, 1) : '#1565c0'; ctx.fillRect(x - 6, y + 6 + walk, 5, 7); ctx.fillRect(x + 1, y + 6 - walk, 5, 7);
+  roundRect(x - 9, y - 4, 18, 13, 4, gold ? goldPaint(x - 10, y - 18, 20, 32) : '#ff7043');
+  circle(x, y - 9, 8, gold ? goldPaint(x - 10, y - 18, 20, 32) : '#ffcc99');
+  ctx.fillStyle = gold ? '#ff8f00' : '#5d4037'; ctx.beginPath(); ctx.arc(x, y - 11, 8.5, Math.PI, 0); ctx.fill();
   const [fx, fy] = DIRS[p.face];
   if (p.face !== 'up') { circle(x - 3 + fx * 2, y - 9 + fy, 1.6, '#000'); circle(x + 3 + fx * 2, y - 9 + fy, 1.6, '#000'); }
   drawHat(lk, x, y - 17, 10, p.face === 'left' ? -1 : 1);
+  if (gold) goldTwinkle(x - 10, y - 18, 20, 32);
   // flashlight beam in dark levels
 }
 
 // A hat from the Bundle Room. cx = middle of the head, top = top of the head, hw = half the head's width, f = facing (1 right, -1 left)
 function drawHat(id, cx, top, hw, f) {
-  if (!id || id === 'normal' || id === 'zeke') return;
+  if (!id || id === 'normal' || id === 'zeke' || id === 'gold') return;
   const k = hw / 11;
   ctx.save(); ctx.translate(cx, top); ctx.scale(f * k, k);
   ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.lineWidth = 1.4; ctx.strokeStyle = 'rgba(0,0,0,.6)';
@@ -477,7 +518,10 @@ function drawLookPicker() {
   }
   if (L.id === 'zeke') { text('Zeke the', cx, PK.y + 204, 18, open ? '#fff' : '#bbb'); text('friendly zombie', cx, PK.y + 224, 18, open ? '#fff' : '#bbb'); }
   else text(L.name, cx, PK.y + 212, 20, open ? '#fff' : '#bbb');
-  if (!open) {
+  if (!open && L.id === 'gold') {
+    text('Find all 5 golden', cx, PK.y + 242, 13, '#ffd740');
+    text('keys to unlock!', cx, PK.y + 257, 13, '#ffd740');
+  } else if (!open) {
     text('Open the', cx, PK.y + 242, 13, '#ffd740');
     text(BUNDLE_NAMES[L.b], cx, PK.y + 257, 13, '#ffd740');
     text('in the Bundle Room!', cx, PK.y + 272, 13, '#ffd740');
@@ -516,7 +560,24 @@ function drawZombie(z) {
   if (z.say > 0 && !scared && !z.stun) text('braaains...', x, y - 26, 12, '#c5e1a5');
 }
 
+function drawGoldKey(x, y) {      // a shiny golden key with a glow (a bit smaller to fit the maze)
+  const bob = Math.sin(frame * 0.07) * 3, gl = 0.35 + 0.2 * Math.sin(frame * 0.12);
+  ctx.save(); ctx.translate(x, y + bob);
+  const g = ctx.createRadialGradient(0, 0, 3, 0, 0, 20); g.addColorStop(0, `rgba(255,236,120,${gl})`); g.addColorStop(1, 'rgba(255,236,120,0)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, 20, 0, 7); ctx.fill();
+  ctx.scale(0.75, 0.75); ctx.rotate(-0.5);
+  ctx.fillStyle = '#ffc107'; ctx.strokeStyle = '#b8860b'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(-10, 0, 8, 0, 7); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#fff8e1'; ctx.beginPath(); ctx.arc(-10, 0, 3.2, 0, 7); ctx.fill();
+  ctx.fillStyle = '#ffc107'; ctx.fillRect(-2, -2.5, 18, 5); ctx.strokeRect(-2, -2.5, 18, 5);
+  ctx.fillRect(10, 2, 3, 6); ctx.fillRect(14, 2, 3, 4);
+  ctx.fillStyle = 'rgba(255,255,255,.7)'; ctx.fillRect(-1, -2, 14, 1.5);
+  ctx.restore();
+  const tw = (frame % 60) / 60, sx = x + Math.cos(frame * 0.05) * 12, sy = y + bob - 9 + Math.sin(frame * 0.05) * 4;
+  ctx.fillStyle = `rgba(255,255,255,${1 - tw})`; ctx.fillRect(sx - 1, sy - 5, 2, 10); ctx.fillRect(sx - 5, sy - 1, 10, 2);
+}
 function drawItems() {
+  if (goldKey && !goldKey.got) drawGoldKey(OX + goldKey.x * T + 16, OY + goldKey.y * T + 16);
   for (const k of coins) { const [x, y] = k.split(',').map(Number); circle(OX + x * T + 16, OY + y * T + 16, 3.5, '#ffd740'); }
   for (const t of treasures) if (!t.got) {
     const x = OX + t.x * T, y = OY + t.y * T, glow = 0.3 + 0.2 * Math.sin(frame * 0.1);
@@ -579,6 +640,7 @@ function draw() {
   if (player.fast > 0) text(`⚡ ${Math.ceil(player.fast / 60)}`, 740, 29, 20, '#ffd740', 'left');
   text(musicOn ? '♪ M' : '♪ off', W - 16, 29, 16, '#aaa', 'right');
   if (msgT > 0 && scene === 'play') { ctx.globalAlpha = Math.min(1, msgT / 30); roundRect(W / 2 - 330, H - 64, 660, 44, 12, 'rgba(0,0,0,.75)'); text(msg, W / 2, H - 34, 20, '#fff'); ctx.globalAlpha = 1; }
+  if (keyBanner > 0 && scene === 'play') { ctx.globalAlpha = Math.min(1, keyBanner / 20); roundRect(W / 2 - (keyCount >= 5 ? 340 : 240), 120, keyCount >= 5 ? 680 : 480, 50, 16, 'rgba(0,0,0,.7)'); text(keyCount >= 5 ? '🔑 ALL 5 KEYS! Open the Secret Door in the book! ✨' : `🔑 SECRET KEY! You found ${keyCount} of 5!`, W / 2, 156, keyCount >= 5 ? 22 : 28, '#ffd740'); ctx.globalAlpha = 1; }
   if (scene === 'levelDone') {
     ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(0, 0, W, H);
     for (const pt of particles) { ctx.fillStyle = pt.color; ctx.fillRect(pt.x, pt.y, pt.size, pt.size); }
