@@ -28,16 +28,40 @@
   let glitchOn = false; try { glitchOn = localStorage.getItem('gfGlitch') === 'true'; } catch (_) {}
   if (glitchOn && !/(arcade|index)\.html$|\/$/.test(location.pathname)) {
     const st = document.createElement('style');
-    st.textContent = `canvas { animation: tpGlitch 3.7s infinite steps(1); }
-      @keyframes tpGlitch { 0%, 70%, 100% { transform: none; filter: none; }
-        72% { transform: translate(-6px, 2px) skewX(4deg); filter: drop-shadow(5px 0 #ff00ff) drop-shadow(-5px 0 #00e5ff); }
-        74% { transform: translate(5px, -2px); filter: hue-rotate(120deg); }
-        76% { transform: none; filter: none; }
-        88% { transform: translate(0, 3px) scaleY(.98); filter: drop-shadow(-4px 0 #76ff03) contrast(1.4); }
-        89% { transform: none; filter: none; } }
-      html::after { content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 99998;
-        background: repeating-linear-gradient(0deg, rgba(0,0,0,.12) 0 2px, transparent 2px 4px); }`;
+    st.textContent = `canvas { animation: tpGlitch 2.2s infinite steps(1); }
+      @keyframes tpGlitch { 0%, 100% { transform: none; filter: none; }
+        12% { transform: translate(-10px, 3px) skewX(6deg); filter: drop-shadow(8px 0 #ff00ff) drop-shadow(-8px 0 #00e5ff); }
+        15% { transform: none; filter: none; }
+        40% { transform: translate(8px, -4px); filter: hue-rotate(150deg) saturate(2); }
+        44% { transform: none; filter: none; }
+        66% { transform: scaleY(.94) translateY(6px); filter: drop-shadow(-6px 0 #76ff03) contrast(1.6); }
+        68% { transform: translate(-4px, 0); filter: invert(1); }
+        70% { transform: none; filter: none; }
+        86% { transform: skewY(-2deg) translateX(12px); filter: drop-shadow(10px 0 #ff1744) drop-shadow(-10px 0 #2979ff); }
+        90% { transform: none; filter: none; } }
+      .tpScan { position: fixed; inset: 0; pointer-events: none; z-index: 99998;
+        background: repeating-linear-gradient(0deg, rgba(0,0,0,.28) 0 2px, rgba(255,255,255,.04) 2px 4px); mix-blend-mode: multiply; }
+      .tpBar { position: fixed; left: 0; right: 0; height: 26px; pointer-events: none; z-index: 99999; background: rgba(0,255,208,.22);
+        box-shadow: 0 0 12px rgba(255,0,255,.6); animation: tpBar 3s linear infinite; }
+      @keyframes tpBar { from { top: -30px; } to { top: 100%; } }
+      .tpBit { position: fixed; pointer-events: none; z-index: 99999; }
+      .tpTag { position: fixed; left: 8px; bottom: 8px; z-index: 99999; pointer-events: none; font: bold 14px monospace; color: #00ffd0;
+        text-shadow: 2px 0 #ff00ff, -2px 0 #00e5ff; animation: tpGlitch 1.3s infinite steps(1); }`;
     document.head.appendChild(st);
+    const addFx = () => {
+      for (const [cls, txt] of [['tpScan', ''], ['tpBar', ''], ['tpTag', '👾 GL1TCH M0DE']]) { const d = document.createElement('div'); d.className = cls; d.textContent = txt; document.body.appendChild(d); }
+      const cols = ['#ff00ff', '#00e5ff', '#76ff03', '#ff1744', '#ffea00', '#fff'];
+      setInterval(() => {   // little glitchy pixel blocks pop up all over the screen
+        const n = Math.random() < 0.35 ? 6 + Math.floor(Math.random() * 10) : 0;
+        for (let k = 0; k < n; k++) {
+          const b = document.createElement('div'); b.className = 'tpBit';
+          const w = 8 + Math.random() * 70, h = 4 + Math.random() * 18;
+          b.style.cssText = `left:${Math.random() * 100}vw;top:${Math.random() * 100}vh;width:${w}px;height:${h}px;background:${cols[k % cols.length]};opacity:${0.5 + Math.random() * 0.4}`;
+          document.body.appendChild(b); setTimeout(() => b.remove(), 90 + Math.random() * 160);
+        }
+      }, 260);
+    };
+    if (document.body) addFx(); else addEventListener('DOMContentLoaded', addFx);
   }
   const isTouch = forced || (navigator.maxTouchPoints > 0 && matchMedia('(pointer: coarse)').matches);
 
