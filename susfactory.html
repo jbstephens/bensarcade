@@ -1,0 +1,801 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sus Factory</title>
+<script>TOUCHPAD = { dpad: true, south: [' ', 'GO'] };</script>
+<script src="touchpad.js?v=2"></script>
+<style>
+  html, body { height: 100%; }
+  body { margin: 0; background: #1a1f3a; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  canvas { width: min(100vw, calc(100vh * 960 / 520)); height: auto; display: block; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,.5); touch-action: none; }
+</style>
+<canvas id="game" width="960" height="520"></canvas>
+<script>
+// ===== SUS FACTORY: a "who's the sneaky bot?" mystery in Robo's robot factory =====
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }   // for the Trophy Room in the Game Factory book
+
+// ---------- Saved progress ----------
+const SAVE = 'susFactory';
+let unlocked = 1, wonAll = false;
+try { const s = JSON.parse(localStorage.getItem(SAVE) || '{}') || {}; unlocked = Math.max(1, Math.min(3, s.unlocked || 1)); wonAll = !!s.won; } catch (_) {}
+function saveProgress() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SAVE) || '{}') || {};
+    s.unlocked = Math.max(s.unlocked || 1, unlocked); if (wonAll) s.won = true;
+    localStorage.setItem(SAVE, JSON.stringify(s));
+  } catch (_) {}
+}
+
+const C = document.getElementById('game'), ctx = C.getContext('2d');
+const W = 960, H = 520, TOP = 52, MID = 286;
+const rnd = (a, b) => a + Math.random() * (b - a);
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const shuffle = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const inBox = (b, x, y) => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h;
+
+// ---------- Sound ----------
+let actx = null;
+function wakeAudio() { if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {} } }
+function note(freq, start, dur, wave = 'square', vol = 0.12, slideTo = null) {
+  if (!actx) return;
+  const t = actx.currentTime + start;
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type = wave; o.frequency.setValueAtTime(freq, t);
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+  g.gain.setValueAtTime(vol, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g); g.connect(actx.destination);
+  o.start(t); o.stop(t + dur);
+}
+const sfx = {
+  tap:    () => note(660, 0, 0.08, 'square', 0.07),
+  boop:   () => note(220, 0, 0.2, 'triangle', 0.15, 150),
+  good:   () => { note(784, 0, 0.08, 'square', 0.08); note(1047, 0.08, 0.14, 'square', 0.08); },
+  talk:   () => { for (let i = 0; i < 4; i++) note(500 + Math.random() * 400, i * 0.06, 0.05, 'square', 0.05); },
+  clue:   () => [659, 784, 988, 1319].forEach((f, i) => note(f, i * 0.07, 0.14, 'triangle', 0.12)),
+  alarm:  () => { for (let i = 0; i < 3; i++) { note(880, i * 0.22, 0.1, 'square', 0.06); note(660, i * 0.22 + 0.11, 0.1, 'square', 0.06); } },
+  fix:    () => { note(300, 0, 0.1, 'sawtooth', 0.08, 600); note(600, 0.12, 0.2, 'square', 0.08, 900); },
+  puff:   () => note(400 + Math.random() * 200, 0, 0.12, 'sine', 0.12, 120),
+  bell:   () => { note(1319, 0, 0.8, 'triangle', 0.18); note(1976, 0, 0.6, 'sine', 0.08); note(1319, 0.4, 0.8, 'triangle', 0.14); },
+  giggle: () => { for (let i = 0; i < 5; i++) note(900 - i * 60, i * 0.09, 0.08, 'sine', 0.1, 1200 - i * 60); },
+  nope:   () => { note(400, 0, 0.15, 'square', 0.08, 300); note(300, 0.16, 0.25, 'square', 0.08, 200); },
+  task:   () => [523, 659, 784, 1047].forEach((f, i) => note(f, i * 0.09, 0.18, 'square', 0.08)),
+  win:    () => [523, 659, 784, 1047, 784, 1047, 1319].forEach((f, i) => note(f, i * 0.12, 0.22, 'square', 0.09)),
+  zap:    () => note(1200, 0, 0.06, 'sawtooth', 0.04, 500),
+};
+
+// ---------- Music (original "Sneaky Gears" theme: eighth notes, 0 = rest) ----------
+let musicOn = true, nextNoteTime = 0, step = 0;
+const MUSIC_BPM = 128;
+const MELODY = [
+  69,0,72,0, 76,0,75,0, 74,0,72,0, 69,0,0,0,  69,0,72,0, 76,0,79,0, 78,0,76,0, 74,0,0,0,
+  81,0,79,0, 76,0,74,0, 72,0,74,0, 76,0,0,0,  74,76,74,72, 69,0,71,0, 72,0,71,0, 69,0,0,0,
+];
+const BASS = [45, 45, 48, 50].flatMap(r => [r, 0, 0, r + 7, 0, r + 12, 0, 0]).concat([45, 43, 41, 40].flatMap(r => [r, 0, 0, r + 7, 0, r + 12, 0, 0]));
+const midi = n => 440 * Math.pow(2, (n - 69) / 12);
+function playMusic() {
+  if (!actx || !musicOn) return;
+  const stepDur = 60 / MUSIC_BPM / 2;
+  if (nextNoteTime < actx.currentTime) nextNoteTime = actx.currentTime + 0.05;
+  while (nextNoteTime < actx.currentTime + 0.2) {
+    const t = nextNoteTime - actx.currentTime;
+    const m = MELODY[step % MELODY.length], b = BASS[step % BASS.length];
+    if (m) note(midi(m), t, stepDur * 0.8, 'square', 0.03);
+    if (b) note(midi(b), t, stepDur * 0.9, 'triangle', 0.08);
+    if (step % 4 === 2) note(150, t, 0.03, 'square', 0.012);
+    nextNoteTime += stepDur; step++;
+  }
+}
+
+// ---------- The factory: 8 rooms in a 4 x 2 grid ----------
+const ROOMS = [
+  { name: 'Gear Room',     floor: '#ffe0b2', tile: '#ffcc80' },
+  { name: 'Paint Shop',    floor: '#f8bbd0', tile: '#f48fb1' },
+  { name: 'Conveyor Hall', floor: '#c5cae9', tile: '#9fa8da' },
+  { name: 'Battery Room',  floor: '#dcedc8', tile: '#c5e1a5' },
+  { name: 'Snack Bar',     floor: '#fff9c4', tile: '#fff176' },
+  { name: 'Robot Wash',    floor: '#b2ebf2', tile: '#80deea' },
+  { name: 'Control Room',  floor: '#d1c4e9', tile: '#b39ddb' },
+  { name: 'Rocket Lab',    floor: '#ffccbc', tile: '#ffab91' },
+];
+const CONTROL = 6;
+const roomBox = i => { const c = i % 4, r = Math.floor(i / 4); return { x: c * 240, y: r ? MID : TOP, w: 240, h: r ? H - MID : MID - TOP, c, r }; };
+const roomAt = (x, y) => Math.max(0, Math.min(3, Math.floor(x / 240))) + (y < MID ? 0 : 4);
+const machinePos = i => { const b = roomBox(i); return { x: b.x + 120, y: b.r ? b.y + 150 : b.y + 92 }; };
+const TIMEOUT = (() => { const b = roomBox(CONTROL); return { x: b.x + 192, y: b.y + 190 }; })();
+
+// walls (x, y, w, h) with doorways between every pair of side-by-side rooms
+const WALLS = [[0, TOP, 960, 10], [0, H - 10, 960, 10], [0, TOP, 10, H - TOP], [W - 10, TOP, 10, H - TOP]];
+for (let c = 1; c < 4; c++) for (const [y0, y1] of [[TOP, MID], [MID, H]]) {
+  const mid = (y0 + y1) / 2;
+  WALLS.push([c * 240 - 5, y0, 10, mid - 46 - y0], [c * 240 - 5, mid + 46, 10, y1 - mid - 46]);
+}
+for (let c = 0; c < 4; c++) WALLS.push([c * 240, MID - 5, 76, 10], [c * 240 + 164, MID - 5, 76, 10]);
+
+function doorBetween(a, b) {                          // two points to walk through the doorway from room a into room b
+  const A = roomBox(a), B = roomBox(b);
+  if (A.r === B.r) { const dx = Math.max(A.c, B.c) * 240, dy = A.y + A.h / 2, s = B.c > A.c ? 1 : -1; return [{ x: dx - 28 * s, y: dy }, { x: dx + 28 * s, y: dy }]; }
+  const dx = A.x + 120, s = B.r > A.r ? 1 : -1; return [{ x: dx, y: MID - 30 * s }, { x: dx, y: MID + 30 * s }];
+}
+function roomPath(a, b) {                             // shortest list of rooms from a to b
+  const prev = { [a]: -1 }, q = [a];
+  while (q.length) {
+    const r = q.shift(); if (r === b) break;
+    const c = r % 4, row = Math.floor(r / 4);
+    for (const n of [c > 0 ? r - 1 : -1, c < 3 ? r + 1 : -1, row ? r - 4 : r + 4]) if (n >= 0 && !(n in prev)) { prev[n] = r; q.push(n); }
+  }
+  const out = []; for (let r = b; r !== -1; r = prev[r]) out.unshift(r);
+  return out;
+}
+
+// ---------- The worker robots (all made up for this game) ----------
+const CREW = [
+  { name: 'Bolt',     col: '#ff7043', dark: '#bf360c', shape: 'square',   word: 'ORANGE', emoji: '🟧' },
+  { name: 'Sprocket', col: '#66bb6a', dark: '#1b5e20', shape: 'gear',     word: 'GREEN',  emoji: '🟩' },
+  { name: 'Fizz',     col: '#f06292', dark: '#880e4f', shape: 'jar',      word: 'PINK',   emoji: '🩷' },
+  { name: 'Widget',   col: '#ffd740', dark: '#e65100', shape: 'triangle', word: 'YELLOW', emoji: '🟨' },
+  { name: 'Dottie',   col: '#b388ff', dark: '#4527a0', shape: 'dots',     word: 'PURPLE', emoji: '🟪' },
+  { name: 'Clank',    col: '#4dd0e1', dark: '#006064', shape: 'hex',      word: 'TEAL',   emoji: '🩵' },
+];
+const CHAT = {
+  Bolt:     ['I count bolts all day. 1, 2, 3... I lost count!', 'Beep boop! Have you seen my lucky bolt?', 'I am VERY square. And very nice!'],
+  Sprocket: ['My gears go spinny spin spin!', 'I love oiling gears. Squeak squeak!', 'Did you hear that? It was my tummy gear.'],
+  Fizz:     ['My bubbles say hi! Blub blub!', 'I am full of fizzy soda power!', 'Pop! Sorry, that was a bubble.'],
+  Widget:   ['I am pointy but friendly!', 'Wheee! I zoom around the factory!', 'Triangles are the best shape. Trust me!'],
+  Dottie:   ['Count my dots! No, wait, I will do it.', 'I painted my dots myself!', 'Dot dot dot... that means I am thinking.'],
+  Clank:    ['Clank clank! That is just how I walk.', 'I have six sides and zero worries!', 'I made a sandwich. With nuts and bolts!'],
+};
+const IMP_TALK = ['Who, me? I am just... um... humming!', 'Nothing sneaky here! Hee... I mean, hello!', 'I was in the Snack Bar the WHOLE time. Probably.', 'Machines? What machines? La la la!'];
+const MEET = ['I was oiling my elbows!', 'I had a snack! It was a battery.', 'I did a dance in the Robot Wash!', 'I was counting gears. I got to 7!', 'My antenna was itchy!', 'I took a nap in a box!', 'I was helping! I think!', 'I sneezed sparks. Sorry!'];
+
+const ROUNDS = [
+  { n: 4, sab: 900, first: 420, clue: 'bolt',    speed: 1.3 },
+  { n: 5, sab: 780, first: 400, clue: 'prints',  speed: 1.45 },
+  { n: 6, sab: 660, first: 360, clue: 'prints2', speed: 1.6 },
+];
+const TASK_TYPES = ['wires', 'gears', 'lights', 'battery'];
+const TASK_INFO = { wires: ['🔌', 'Connect the Wires'], gears: ['⚙️', 'Sort the Gears'], lights: ['💡', 'Copy the Lights'], battery: ['🔋', 'Fill the Battery'] };
+
+let state = 'title', titleSel = 0, frame = 0, round = 0, R = ROUNDS[0];
+let bots = [], imp = null, machines = [], tasks = [], clues = [], player = null, guesses = 3, tasksDone = 0;
+let sabTimer = 0, banner = '', bannerT = 0, talk = null, mg = null, meet = null, scene = null, puffs = [], hint = null;
+const keys = { left: false, right: false, up: false, down: false };
+let walkTo = null, mouseHeld = false, spaceHeld = false;
+
+function startRound(i) {
+  round = i; R = ROUNDS[i];
+  const ids = shuffle([0, 1, 2, 3, 4, 5]).slice(0, R.n);
+  bots = ids.map((id, k) => {
+    const room = [0, 1, 2, 3, 4, 5, 7][k % 7], b = roomBox(room);
+    return Object.assign({}, CREW[id], { id, x: b.x + rnd(60, 180), y: b.y + rnd(60, b.h - 50), path: [], wait: rnd(30, 120), face: 0, cleared: false, sus: 0, witness: null, isImp: false, said: '', bob: rnd(0, 6) });
+  });
+  imp = pick(bots); imp.isImp = true; imp.sabTarget = null;
+  machines = []; for (let r = 0; r < 8; r++) if (r !== CONTROL) machines.push(Object.assign({ room: r, broken: false, t: 0 }, machinePos(r)));
+  const types = shuffle(TASK_TYPES).slice(0, 3), troom = shuffle([0, 1, 2, 3, 4, 5, 7]).slice(0, 3);
+  tasks = troom.map((r, k) => { const b = roomBox(r); return { room: r, type: types[k], done: false, x: b.x + 48, y: b.r ? b.y + b.h - 44 : b.y + 46 }; });
+  clues = []; puffs = []; guesses = 3; tasksDone = 0; sabTimer = R.first;
+  const cb = roomBox(CONTROL); player = { x: cb.x + 70, y: cb.y + 120, face: 0 };
+  walkTo = null; talk = null; mg = null; meet = null; scene = null;
+  state = 'play';
+  say(null, `Round ${i + 1}! One robot is a sneaky SABOTAGE bot! Do tasks, fix machines and find clues. Then ring the 🔔 in the Control Room!`);
+}
+function setBanner(t) { banner = t; bannerT = 200; }
+function say(bot, text, after) { talk = { bot, text, after, t: 0 }; if (bot) sfx.talk(); }
+
+// ---------- Robot brains ----------
+function goTo(b, tx, ty) {
+  const rp = roomPath(roomAt(b.x, b.y), roomAt(tx, ty)); b.path = [];
+  for (let k = 0; k + 1 < rp.length; k++) b.path.push(...doorBetween(rp[k], rp[k + 1]));
+  b.path.push({ x: tx, y: ty });
+}
+function workSpot(room) {
+  if (room === CONTROL) { const b = roomBox(room); return { x: b.x + rnd(40, 160), y: b.y + rnd(60, 150) }; }
+  const m = machinePos(room), b = roomBox(room);
+  return { x: m.x + rnd(-60, 60), y: m.y + (b.r ? -50 : 52) + rnd(-10, 10) };
+}
+function updateBot(b) {
+  b.bob += 0.15;
+  if (b.path.length) {
+    const p = b.path[0], dx = p.x - b.x, dy = p.y - b.y, d = Math.hypot(dx, dy), sp = R.speed;
+    if (d <= sp) { b.x = p.x; b.y = p.y; b.path.shift(); if (!b.path.length) arrived(b); }
+    else { b.x += dx / d * sp; b.y += dy / d * sp; b.face = Math.atan2(dy, dx); }
+    return;
+  }
+  if (b.wait > 0) { b.wait--; return; }
+  if (b.isImp && sabTimer <= 0 && machines.filter(m => m.broken).length < 3) {
+    const pr = roomAt(player.x, player.y);
+    const ok = machines.filter(m => !m.broken && m.room !== pr);
+    if (ok.length) { const m = pick(ok); b.sabTarget = m; goTo(b, m.x + rnd(-30, 30), m.y + (roomBox(m.room).r ? -40 : 40)); return; }
+  }
+  const s = workSpot(pick([0, 1, 2, 3, 4, 5, 6, 7])); goTo(b, s.x, s.y);
+}
+function arrived(b) {
+  b.wait = rnd(120, 300);
+  if (b.isImp && b.sabTarget) {
+    const m = b.sabTarget; b.sabTarget = null;
+    if (!m.broken && roomAt(player.x, player.y) !== m.room) sabotage(b, m); else b.wait = 60;
+  }
+}
+function sabotage(b, m) {
+  m.broken = true; m.t = 0; sabTimer = R.sab; b.wait = 40;
+  const rn = ROOMS[m.room].name;
+  sfx.alarm(); setBanner(`⚠️ Uh oh! The ${rn} machine is smoking!`);
+  for (const o of bots) if (o !== b && roomAt(o.x, o.y) === m.room) o.witness = { name: b.name, room: rn, told: false };
+  const others = bots.filter(o => o !== b);
+  let kind = R.clue, cols = [b.id];
+  if (kind === 'prints' && Math.random() < 0.5) kind = 'bolt';
+  if (kind === 'prints2') { kind = 'prints'; cols = shuffle([b.id, pick(others).id]); }
+  const ang = rnd(0, Math.PI * 2), cl = { kind, cols, room: m.room, x: m.x + (m.x > roomBox(m.room).x + 120 ? -1 : 1) * 60, y: m.y + (roomBox(m.room).r ? -38 : 44), steps: [] };
+  if (kind === 'prints') cols.forEach((c, k) => { for (let s = 0; s < 6; s++) cl.steps.push({ x: cl.x + Math.cos(ang + k * 1.2) * s * 13 + (s % 2 ? 5 : -5), y: cl.y + Math.sin(ang + k * 1.2) * s * 9, c }); });
+  cl.steps.forEach(s => { const bx = roomBox(m.room); s.x = Math.max(bx.x + 16, Math.min(bx.x + 224, s.x)); s.y = Math.max(bx.y + 16, Math.min(bx.y + bx.h - 16, s.y)); });
+  clues.push(cl);
+}
+
+// ---------- Robo (you!) ----------
+function blocked(x, y, r = 15) {
+  for (const [wx, wy, ww, wh] of WALLS) if (x + r > wx && x - r < wx + ww && y + r > wy && y - r < wy + wh) return true;
+  return false;
+}
+function updatePlayer() {
+  let dx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0), dy = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
+  if (dx || dy) walkTo = null;
+  else if (walkTo) { const ex = walkTo.x - player.x, ey = walkTo.y - player.y, d = Math.hypot(ex, ey); if (d < 4) walkTo = null; else { dx = ex / d; dy = ey / d; } }
+  const l = Math.hypot(dx, dy);
+  if (l) {
+    const sp = 3.2 / l, ox = player.x, oy = player.y;
+    if (!blocked(player.x + dx * sp, player.y)) player.x += dx * sp;
+    if (!blocked(player.x, player.y + dy * sp)) player.y += dy * sp;
+    if (walkTo && player.x === ox && player.y === oy) walkTo = null;
+    player.face = Math.atan2(dy, dx);
+  }
+  for (const cl of clues) if (!cl.got && Math.hypot(cl.x - player.x, cl.y - player.y) < 30) collectClue(cl);
+}
+function nearThings() {                             // everything Robo could use, nearest first
+  const out = [];
+  for (const b of bots) out.push({ kind: 'bot', o: b, d: dist(b, player), r: 58 });
+  for (const t of tasks) if (!t.done) out.push({ kind: 'task', o: t, d: dist(t, player), r: 52 });
+  for (const m of machines) if (m.broken) out.push({ kind: 'fix', o: m, d: dist(m, player), r: 62 });
+  const bell = machinePos(CONTROL); out.push({ kind: 'bell', o: bell, d: dist(bell, player), r: 60 });
+  const w = t => t.d - (t.kind === 'bot' ? 0 : 25);   // tasks, machines and the bell win over a robot standing close by
+  return out.filter(t => t.d < t.r).sort((a, b) => w(a) - w(b));
+}
+function useThing(t) {
+  if (!t) return;
+  if (t.kind === 'bot') talkTo(t.o);
+  else if (t.kind === 'task') openGame(t.o.type, t.o);
+  else if (t.kind === 'fix') openGame('fix', t.o);
+  else if (t.kind === 'bell') startMeeting();
+}
+function talkTo(b) {
+  b.face = Math.atan2(player.y - b.y, player.x - b.x); b.wait = Math.max(b.wait, 90);
+  if (b.isImp) return say(b, pick(IMP_TALK));
+  if (b.witness) {
+    const w = b.witness;
+    if (!w.told) { w.told = true; const im = bots.find(o => o.name === w.name); if (im) im.sus++; sfx.clue(); }
+    return say(b, `I saw ${w.name} sneaking near the ${w.room}! 🔍`);
+  }
+  say(b, pick(CHAT[b.name]));
+}
+function collectClue(cl) {
+  cl.got = true; sfx.clue();
+  for (const id of cl.cols) { const b = bots.find(o => o.id === id); if (b) b.sus++; }
+  const who = id => `${CREW[id].word} (that's ${CREW[id].name}!)`;
+  if (cl.kind === 'bolt') say(null, `🔩 CLUE! A ${who(cl.cols[0])} bolt fell off someone near the ${ROOMS[cl.room].name}!`);
+  else if (cl.cols.length === 1) say(null, `👣 CLUE! ${who(cl.cols[0])} footprints by the ${ROOMS[cl.room].name} machine!`);
+  else say(null, `👣 CLUE! TWO kinds of footprints: ${who(cl.cols[0])} and ${who(cl.cols[1])}. One of them walked by... and one is SNEAKY!`);
+}
+function finishTask(t) {
+  t.done = true; tasksDone++; sfx.task();
+  const left = bots.filter(b => !b.isImp && !b.cleared);
+  if (!left.length) return say(null, '📷 Task done! The Robo-Cam already cleared everyone it could!');
+  const b = pick(left); b.cleared = true;
+  say(null, `📷 Task done! The Robo-Cam shows ${b.name} was working hard the whole time. ${b.name} is NOT sus! ✅`);
+}
+function fixMachine(m) { m.broken = false; sfx.fix(); setBanner(`🔧 You fixed the ${ROOMS[m.room].name} machine!`); }
+
+function updatePlay() {
+  updatePlayer();
+  if (sabTimer > 0) sabTimer--;
+  for (const b of bots) updateBot(b);
+  for (const m of machines) m.t++;
+  if (bannerT > 0) bannerT--;
+  hint = nearThings()[0] || null;
+}
+
+// ---------- Task mini-games (tap them, or arrows + SPACE) ----------
+const PX = 180, PY = 66, PW = 600, PH = 400;
+const CLOSE = { x: PX + PW - 60, y: PY + 10, w: 50, h: 50 };
+const WIRE_COLS = ['#ff1744', '#2979ff', '#ffea00', '#00e676'];
+const GEAR_COLS = ['#ff5252', '#448aff', '#ffd740'];
+const LIGHT_COLS = ['#ff5252', '#40c4ff', '#ffee58', '#69f0ae'];
+function openGame(type, target) {
+  mg = { type, target, btns: [], sel: 0, win: 0, t: 0, shake: 0 };
+  if (type === 'wires') {
+    mg.R = shuffle([0, 1, 2, 3]); mg.conn = [-1, -1, -1, -1]; mg.pickL = -1;
+    for (let i = 0; i < 4; i++) mg.btns.push({ x: PX + 50, y: PY + 100 + i * 70, w: 110, h: 52, side: 0, i });
+    for (let i = 0; i < 4; i++) mg.btns.push({ x: PX + PW - 160, y: PY + 100 + i * 70, w: 110, h: 52, side: 1, i });
+  } else if (type === 'gears') {
+    mg.queue = Array.from({ length: 6 }, () => Math.floor(Math.random() * 3)); mg.cur = 0;
+    for (let k = 0; k < 3; k++) mg.btns.push({ x: PX + 60 + k * 170, y: PY + 250, w: 140, h: 120, k });
+  } else if (type === 'lights') {
+    mg.seq = Array.from({ length: 3 + round }, () => Math.floor(Math.random() * 4)); mg.phase = 'show'; mg.pos = 0; mg.lit = -1; mg.litT = 0;
+    for (let k = 0; k < 4; k++) mg.btns.push({ x: PX + 45 + k * 132, y: PY + 170, w: 112, h: 112, k });
+  } else if (type === 'battery') {
+    mg.fill = 0; mg.btns.push({ x: PX + 190, y: PY + 270, w: 220, h: 100 });
+  } else if (type === 'fix') {
+    mg.gone = [];
+    for (let k = 0; k < 5; k++) { mg.btns.push({ x: PX + 50 + k * 104 + rnd(-10, 10), y: PY + 120 + (k % 2) * 120 + rnd(-15, 15), w: 86, h: 86, k }); mg.gone.push(false); }
+  }
+  state = 'task'; sfx.tap();
+}
+function mgDone() { if (!mg.win) { mg.win = 1; sfx.good(); } }
+function mgPress(i) {
+  if (!mg || mg.win || i < 0 || i >= mg.btns.length) return;
+  const b = mg.btns[i]; mg.sel = i;
+  if (mg.type === 'wires') {
+    if (b.side === 0) { if (mg.conn[b.i] < 0) { mg.pickL = b.i; sfx.tap(); } }
+    else if (mg.pickL >= 0 && mg.R[b.i] === mg.pickL && !mg.conn.includes(b.i)) { mg.conn[mg.pickL] = b.i; mg.pickL = -1; sfx.zap(); if (mg.conn.every(c => c >= 0)) mgDone(); }
+    else { sfx.boop(); mg.shake = 10; }
+  } else if (mg.type === 'gears') {
+    if (b.k === mg.queue[mg.cur]) { mg.cur++; sfx.tap(); if (mg.cur >= mg.queue.length) mgDone(); }
+    else { sfx.boop(); mg.shake = 10; }
+  } else if (mg.type === 'lights') {
+    if (mg.phase !== 'input') return;
+    mg.lit = b.k; mg.litT = 14; note(midi(60 + [0, 4, 7, 12][b.k]), 0, 0.2, 'square', 0.08);
+    if (b.k === mg.seq[mg.pos]) { mg.pos++; if (mg.pos >= mg.seq.length) mgDone(); }
+    else { sfx.boop(); mg.shake = 10; mg.phase = 'show'; mg.t = -40; mg.pos = 0; }
+  } else if (mg.type === 'battery') { mg.fill = Math.min(1, mg.fill + 0.07); sfx.tap(); if (mg.fill >= 1) mgDone(); }
+  else if (mg.type === 'fix') { if (!mg.gone[b.k]) { mg.gone[b.k] = true; sfx.puff(); if (mg.gone.every(g => g)) mgDone(); } }
+}
+function mgMove(d) {
+  if (!mg || mg.type === 'battery') return;
+  const n = mg.btns.length;
+  for (let k = 0; k < n; k++) { mg.sel = (mg.sel + d + n) % n; if (!(mg.type === 'fix' && mg.gone[mg.sel])) break; }
+}
+function updateGame() {
+  mg.t++; if (mg.shake > 0) mg.shake--; if (mg.litT > 0 && --mg.litT === 0) mg.lit = -1;
+  if (mg.type === 'lights' && mg.phase === 'show') {
+    const k = Math.floor(mg.t / 40);
+    if (mg.t >= 0 && mg.t % 40 === 0 && k < mg.seq.length) { mg.lit = mg.seq[k]; mg.litT = 26; note(midi(60 + [0, 4, 7, 12][mg.seq[k]]), 0, 0.25, 'square', 0.07); }
+    if (mg.t > mg.seq.length * 40 + 10) { mg.phase = 'input'; mg.pos = 0; }
+  }
+  if (mg.type === 'battery' && !mg.win && (spaceHeld || (mouseHeld && inBox(mg.btns[0], mouseX, mouseY)))) {
+    mg.fill = Math.min(1, mg.fill + 0.012); if (mg.t % 8 === 0) note(200 + mg.fill * 600, 0, 0.08, 'sine', 0.05);
+    if (mg.fill >= 1) mgDone();
+  }
+  if (mg.win && ++mg.win > 55) closeGame(true);
+}
+function closeGame(ok) {
+  const g = mg; mg = null; state = 'play';
+  if (ok) { if (g.type === 'fix') fixMachine(g.target); else finishTask(g.target); }
+}
+
+// ---------- Factory Meeting ----------
+const meetBtn = k => { const n = bots.length, sw = 900 / n, cx = 30 + sw * (k + 0.5); return { x: cx - 62, y: 200, w: 124, h: 180, cx }; };
+const KEEP = { x: 340, y: 446, w: 280, h: 56 };
+function startMeeting() {
+  sfx.bell(); state = 'meeting';
+  const lines = shuffle(MEET), cb = roomBox(CONTROL);
+  bots.forEach((b, k) => { b.said = b.cleared && b.saidNot ? 'Not me!' : lines[k % lines.length]; b.path = []; b.wait = rnd(30, 120); b.sabTarget = null;
+    const a = k / bots.length * Math.PI * 2; b.x = cb.x + 120 + Math.cos(a) * 70; b.y = cb.y + 112 + Math.sin(a) * 55; });
+  meet = { sel: 0, msg: '', msgT: 0, back: false };
+}
+function endMeeting() { state = 'play'; meet = null; sabTimer = Math.max(sabTimer, 300); walkTo = null; }
+function meetChoose(k) {
+  if (!meet || meet.msgT > 0) return;
+  meet.sel = k;
+  if (k === bots.length) return endMeeting();
+  const b = bots[k];
+  if (b.cleared) { meet.msg = `${b.name}: "The Robo-Cam says I'm NOT sus! Pick someone else!"`; meet.msgT = 110; sfx.nope(); return; }
+  if (b.isImp) {
+    scene = { kind: 'caught', t: 0 }; state = 'scene'; sfx.giggle();
+    unlocked = Math.max(unlocked, Math.min(3, round + 2));
+    if (round === 2) { wonAll = true; trophy('susWin'); }
+    saveProgress(); return;
+  }
+  guesses--; b.cleared = true; b.saidNot = true; b.said = 'Not me!'; sfx.nope();
+  if (guesses <= 0) { scene = { kind: 'escape', t: 0 }; state = 'scene'; return; }
+  meet.msg = `"Not me!" says ${b.name}. ${guesses} ${guesses === 1 ? 'guess' : 'guesses'} left. Keep looking for clues!`; meet.msgT = 170; meet.back = true;
+}
+function updateMeeting() {
+  if (meet.msgT > 0 && --meet.msgT === 0) { meet.msg = ''; if (meet.back) endMeeting(); }
+}
+function sceneReady() { return scene && scene.t > (scene.kind === 'caught' ? 230 : 190); }
+function sceneNext() {
+  if (!sceneReady()) return;
+  if (scene.kind === 'escape') return startRound(round);
+  if (round < 2) return startRound(round + 1);
+  scene = null; state = 'title'; titleSel = 0;
+}
+
+// ---------- Input ----------
+let mouseX = 0, mouseY = 0;
+function pressGo() {
+  if (state === 'title') { if (titleSel < unlocked) startRound(titleSel); else sfx.boop(); }
+  else if (state === 'play') { if (talk) closeTalk(); else useThing(hint); }
+  else if (state === 'task') { if (mg.type === 'battery') { if (mg.fill < 0.06) mgPress(0); } else mgPress(mg.sel); }
+  else if (state === 'meeting') meetChoose(meet.sel);
+  else if (state === 'scene') sceneNext();
+}
+function closeTalk() { if (talk && talk.t > 12) { const a = talk.after; talk = null; sfx.tap(); if (a) a(); } }
+const ARROWS = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down', a: 'left', d: 'right', w: 'up', s: 'down', A: 'left', D: 'right', W: 'up', S: 'down' };
+addEventListener('keydown', e => {
+  wakeAudio();
+  const k = e.key, dir = ARROWS[k];
+  if (dir) { keys[dir] = true; if (k.startsWith('Arrow')) e.preventDefault(); }
+  if (k === ' ') e.preventDefault();
+  if (k === 'm' || k === 'M') { musicOn = !musicOn; return; }
+  if (e.repeat) return;
+  if (dir) {
+    const d = dir === 'left' || dir === 'up' ? -1 : 1;
+    if (state === 'title') titleSel = (titleSel + d + 3) % 3;
+    else if (state === 'task') mgMove(d);
+    else if (state === 'meeting' && meet.msgT <= 0) meet.sel = (meet.sel + d + bots.length + 1) % (bots.length + 1);
+  }
+  if (k === ' ' || k === 'Enter') { if (k === ' ') spaceHeld = true; pressGo(); }
+  if (k === 'Escape') {
+    if (state === 'task') closeGame(false);
+    else if (state === 'meeting' && meet.msgT <= 0) endMeeting();
+    else if (state === 'play') { if (talk) closeTalk(); else state = 'title'; }
+    else if (state === 'scene') sceneNext();
+  }
+});
+addEventListener('keyup', e => { const dir = ARROWS[e.key]; if (dir) keys[dir] = false; if (e.key === ' ') spaceHeld = false; });
+function canvasXY(e) { const r = C.getBoundingClientRect(); return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height]; }
+C.addEventListener('mousemove', e => { [mouseX, mouseY] = canvasXY(e); });
+addEventListener('mouseup', () => { mouseHeld = false; });
+C.addEventListener('mousedown', e => {
+  wakeAudio(); [mouseX, mouseY] = canvasXY(e); mouseHeld = true;
+  const x = mouseX, y = mouseY;
+  if (state === 'title') {
+    for (let k = 0; k < 3; k++) if (inBox(titleBtn(k), x, y)) { titleSel = k; return pressGo(); }
+    if (y > 300) { titleSel = unlocked - 1; pressGo(); }
+  } else if (state === 'play') {
+    if (talk) return closeTalk();
+    const near = nearThings().concat(), tapped = [];
+    for (const b of bots) if (Math.hypot(b.x - x, b.y - y) < 34) tapped.push({ kind: 'bot', o: b });
+    for (const t of tasks) if (!t.done && Math.hypot(t.x - x, t.y - y) < 34) tapped.push({ kind: 'task', o: t });
+    for (const m of machines) if (m.broken && Math.hypot(m.x - x, m.y - y) < 44) tapped.push({ kind: 'fix', o: m });
+    const bell = machinePos(CONTROL); if (Math.hypot(bell.x - x, bell.y - y) < 40) tapped.push({ kind: 'bell', o: bell });
+    const hit = tapped.find(t => near.some(n => n.o === t.o));
+    if (hit) return useThing(hit);
+    if (y > TOP) walkTo = { x, y };
+  } else if (state === 'task') {
+    if (inBox(CLOSE, x, y)) return closeGame(false);
+    for (let i = 0; i < mg.btns.length; i++) if (inBox(mg.btns[i], x, y)) return mgPress(i);
+  } else if (state === 'meeting') {
+    if (inBox(KEEP, x, y)) return meetChoose(bots.length);
+    for (let k = 0; k < bots.length; k++) if (inBox(meetBtn(k), x, y)) return meetChoose(k);
+  } else if (state === 'scene') sceneNext();
+});
+const titleBtn = k => ({ x: 250 + k * 160, y: 392, w: 140, h: 66 });
+
+// ---------- Update ----------
+function update() {
+  frame++;
+  if (state === 'play') { if (talk) { talk.t++; for (const m of machines) m.t++; } else updatePlay(); }
+  else if (state === 'task') updateGame();
+  else if (state === 'meeting') updateMeeting();
+  else if (state === 'scene') { scene.t++; if (scene.kind === 'caught' && scene.t === 112) sfx.win(); if (scene.kind === 'escape' && scene.t % 40 === 1 && scene.t < 140) sfx.giggle(); }
+}
+
+// ---------- Drawing helpers ----------
+function rr(x, y, w, h, r, fill, stroke, lw = 3) {
+  ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw; ctx.stroke(); }
+}
+function text(s, x, y, size = 20, col = '#fff', align = 'center', outline = '#1a1f3a') {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; ctx.textAlign = align; ctx.textBaseline = 'middle';
+  if (outline) { ctx.lineWidth = Math.max(3, size / 6); ctx.strokeStyle = outline; ctx.lineJoin = 'round'; ctx.strokeText(s, x, y); }
+  ctx.fillStyle = col; ctx.fillText(s, x, y);
+}
+function wrap(s, x, y, maxW, size, col, lineH, outline) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`;
+  const words = s.split(' '), lines = []; let line = '';
+  for (const w of words) { const t = line ? line + ' ' + w : w; if (ctx.measureText(t).width > maxW && line) { lines.push(line); line = w; } else line = t; }
+  lines.push(line);
+  lines.forEach((l, i) => text(l, x, y + i * lineH, size, col, 'center', outline));
+  return lines.length;
+}
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); }
+
+// ---------- A worker robot, seen from above ----------
+function drawBot(b, x, y, s = 1, face = b.face, mood = '') {
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.beginPath(); ctx.ellipse(2, 5, 21, 17, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#37474f';                            // little wheels
+  ctx.save(); ctx.rotate(face); ctx.fillRect(-12, -22, 24, 7); ctx.fillRect(-12, 15, 24, 7); ctx.restore();
+  ctx.fillStyle = b.col; ctx.strokeStyle = b.dark; ctx.lineWidth = 3; ctx.beginPath();
+  if (b.shape === 'square') { ctx.rect(-17, -17, 34, 34); }
+  else if (b.shape === 'triangle') { ctx.moveTo(0, -22); ctx.lineTo(21, 16); ctx.lineTo(-21, 16); ctx.closePath(); }
+  else if (b.shape === 'hex') { for (let k = 0; k < 6; k++) { const a = k * Math.PI / 3; ctx.lineTo(Math.cos(a) * 20, Math.sin(a) * 20); } ctx.closePath(); }
+  else if (b.shape === 'gear') { for (let k = 0; k < 16; k++) { const a = k * Math.PI / 8 + frame * 0.01, r = k % 2 ? 15 : 20; ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r); } ctx.closePath(); }
+  else if (b.shape === 'jar') { ctx.moveTo(-14, -18); ctx.lineTo(14, -18); ctx.lineTo(16, 17); ctx.lineTo(-16, 17); ctx.closePath(); }
+  else { ctx.arc(0, 0, 19, 0, Math.PI * 2); }
+  ctx.fill(); ctx.stroke();
+  if (b.shape === 'dots') { ctx.fillStyle = '#fff'; for (const [dx, dy] of [[-9, 8], [9, 8], [0, 12], [-12, -2], [12, -2]]) { ctx.beginPath(); ctx.arc(dx, dy, 2.6, 0, 7); ctx.fill(); } }
+  if (b.shape === 'jar') { ctx.fillStyle = 'rgba(255,255,255,.7)'; for (let k = 0; k < 3; k++) { ctx.beginPath(); ctx.arc(-7 + k * 7, 10 - ((frame * 0.4 + k * 9) % 18), 2.2, 0, 7); ctx.fill(); } }
+  if (b.shape === 'square') { circle(-12, -12, 2.5, b.dark); circle(12, -12, 2.5, b.dark); circle(-12, 12, 2.5, b.dark); circle(12, 12, 2.5, b.dark); }
+  if (b.shape === 'gear') circle(0, 0, 7, b.dark);
+  // face: a little screen with two eyes looking where the robot is going
+  const fx = Math.cos(face) * 4, fy = Math.sin(face) * 3 - 3;
+  rr(-11 + fx, -8 + fy, 22, 12, 5, '#263238');
+  const blink = (frame + b.id * 37) % 200 < 6;
+  ctx.fillStyle = mood === 'sneaky' ? '#ff4081' : '#b9f6ca';
+  if (blink) { ctx.fillRect(-7 + fx, -3 + fy, 5, 2); ctx.fillRect(2 + fx, -3 + fy, 5, 2); }
+  else if (mood === 'sneaky') { ctx.fillRect(-7 + fx, -3 + fy, 5, 3); ctx.fillRect(2 + fx, -3 + fy, 5, 3); }
+  else { ctx.beginPath(); ctx.arc(-4.5 + fx, -2 + fy, 2.8, 0, 7); ctx.arc(4.5 + fx, -2 + fy, 2.8, 0, 7); ctx.fill(); }
+  // antenna
+  ctx.strokeStyle = b.dark; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, -16); ctx.lineTo(0, -27); ctx.stroke();
+  circle(0, -28, 4, b.shape === 'jar' ? '#fff' : b.col);
+  ctx.restore();
+}
+// ---------- Robo, seen from above: white round robot, dark visor, blue eyes, blue ear pods ----------
+function drawRobo(x, y, s = 1, face = player ? player.face : 0) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  ctx.fillStyle = 'rgba(0,0,0,.2)'; ctx.beginPath(); ctx.ellipse(2, 5, 20, 17, 0, 0, 7); ctx.fill();
+  const moving = state === 'play' && (keys.left || keys.right || keys.up || keys.down || walkTo);
+  if (moving) { ctx.save(); ctx.rotate(face + Math.PI); ctx.fillStyle = '#7df9ff'; ctx.beginPath(); ctx.moveTo(14, -7); ctx.lineTo(24 + Math.random() * 6, 0); ctx.lineTo(14, 7); ctx.fill(); ctx.restore(); }
+  ctx.save(); ctx.rotate(face);
+  rr(-6, -24, 12, 9, 4, '#2979ff'); rr(-6, 15, 12, 9, 4, '#2979ff');   // ear pods
+  ctx.restore();
+  circle(0, 0, 18, '#ffffff'); ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 2; ctx.stroke();
+  const vx = Math.cos(face) * 6, vy = Math.sin(face) * 6;
+  ctx.fillStyle = '#111827'; ctx.beginPath(); ctx.ellipse(vx, vy, 12, 10, face, 0, 7); ctx.fill();
+  const px = -Math.sin(face) * 4.5, py = Math.cos(face) * 4.5, blink = frame % 180 < 6 ? 0.6 : 2.6;
+  ctx.fillStyle = '#40c4ff'; ctx.beginPath(); ctx.arc(vx * 1.3 + px, vy * 1.3 + py, blink, 0, 7); ctx.arc(vx * 1.3 - px, vy * 1.3 - py, blink, 0, 7); ctx.fill();
+  ctx.restore();
+}
+
+// ---------- Machines (one in each room) ----------
+function drawMachine(m) {
+  const { x, y } = m, t = m.broken ? 0 : frame;
+  ctx.save(); ctx.translate(x, y);
+  if (m.broken) { ctx.strokeStyle = frame % 30 < 15 ? '#ff1744' : '#ffea00'; ctx.lineWidth = 4; ctx.setLineDash([8, 6]); ctx.strokeRect(-46, -40, 92, 80); ctx.setLineDash([]); }
+  switch (m.room) {
+    case 0: rr(-36, -30, 72, 60, 10, '#8d6e63', '#4e342e');
+      for (const [gx, gy, r, d] of [[-12, 0, 18, 1], [16, -8, 12, -1]]) { ctx.save(); ctx.translate(gx, gy); ctx.rotate(t * 0.03 * d); ctx.fillStyle = '#ffb300'; ctx.beginPath();
+        for (let k = 0; k < 16; k++) { const a = k * Math.PI / 8, rr2 = k % 2 ? r * 0.75 : r; ctx.lineTo(Math.cos(a) * rr2, Math.sin(a) * rr2); } ctx.fill(); circle(0, 0, r * 0.3, '#5d4037'); ctx.restore(); } break;
+    case 1: rr(-34, -32, 68, 64, 10, '#eceff1', '#78909c');
+      ['#ff5252', '#40c4ff', '#ffee58', '#69f0ae'].forEach((c, k) => { rr(-28 + k * 15, 6, 12, 18, 3, c); });
+      ctx.save(); ctx.translate(0, -12); ctx.rotate(t * 0.08); ctx.fillStyle = '#e040fb'; ctx.fillRect(-14, -3, 28, 6); ctx.restore(); circle(0, -12, 5, '#7b1fa2'); break;
+    case 2: rr(-44, -16, 88, 32, 8, '#455a64', '#263238');
+      for (let k = 0; k < 6; k++) { ctx.fillStyle = '#607d8b'; ctx.fillRect(-40 + ((k * 16 + t) % 80), -12, 3, 24); }
+      for (let k = 0; k < 2; k++) rr(-36 + ((k * 42 + t * 0.6) % 70), -10, 18, 18, 3, '#ffb74d', '#e65100', 2); break;
+    case 3: rr(-22, -32, 44, 64, 8, '#43a047', '#1b5e20'); rr(-9, -40, 18, 10, 3, '#1b5e20');
+      const lv = m.broken ? 0.2 : 0.5 + 0.5 * Math.sin(t * 0.05); rr(-14, 24 - 46 * lv, 28, 46 * lv, 4, '#b2ff59');
+      text('⚡', 0, 0, 22, '#ffff00', 'center', null); break;
+    case 4: rr(-32, -34, 64, 68, 10, '#ef5350', '#b71c1c'); rr(-24, -26, 48, 32, 6, '#e3f2fd');
+      ['🍪', '🔋', '🍩'].forEach((e, k) => text(e, -15 + k * 15, -10, 12, '#fff', 'center', null)); rr(-10, 14, 20, 12, 3, '#263238'); break;
+    case 5: rr(-38, -30, 76, 60, 14, '#81d4fa', '#0277bd');
+      for (let k = 0; k < 5; k++) { const by = 20 - ((t * 0.7 + k * 13) % 50); ctx.fillStyle = 'rgba(255,255,255,.9)'; ctx.beginPath(); ctx.arc(-24 + k * 12, by, 5, 0, 7); ctx.fill(); }
+      text('🫧', 22, -14, 18, '#fff', 'center', null); break;
+    case 7: rr(-30, 14, 60, 18, 6, '#78909c', '#37474f');
+      ctx.fillStyle = '#eceff1'; ctx.beginPath(); ctx.moveTo(0, -38); ctx.quadraticCurveTo(16, -18, 12, 14); ctx.lineTo(-12, 14); ctx.quadraticCurveTo(-16, -18, 0, -38); ctx.fill();
+      circle(0, -12, 6, '#40c4ff'); ctx.fillStyle = '#ff5252'; ctx.beginPath(); ctx.moveTo(-12, 4); ctx.lineTo(-22, 16); ctx.lineTo(-12, 14); ctx.moveTo(12, 4); ctx.lineTo(22, 16); ctx.lineTo(12, 14); ctx.fill();
+      if (!m.broken && frame % 20 < 10) { ctx.fillStyle = '#ffab00'; ctx.beginPath(); ctx.moveTo(-6, 14); ctx.lineTo(0, 24); ctx.lineTo(6, 14); ctx.fill(); } break;
+  }
+  ctx.restore();
+  if (m.broken) {                                       // silly smoke puffs + sparks
+    for (let k = 0; k < 5; k++) { const p = ((m.t * 0.6 + k * 20) % 100) / 100; ctx.fillStyle = `rgba(120,120,130,${0.75 - p * 0.6})`; ctx.beginPath(); ctx.arc(x - 10 + Math.sin(k * 2 + m.t * 0.05) * 14, y - 20 - p * 60, 9 + p * 14, 0, 7); ctx.fill(); }
+    if (m.t % 14 < 7) { ctx.strokeStyle = '#ffea00'; ctx.lineWidth = 3; ctx.beginPath(); const sx = x + rnd(-30, 30), sy = y + rnd(-20, 20); ctx.moveTo(sx, sy); ctx.lineTo(sx + 8, sy - 6); ctx.lineTo(sx + 2, sy - 10); ctx.lineTo(sx + 12, sy - 18); ctx.stroke(); }
+  }
+}
+function drawBell() {
+  const b = machinePos(CONTROL), sw = Math.sin(frame * 0.1) * 0.15;
+  rr(b.x - 34, b.y + 10, 68, 22, 6, '#5e35b1', '#311b92');
+  ctx.save(); ctx.translate(b.x, b.y - 2); ctx.rotate(sw);
+  ctx.fillStyle = '#ffd740'; ctx.strokeStyle = '#ff8f00'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(-22, 14); ctx.quadraticCurveTo(-20, -24, 0, -26); ctx.quadraticCurveTo(20, -24, 22, 14); ctx.closePath(); ctx.fill(); ctx.stroke();
+  circle(0, 17, 5, '#ff8f00'); ctx.restore();
+  text('MEETING BELL', b.x, b.y + 44, 13, '#fff');
+  // Time-Out Corner
+  rr(TIMEOUT.x - 34, TIMEOUT.y - 26, 68, 52, 8, 'rgba(255,255,255,.35)', '#7e57c2', 2);
+  text('TIME-OUT', TIMEOUT.x, TIMEOUT.y - 34, 11, '#fff'); text('CORNER', TIMEOUT.x, TIMEOUT.y - 22, 11, '#fff');
+  // screens on the wall
+  const cb = roomBox(CONTROL);
+  for (let k = 0; k < 3; k++) { rr(cb.x + 22 + k * 52, cb.y + 38, 44, 28, 4, '#263238', '#90a4ae', 2); ctx.fillStyle = ['#69f0ae', '#40c4ff', '#ffd740'][k]; ctx.fillRect(cb.x + 28 + k * 52, cb.y + 50 + Math.sin(frame * 0.05 + k) * 6, 32, 3); }
+}
+
+// ---------- Draw the factory ----------
+function drawWorld() {
+  ctx.fillStyle = '#263238'; ctx.fillRect(0, 0, W, H);
+  ROOMS.forEach((rm, i) => {
+    const b = roomBox(i);
+    ctx.fillStyle = rm.floor; ctx.fillRect(b.x, b.y, b.w, b.h);
+    ctx.fillStyle = rm.tile;
+    for (let tx = 0; tx < 6; tx++) for (let ty = 0; ty < 6; ty++) if ((tx + ty) % 2) ctx.fillRect(b.x + tx * 40, b.y + ty * 40, 40, 40);
+    text(rm.name, b.x + 120, b.y + 24, 16, '#fff');
+  });
+  for (const [x, y, w, h] of WALLS) { ctx.fillStyle = '#455a64'; ctx.fillRect(x, y, w, h); ctx.fillStyle = '#78909c'; ctx.fillRect(x, y, w, 3); }
+  for (const t of tasks) if (!t.done) {                 // glowing task pads
+    const g = 0.5 + 0.5 * Math.sin(frame * 0.1);
+    circle(t.x, t.y, 24 + g * 4, `rgba(255,235,59,${0.35 + g * 0.3})`); rr(t.x - 20, t.y - 20, 40, 40, 8, '#fff59d', '#f9a825');
+    text(TASK_INFO[t.type][0], t.x, t.y + 1, 22, '#fff', 'center', null); text('!', t.x + 18, t.y - 20, 20, '#ff1744');
+  }
+  for (const cl of clues) if (!cl.got) {                // clues on the floor
+    for (const s of cl.steps) { ctx.fillStyle = CREW[s.c].col; ctx.strokeStyle = CREW[s.c].dark; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.ellipse(s.x, s.y, 5, 7, 0, 0, 7); ctx.fill(); ctx.stroke(); }
+    if (cl.kind === 'bolt') { const c = CREW[cl.cols[0]]; ctx.fillStyle = c.col; ctx.strokeStyle = c.dark; ctx.lineWidth = 3; ctx.beginPath(); for (let k = 0; k < 6; k++) { const a = k * Math.PI / 3 + frame * 0.02; ctx.lineTo(cl.x + Math.cos(a) * 11, cl.y + Math.sin(a) * 11); } ctx.closePath(); ctx.fill(); ctx.stroke(); circle(cl.x, cl.y, 4, c.dark); }
+    const tw = frame % 40 < 20; text('✨', cl.x + 12, cl.y - 14 + (tw ? -2 : 0), 14, '#fff', 'center', null);
+  }
+  for (const m of machines) drawMachine(m);
+  drawBell();
+  const things = bots.map(b => ({ y: b.y, d: () => drawBot(b, b.x, b.y + Math.sin(b.bob) * 1.2) })).concat([{ y: player.y, d: () => drawRobo(player.x, player.y) }]);
+  things.sort((a, b) => a.y - b.y).forEach(t => t.d());
+  for (const b of bots) { text(b.name, b.x, b.y - 40, 12, '#fff'); if (b.cleared) text('✅', b.x + 22, b.y - 22, 14, '#fff', 'center', null); }
+  if (walkTo) { ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(walkTo.x, walkTo.y, 8 + (frame % 20) / 3, 0, 7); ctx.stroke(); }
+  if (hint && !talk) {
+    const o = hint.o, icon = { bot: '💬', task: '✋', fix: '🔧', bell: '🔔' }[hint.kind], by = o.y - 58 + Math.sin(frame * 0.15) * 3;
+    rr(o.x - 18, by - 16, 36, 32, 10, '#fff', '#1a1f3a', 2); text(icon, o.x, by + 1, 18, '#000', 'center', null);
+    const what = hint.kind === 'bot' ? `Talk to ${o.name}` : hint.kind === 'task' ? TASK_INFO[o.type][1] : hint.kind === 'fix' ? 'Fix the machine' : 'Ring the bell: FACTORY MEETING!';
+    rr(W / 2 - 200, H - 44, 400, 34, 14, 'rgba(26,31,58,.85)'); text(`SPACE or tap: ${what}`, W / 2, H - 27, 17, '#ffeb3b');
+  }
+}
+function drawHUD() {
+  ctx.fillStyle = '#1a1f3a'; ctx.fillRect(0, 0, W, TOP);
+  text(`Round ${round + 1}/3`, 64, 18, 17, '#ffeb3b'); text(`Tasks ${tasksDone}/3`, 64, 38, 15, '#b9f6ca');
+  text('🔔 Guesses', 190, 18, 15, '#fff'); text('❤️'.repeat(guesses) + '🤍'.repeat(3 - guesses), 190, 38, 14, '#fff', 'center', null);
+  const sx = 290, sw = Math.min(100, 560 / bots.length);
+  bots.forEach((b, k) => {
+    const x = sx + sw * (k + 0.5); drawBot(b, x - 16, 27, 0.6, Math.PI / 2);
+    text(b.name, x + 18, 17, 12, '#fff');
+    if (b.cleared) text('✅', x + 18, 37, 14, '#fff', 'center', null);
+    else if (b.sus) text('🔍'.repeat(Math.min(3, b.sus)), x + 18, 37, 11, '#fff', 'center', null);
+  });
+  text('M = music', 912, 26, 12, '#90a4ae');
+  if (bannerT > 0) { const a = Math.min(1, bannerT / 30); ctx.globalAlpha = a; rr(W / 2 - 280, TOP + 8, 560, 38, 16, '#ff6f00', '#fff', 3); text(banner, W / 2, TOP + 27, 18, '#fff'); ctx.globalAlpha = 1; }
+}
+function drawTalk() {
+  if (!talk) return;
+  rr(110, 352, 740, 150, 20, '#fffde7', '#5e35b1', 5);
+  if (talk.bot) { drawBot(talk.bot, 190, 418, 1.8, Math.PI / 2); text(talk.bot.name, 190, 474, 18, talk.bot.col); }
+  else drawRobo(190, 418, 1.8, Math.PI / 2);
+  wrap(talk.text, 530, 392, 520, 21, '#311b92', 30, null);
+  if (talk.t > 12 && frame % 40 < 28) text('tap / SPACE ▶', 770, 484, 15, '#7e57c2', 'center', null);
+}
+function drawTask() {
+  ctx.fillStyle = 'rgba(10,10,30,.65)'; ctx.fillRect(0, 0, W, H);
+  const sh = mg.shake ? Math.sin(mg.shake * 2) * 6 : 0;
+  ctx.save(); ctx.translate(sh, 0);
+  rr(PX, PY, PW, PH, 24, '#37474f', '#ffd740', 6);
+  const title = mg.type === 'fix' ? '🔧 Pop the smoke clouds!' : `${TASK_INFO[mg.type][0]} ${TASK_INFO[mg.type][1]}`;
+  text(title, PX + PW / 2, PY + 36, 28, '#ffeb3b');
+  rr(CLOSE.x, CLOSE.y, CLOSE.w, CLOSE.h, 12, '#ef5350', '#fff', 3); text('✕', CLOSE.x + 25, CLOSE.y + 26, 26, '#fff', 'center', null);
+  const B = mg.btns, sel = i => { if (mg.sel === i && !mg.win) rr(B[i].x - 6, B[i].y - 6, B[i].w + 12, B[i].h + 12, 14, null, '#fff', 4); };
+  if (mg.type === 'wires') {
+    text('Tap a wire, then tap the SAME color!', PX + PW / 2, PY + 72, 17, '#fff');
+    for (let i = 0; i < 4; i++) { const a = B[i], j = mg.conn[i]; if (j >= 0) { const b = B[4 + j]; ctx.strokeStyle = WIRE_COLS[i]; ctx.lineWidth = 12; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(a.x + a.w, a.y + a.h / 2); ctx.bezierCurveTo(PX + 300, a.y + a.h / 2, PX + 300, b.y + b.h / 2, b.x, b.y + b.h / 2); ctx.stroke(); } }
+    B.forEach((b, i) => { const c = WIRE_COLS[b.side ? mg.R[b.i] : b.i]; rr(b.x, b.y, b.w, b.h, 12, c, b.side === 0 && mg.pickL === b.i ? '#fff' : '#263238', b.side === 0 && mg.pickL === b.i ? 6 : 3); sel(i); });
+    if (mg.pickL >= 0) { const a = B[mg.pickL]; ctx.strokeStyle = WIRE_COLS[mg.pickL]; ctx.lineWidth = 10; ctx.setLineDash([10, 8]); ctx.beginPath(); ctx.moveTo(a.x + a.w, a.y + a.h / 2); ctx.lineTo(a.x + a.w + 60, a.y + a.h / 2); ctx.stroke(); ctx.setLineDash([]); }
+  } else if (mg.type === 'gears') {
+    text('Put the gear in the bin with the SAME color!', PX + PW / 2, PY + 72, 17, '#fff');
+    if (mg.cur < mg.queue.length) { ctx.save(); ctx.translate(PX + PW / 2, PY + 160); ctx.rotate(frame * 0.03); ctx.fillStyle = GEAR_COLS[mg.queue[mg.cur]]; ctx.beginPath();
+      for (let k = 0; k < 20; k++) { const a = k * Math.PI / 10, r = k % 2 ? 36 : 48; ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r); } ctx.fill(); circle(0, 0, 14, '#37474f'); ctx.restore(); }
+    text(`${mg.cur}/${mg.queue.length}`, PX + 70, PY + 160, 22, '#fff');
+    B.forEach((b, i) => { rr(b.x, b.y, b.w, b.h, 16, GEAR_COLS[b.k], '#263238', 4); rr(b.x + 14, b.y + 14, b.w - 28, 30, 8, 'rgba(0,0,0,.25)'); text('BIN', b.x + b.w / 2, b.y + 80, 22, '#fff'); sel(i); });
+  } else if (mg.type === 'lights') {
+    text(mg.phase === 'show' ? '👀 Watch the lights...' : `Now YOU tap them in the same order! (${mg.pos}/${mg.seq.length})`, PX + PW / 2, PY + 90, 19, mg.phase === 'show' ? '#ffeb3b' : '#b9f6ca');
+    B.forEach((b, i) => { const on = mg.lit === b.k; circle(b.x + b.w / 2, b.y + b.h / 2, b.w / 2, on ? LIGHT_COLS[b.k] : '#263238'); ctx.strokeStyle = LIGHT_COLS[b.k]; ctx.lineWidth = 6; ctx.stroke();
+      if (on) circle(b.x + b.w / 2, b.y + b.h / 2, b.w / 2 + 12, 'rgba(255,255,255,.25)'); sel(i); });
+  } else if (mg.type === 'battery') {
+    text('HOLD the button (or hold SPACE) to fill it up!', PX + PW / 2, PY + 72, 17, '#fff');
+    rr(PX + 150, PY + 110, 300, 120, 16, '#263238', '#b0bec5', 5); rr(PX + 450, PY + 145, 20, 50, 4, '#b0bec5');
+    rr(PX + 160, PY + 120, 280 * mg.fill + 1, 100, 10, mg.fill < 1 ? '#76ff03' : '#ffeb3b');
+    text(`${Math.floor(mg.fill * 100)}%`, PX + 300, PY + 170, 30, '#fff');
+    const b = B[0], held = spaceHeld || (mouseHeld && inBox(b, mouseX, mouseY));
+    rr(b.x, b.y + (held ? 4 : 0), b.w, b.h, 22, held ? '#ffb300' : '#ffd740', '#e65100', 5); text('⚡ HOLD ⚡', b.x + b.w / 2, b.y + b.h / 2 + (held ? 4 : 0), 28, '#fff');
+  } else if (mg.type === 'fix') {
+    text('Tap every smoke cloud to fix the machine!', PX + PW / 2, PY + 72, 17, '#fff');
+    B.forEach((b, i) => { if (mg.gone[b.k]) return; const cx = b.x + b.w / 2, cy = b.y + b.h / 2 + Math.sin(frame * 0.08 + i) * 5;
+      ctx.fillStyle = '#9e9e9e'; ctx.beginPath(); ctx.arc(cx - 16, cy + 6, 22, 0, 7); ctx.arc(cx + 16, cy + 6, 22, 0, 7); ctx.arc(cx, cy - 10, 26, 0, 7); ctx.fill();
+      text('💨', cx, cy, 24, '#fff', 'center', null); sel(i); });
+  }
+  if (mg.win) { rr(PX + 150, PY + PH / 2 - 50, 300, 100, 24, '#69f0ae', '#fff', 5); text('Great job! ⭐', PX + PW / 2, PY + PH / 2, 38, '#fff'); }
+  ctx.restore();
+}
+
+// ---------- Meeting + ending scenes ----------
+function meetingBG(title) {
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#4527a0'); g.addColorStop(1, '#7e57c2'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(255,255,255,.08)'; for (let k = 0; k < 12; k++) ctx.fillRect(k * 80, 0, 40, H);
+  rr(40, 390, 880, 30, 14, '#311b92');
+  text(title, W / 2, 40, 34, '#ffeb3b');
+}
+function bubble(x, y, s, w = 132) {
+  ctx.font = 'bold 14px "Trebuchet MS", Arial, sans-serif';
+  const words = s.split(' '), lines = []; let line = '';
+  for (const wd of words) { const t = line ? line + ' ' + wd : wd; if (ctx.measureText(t).width > w - 14 && line) { lines.push(line); line = wd; } else line = t; }
+  lines.push(line);
+  const h = lines.length * 18 + 14;
+  rr(x - w / 2, y - h, w, h, 12, '#fff', '#311b92', 2);
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(x - 8, y - 1); ctx.lineTo(x, y + 10); ctx.lineTo(x + 8, y - 1); ctx.fill();
+  lines.forEach((l, i) => text(l, x, y - h + 16 + i * 18, 14, '#311b92', 'center', null));
+}
+function drawMeeting() {
+  meetingBG('🔔 FACTORY MEETING! Who is SUS?');
+  text(`Tap the robot you think is the sneaky one!   Guesses left: ${'❤️'.repeat(guesses)}`, W / 2, 76, 17, '#fff');
+  bots.forEach((b, k) => {
+    const r = meetBtn(k), cy = 310 + Math.sin(frame * 0.08 + k) * 3;
+    if (meet.sel === k) rr(r.x, r.y, r.w, r.h, 16, 'rgba(255,255,255,.18)', '#ffeb3b', 4);
+    drawBot(b, r.cx, cy, 2, Math.PI / 2);
+    text(b.name, r.cx, 365, 18, b.col);
+    bubble(r.cx, 196, b.said);
+    if (b.cleared) text('✅', r.cx + 40, 262, 26, '#fff', 'center', null);
+    else if (b.sus) text('🔍'.repeat(Math.min(3, b.sus)), r.cx, 386, 15, '#fff', 'center', null);
+  });
+  const ks = meet.sel === bots.length;
+  rr(KEEP.x, KEEP.y, KEEP.w, KEEP.h, 18, ks ? '#ffd740' : '#26a69a', '#fff', 3); text('🔍 Keep looking', KEEP.x + KEEP.w / 2, KEEP.y + 29, 22, '#fff');
+  if (meet.msg) { rr(150, 190, 660, 120, 20, '#fffde7', '#ff6f00', 5); wrap(meet.msg, W / 2, 230, 600, 22, '#bf360c', 30, null); }
+}
+function drawScene() {
+  const t = scene.t;
+  if (scene.kind === 'caught') {
+    meetingBG('🎉 YOU FOUND THE SNEAKY BOT! 🎉');
+    const others = bots.filter(b => b !== imp);
+    others.forEach((b, k) => drawBot(b, 90 + k * 95, 330 - Math.abs(Math.sin(frame * 0.15 + k)) * 18, 1.5, Math.PI / 2));
+    rr(700, 230, 200, 150, 16, 'rgba(255,255,255,.2)', '#fff', 3); text('TIME-OUT CORNER', 800, 214, 18, '#fff');
+    const p = Math.max(0, Math.min(1, (t - 100) / 110)), ix = 560 + (800 - 560) * p, iy = 300 + Math.sin(p * Math.PI) * -40;
+    drawBot(imp, ix, iy, 2.2, Math.PI / 2, 'sneaky');
+    if (t < 110) bubble(ix, iy - 60, 'Hehe, you got me! I made the machines go poof!', 190);
+    else if (p >= 1) bubble(ix, iy - 60, 'Okay okay... I will sit here and think about it!', 190);
+    text(`It was ${imp.name}!`, W / 2, 96, 30, imp.col);
+    for (let k = 0; k < 14; k++) { const cx = (k * 137 + frame * 2) % W, cy = (k * 59 + frame * 3) % H; rr(cx, cy, 8, 12, 2, ['#ff5252', '#ffeb3b', '#69f0ae', '#40c4ff'][k % 4]); }
+    if (sceneReady()) {
+      rr(200, 420, 560, 80, 20, '#1a1f3a', '#ffeb3b', 4);
+      if (round < 2) { text(`Round ${round + 1} solved! ⭐`, W / 2, 446, 26, '#ffeb3b'); text('Tap or SPACE for the next round (a little trickier!)', W / 2, 478, 17, '#fff'); }
+      else { text('🏆 You solved ALL 3 mysteries! TROPHY! 🏆', W / 2, 446, 24, '#ffeb3b'); text('Tap or SPACE to go back to the start', W / 2, 478, 17, '#fff'); }
+    }
+  } else {
+    meetingBG('💨 The sneaky bot got away!');
+    const p = Math.min(1, t / 150), ix = 480 - p * 620;
+    bots.filter(b => b !== imp).forEach((b, k) => drawBot(b, 120 + k * 150, 380, 1.5, Math.PI / 2));
+    drawBot(imp, ix, 250 + Math.sin(t * 0.3) * 8, 2.2, Math.PI, 'sneaky');
+    if (t < 120) bubble(ix, 190, 'Hee hee hee! You did not find me! Bye-bye!', 200);
+    text(`It was ${imp.name} the whole time!`, W / 2, 96, 28, imp.col);
+    if (sceneReady()) { rr(200, 420, 560, 80, 20, '#1a1f3a', '#ffeb3b', 4); text('Nice try, detective! Try a new round!', W / 2, 446, 24, '#ffeb3b'); text('Tap or SPACE to play again', W / 2, 478, 17, '#fff'); }
+  }
+}
+
+// ---------- Title screen ----------
+function drawTitle() {
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#1a237e'); g.addColorStop(1, '#6a1b9a'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  for (let k = 0; k < 8; k++) { ctx.save(); ctx.translate(60 + k * 120, 470 + (k % 2) * 30); ctx.rotate(frame * 0.01 * (k % 2 ? 1 : -1)); ctx.fillStyle = 'rgba(255,255,255,.07)'; ctx.beginPath();
+    for (let j = 0; j < 16; j++) { const a = j * Math.PI / 8, r = j % 2 ? 40 : 54; ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r); } ctx.fill(); ctx.restore(); }
+  const cols = ['#ff7043', '#66bb6a', '#f06292', '#ffd740', '#b388ff', '#4dd0e1'];
+  'SUS FACTORY'.split('').forEach((ch, i) => text(ch, 250 + i * 46, 70 + Math.sin(frame * 0.08 + i * 0.6) * 6, 64, cols[i % 6]));
+  text('Who is the sneaky SABOTAGE bot? 🔍', W / 2, 128, 24, '#fff');
+  drawRobo(140, 230, 2.4, Math.PI / 2); text('Robo', 140, 290, 18, '#40c4ff'); text('(you!)', 140, 310, 14, '#fff');
+  CREW.forEach((c, k) => { const b = Object.assign({ id: k }, c); drawBot(b, 270 + k * 112, 230 + Math.sin(frame * 0.1 + k) * 5, 1.6, Math.PI / 2, k === Math.floor(frame / 50) % 6 ? 'sneaky' : ''); text(c.name, 270 + k * 112, 285, 16, c.col); });
+  text('Do tasks ✋  Fix smoky machines 🔧  Find clues 👣🔩  Talk to robots 💬', W / 2, 330, 18, '#fff59d');
+  text('Then ring the 🔔 bell and pick who is SUS!   Arrows / D-pad move, SPACE or tap = GO', W / 2, 358, 16, '#fff');
+  for (let k = 0; k < 3; k++) {
+    const b = titleBtn(k), open = k < unlocked;
+    rr(b.x, b.y, b.w, b.h, 16, open ? ['#43a047', '#fb8c00', '#e53935'][k] : '#546e7a', titleSel === k ? '#ffeb3b' : '#fff', titleSel === k ? 6 : 3);
+    text(open ? `Round ${k + 1}` : '🔒', b.x + b.w / 2, b.y + 24, 22, '#fff'); if (open) text(['4 robots', '5 robots', '6 robots'][k], b.x + b.w / 2, b.y + 48, 14, '#fff');
+  }
+  if (wonAll) text('🏆 You solved every mystery! Super detective!', W / 2, 490, 18, '#ffd740');
+  else if (frame % 60 < 42) text('Tap a round or press SPACE to start!', W / 2, 490, 20, '#69f0ae');
+}
+
+// ---------- Draw + main loop ----------
+function draw() {
+  ctx.textBaseline = 'middle';
+  if (state === 'title') return drawTitle();
+  if (state === 'meeting') return drawMeeting();
+  if (state === 'scene') return drawScene();
+  drawWorld(); drawHUD();
+  if (state === 'task') drawTask(); else drawTalk();
+}
+let last = performance.now(), acc = 0;
+function loop(now) {
+  acc += Math.min(100, now - last); last = now;
+  while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; }
+  playMusic();
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+</script>
