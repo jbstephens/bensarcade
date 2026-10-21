@@ -20,6 +20,11 @@ let saveData = {};
 try { saveData = JSON.parse(localStorage.getItem(SAVE) || '{}') || {}; } catch (_) {}
 if (!saveData.played || typeof saveData.played !== 'object') saveData.played = {};
 if (!saveData.won || typeof saveData.won !== 'object') { if (saveData.won === true) saveData.oldRoundsWon = true; saveData.won = {}; }   // older saves had won: true
+function bankCoin(n = 1) { try { const c = JSON.parse(localStorage.getItem('gfCoins') || '{}'); c.sus = (c.sus || 0) + n; localStorage.setItem('gfCoins', JSON.stringify(c)); } catch (_) {} }   // coins for the shop here AND the Bundle Room in the Game Factory book
+function coins() { try { return JSON.parse(localStorage.getItem('gfCoins') || '{}').sus || 0; } catch (_) { return 0; } }
+function spendCoins(n) { try { const c = JSON.parse(localStorage.getItem('gfCoins') || '{}'); if ((c.sus || 0) < n) return false; c.sus -= n; localStorage.setItem('gfCoins', JSON.stringify(c)); return true; } catch (_) { return false; } }
+function bundleHas(j) { try { return (JSON.parse(localStorage.getItem('gfBundles') || '{}').opened || []).includes('sus-' + j); } catch (_) { return false; } }
+function openBundle(j) { try { const b = JSON.parse(localStorage.getItem('gfBundles') || '{"opened":[]}'); b.opened = b.opened || []; if (!b.opened.includes('sus-' + j)) b.opened.push('sus-' + j); localStorage.setItem('gfBundles', JSON.stringify(b)); } catch (_) {} }
 function saveProgress() { try { localStorage.setItem(SAVE, JSON.stringify(saveData)); } catch (_) {} }
 
 const C = document.getElementById('game'), ctx = C.getContext('2d');
@@ -117,6 +122,44 @@ const CREW = [
   { name: 'Tinker',   col: '#8d6e63', dark: '#3e2723', shape: 'octagon' },
   { name: 'Blink',    col: '#e040fb', dark: '#6a1b9a', shape: 'diamond' },
 ];
+const ROBO_LOOK = { name: 'Robo', col: '#ffffff', dark: '#2979ff', shape: 'robo' };
+const BOXY_LOOK = { name: 'Boxy', col: '#c8a26b', dark: '#6d4c41', shape: 'boxy' };   // 📦 the MEGA bundle character: a cardboard box robot!
+// ---------- 👕 The Dress-Up Shop: hats, clothes, pets (coins come from tasks + matches) ----------
+const SHOP = {
+  hat:   [['🧢', 'Cap', 5], ['🎀', 'Bow', 6], ['🎉', 'Party Hat', 8], ['🎩', 'Top Hat', 10], ['🪖', 'Helmet', 12], ['🤠', 'Cowboy Hat', 15], ['🧙', 'Wizard Hat', 25], ['👑', 'Crown', 30],
+          ['🕵️', 'Detective Hat', 'b0'], ['⛑️', 'Rescue Helmet', 'b0'], ['🎓', 'Smart Cap', 'b1'], ['🌸', 'Flower Crown', 'b1']],
+  cloth: [['👔', 'Tie', 5], ['🧣', 'Scarf', 6], ['🎒', 'Backpack', 10], ['🦺', 'Safety Vest', 10], ['👓', 'Glasses', 8], ['🕶️', 'Sunglasses', 12], ['🥽', 'Goggles', 12], ['🦸', 'Hero Cape', 25], ['🏅', 'Gold Medal', 40]],
+  pet:   [['🐹', 'Hamster', 15], ['🐸', 'Frog', 15], ['🐢', 'Turtle', 15], ['🐶', 'Puppy', 20], ['🐱', 'Kitty', 20], ['🦜', 'Parrot', 25], ['🐧', 'Penguin', 25], ['🤖', 'Mini Bot', 30], ['🐉', 'Baby Dragon', 50]],
+};
+const BUNDLES = [['Sneaky Hat Pack', 15, '🕵️ ⛑️'], ['Fancy Hat Pack', 40, '🎓 🌸'], ['MEGA Boxy Pack', 80, '📦 Boxy the box robot!']];   // same as the Bundle Room in the book
+const SHOP_TABS = [['char', '🤖 Who?'], ['hat', '🎩 Hats'], ['cloth', '👔 Clothes'], ['pet', '🐶 Pets'], ['bundle', '🎁 Bundles']];
+let shopTab = 0, shopSel = 0, shopMsg = '', shopMsgT = 0;
+const myLook = () => Object.assign({ char: -1, hat: '', cloth: '', pet: '' }, saveData.look || {});   // char: -1 Robo, 0-14 crew, 15 Boxy
+const charLook = c => c === -1 ? ROBO_LOOK : c === 15 ? BOXY_LOOK : CREW[c];
+const charList = () => [-1].concat(CREW.map((c, k) => k), [15]);
+const owns = (tab, it) => it[2] === 0 || (typeof it[2] === 'string' ? bundleHas(+it[2][1]) : (saveData.owned || []).includes(tab + it[0]));
+function shopItems() { const t = SHOP_TABS[shopTab][0]; return t === 'char' ? charList() : t === 'bundle' ? [0, 1, 2] : SHOP[t]; }
+function shopPick(i) {
+  const t = SHOP_TABS[shopTab][0], items = shopItems(); if (i < 0 || i >= items.length) return;
+  shopSel = i; const L = myLook();
+  const say = (m, good) => { shopMsg = m; shopMsgT = 150; good ? sfx.good() : sfx.nope(); };
+  if (t === 'char') { const c = items[i]; if (c === 15 && !bundleHas(2)) return say('🎁 Boxy comes in the MEGA Boxy Pack!'); L.char = c; saveData.look = L; saveProgress(); return say(`You are ${charLook(c).name}!`, true); }
+  if (t === 'bundle') {
+    if (bundleHas(i)) return say('You already opened this bundle! ✅');
+    if (!spendCoins(BUNDLES[i][1])) return say(`You need ${BUNDLES[i][1]} 🪙 for this bundle. Play more matches!`);
+    openBundle(i); return say(`🎁 You opened the ${BUNDLES[i][0]}!`, true);
+  }
+  const it = items[i];
+  if (!owns(t, it)) {
+    if (typeof it[2] === 'string') return say(`🎁 The ${it[1]} comes in the ${BUNDLES[+it[2][1]][0]}!`);
+    if (!spendCoins(it[2])) return say(`You need ${it[2]} 🪙 for the ${it[1]}. Do tasks to get coins!`);
+    saveData.owned = (saveData.owned || []).concat(t + it[0]); L[t] = it[0]; saveData.look = L; saveProgress(); return say(`You got the ${it[1]}! ${it[0]}`, true);
+  }
+  L[t] = L[t] === it[0] ? '' : it[0]; saveData.look = L; saveProgress(); say(L[t] ? `Wearing the ${it[1]}! ${it[0]}` : `Took off the ${it[1]}.`, true);
+}
+const SHOP_BTN = { x: 690, y: 432, w: 250, h: 66 }, SHOP_BACK = { x: 20, y: 452, w: 150, h: 54 };
+const shopTabBox = k => ({ x: 330 + k * 124, y: 62, w: 118, h: 50 });
+const shopCard = i => ({ x: 330 + (i % 6) * 104, y: 124 + Math.floor(i / 6) * 112, w: 96, h: 104 });
 // things robots say at meetings when they did not see anything (true to each robot!)
 const ALIBI = {
   Bolt: 'I was counting bolts. I lost count again!', Sprocket: 'My gears were spinning the whole time!', Fizz: 'I was making bubbles. Blub blub!',
@@ -285,6 +328,7 @@ function findPath(x0, y0, x1, y1) {                 // breadth-first search on t
 
 // ---------- Game state ----------
 let state = 'title', frame = 0, mapSel = 0, MI = 0;
+let earned = 0;   // 🪙 coins this match
 let wantSneaky = false;   // 😈 Ben can pick to be the sneaky bot on the map screen
 const SNEAKY_BTN = { x: 310, y: 400, w: 340, h: 48 };
 let robots = [], player = null, boxes = [], sab = null, sabCD = 0, bellCD = 0, overlay = null, sabSel = 0;
@@ -305,9 +349,10 @@ function playerSees(x, y) { return Math.hypot(x - player.x, y - player.y) < (pla
 function startMatch(mi) {
   MI = mi; buildMap(MAPS[mi]);
   const sneakyN = MAPS[mi].sneaky;
-  const others = shuffle(CREW.map((c, k) => k)).slice(0, 14);
+  const me = myLook().char;
+  const others = shuffle(CREW.map((c, k) => k).filter(k => k !== me)).slice(0, 14);
   robots = [];
-  player = makeRobot({ name: 'Robo', col: '#ffffff', dark: '#2979ff', shape: 'robo' }, 99, true);
+  player = makeRobot(charLook(me), 99, true);
   robots.push(player);
   others.forEach(k => robots.push(makeRobot(CREW[k], k, false)));
   // roles: the player gets a random one (sometimes YOU are the sneaky bot!)
@@ -331,7 +376,7 @@ function startMatch(mi) {
   for (const r of robots) if (r.sneaky) r.boxCD = r.isPlayer ? 600 : rnd(1500, 2100);
   gatherAtBell();
   saveData.played[M.def.id] = (saveData.played[M.def.id] || 0) + 1; saveProgress();
-  roleCard = { peek: false, seen: false }; state = 'role';
+  roleCard = { peek: false, seen: false }; state = 'role'; earned = 0;
 }
 function makeRobot(c, id, isPlayer) {
   return { name: c.name, col: c.col, dark: c.dark, shape: c.shape, id, isPlayer, role: 'worker', sneaky: false, out: null,
@@ -372,7 +417,8 @@ function checkWin() {
 }
 function endMatch(side, why) {
   const youWin = (side === 'sneaky') === player.sneaky;
-  endInfo = { side, why, youWin, t: 0 };
+  bankCoin(youWin ? 20 : 5); earned += youWin ? 20 : 5;
+  endInfo = { side, why, youWin, t: 0, earned };
   state = 'end'; mg = null; overlay = null; meet = null; sab = null;
   if (youWin) {
     sfx.win(); trophy('susWin');
@@ -741,7 +787,7 @@ function closeGame(ok) {
 }
 function finishTask(t) {
   if (t.done) return;
-  t.done = true; sfx.task();
+  t.done = true; sfx.task(); if (player.tasks.includes(t)) { bankCoin(2); earned += 2; }
   const left = player.tasks.filter(x => !x.done).length;
   setBanner(left ? `⭐ Task done! ${left} more to go!` : '🌟 You did ALL your tasks! Now help find the sneaky bots!', '#43a047');
   checkWin();
@@ -916,11 +962,14 @@ addEventListener('keydown', e => {
   if (dir) {
     const dx = dir === 'left' ? -1 : dir === 'right' ? 1 : 0, dy = dir === 'up' ? -1 : dir === 'down' ? 1 : 0;
     if (state === 'maps') { mapSel = (mapSel + (dx || dy) + 3) % 3; sfx.tap(); }
+    else if (state === 'shop') { const row = SHOP_TABS[shopTab][0] === 'bundle' ? 1 : 6; shopSel = clamp(shopSel + dx + dy * row, 0, shopItems().length - 1); sfx.tap(); }
     else if (state === 'task') mgMove(dx || dy);
     else if (state === 'meeting') meetMove(dx, dy);
     else if (state === 'play' && overlay === 'sab') sabSel = (sabSel + (dx || dy) + 3) % 3;
   }
   if (k === ' ') spaceHeld = true;
+  if ((k === 'c' || k === 'C') && state === 'title') { state = 'shop'; shopSel = 0; sfx.tap(); return; }
+  if (state === 'shop') { if (k === ' ' || k === 'Enter') shopPick(shopSel); if (k === 'Escape') state = 'title'; if (k === 'Tab' || k === 'q' || k === 'Q') { shopTab = (shopTab + 1) % 5; shopSel = 0; } return; }
   if (k === ' ') pressGo();
   if (k === 'Enter') { if (state === 'role' && roleCard.seen) beginPlay(); else pressGo(); }
   if ((k === 'x' || k === 'X') && state === 'play') tryBox();
@@ -947,7 +996,8 @@ addEventListener('mouseup', () => { mouseHeld = false; });
 C.addEventListener('mousedown', e => {
   wakeAudio(); [mouseX, mouseY] = canvasXY(e); mouseHeld = true;
   const x = mouseX, y = mouseY;
-  if (state === 'title') return pressGo();
+  if (state === 'title') { if (inBox(SHOP_BTN, x, y)) { state = 'shop'; shopSel = 0; return sfx.tap(); } return pressGo(); }
+  if (state === 'shop') return shopTap(x, y);
   if (state === 'maps') { if (inBox(SNEAKY_BTN, x, y)) { wantSneaky = !wantSneaky; sfx.tap(); return; } for (let k = 0; k < 3; k++) if (inBox(mapCard(k), x, y)) { mapSel = k; return pressGo(); } return; }
   if (state === 'role') {
     if (inBox(READY, x, y) && roleCard.seen) return beginPlay();
@@ -1029,8 +1079,15 @@ function bubble(x, y, s, w = 132, size = 14) {
 }
 
 // ---------- A robot seen from above ----------
+function drawMe(x, y, s = 1, face = Math.PI / 2, mood = '', L = myLook()) {   // YOU, in your chosen look + hat + clothes
+  const c = charLook(L.char);
+  if (c.shape === 'robo') drawRobo(x, y, s, face);
+  else drawBot(Object.assign({ id: 99, isPlayer: false }, c), x, y, s, face, mood);
+  if (L.cloth) text(L.cloth, x + (['👓', '🕶️', '🥽'].includes(L.cloth) ? 0 : 0), y + (['👓', '🕶️', '🥽'].includes(L.cloth) ? -4 : 12) * s, 16 * s, '#fff', 'center', null);
+  if (L.hat) text(L.hat, x, y - 24 * s, 22 * s, '#fff', 'center', null);
+}
 function drawBot(b, x, y, s = 1, face = b.face, mood = '') {
-  if (b.isPlayer) return drawRobo(x, y, s, face);
+  if (b.isPlayer) return drawMe(x, y, s, face, mood);
   ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
   ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.beginPath(); ctx.ellipse(2, 5, 21, 17, 0, 0, 7); ctx.fill();
   ctx.fillStyle = '#37474f';                            // little wheels
@@ -1049,6 +1106,7 @@ function drawBot(b, x, y, s = 1, face = b.face, mood = '') {
     case 'plus': for (const [px, py] of [[-7, -20], [7, -20], [7, -7], [20, -7], [20, 7], [7, 7], [7, 20], [-7, 20], [-7, 7], [-20, 7], [-20, -7], [-7, -7]]) ctx.lineTo(px, py); ctx.closePath(); break;
     case 'cloud': ctx.arc(-9, 4, 13, 0, Math.PI * 2); ctx.moveTo(22, 4); ctx.arc(9, 4, 13, 0, Math.PI * 2); ctx.moveTo(12, -6); ctx.arc(0, -6, 12, 0, Math.PI * 2); break;
     case 'octagon': poly(8, 20, 20, Math.PI / 8); break;
+    case 'boxy': ctx.rect(-19, -17, 38, 34); break;
     case 'diamond': ctx.moveTo(0, -24); ctx.lineTo(19, 0); ctx.lineTo(0, 24); ctx.lineTo(-19, 0); ctx.closePath(); break;
     default: ctx.arc(0, 0, 19, 0, Math.PI * 2);
   }
@@ -1057,6 +1115,7 @@ function drawBot(b, x, y, s = 1, face = b.face, mood = '') {
   if (b.shape === 'jar') { ctx.fillStyle = 'rgba(255,255,255,.7)'; for (let k = 0; k < 3; k++) { ctx.beginPath(); ctx.arc(-7 + k * 7, 10 - ((frame * 0.4 + k * 9) % 18), 2.2, 0, 7); ctx.fill(); } }
   if (b.shape === 'square') { circle(-12, -12, 2.5, b.dark); circle(12, -12, 2.5, b.dark); circle(-12, 12, 2.5, b.dark); circle(12, 12, 2.5, b.dark); }
   if (b.shape === 'gear') circle(0, 0, 7, b.dark);
+  if (b.shape === 'boxy') { ctx.strokeStyle = b.dark; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(-19, 0); ctx.lineTo(19, 0); ctx.moveTo(0, -17); ctx.lineTo(0, 17); ctx.stroke(); ctx.fillStyle = '#d7b98b'; ctx.fillRect(-5, -17, 10, 34); }
   if (b.shape === 'cookie') for (const [dx, dy] of [[-10, 8], [8, 10], [12, -4], [-13, -3], [0, 13]]) circle(dx, dy, 2.6, b.dark);
   if (b.shape === 'moon') { circle(-10, 9, 3.5, 'rgba(13,71,161,.35)'); circle(9, 11, 2.5, 'rgba(13,71,161,.35)'); circle(12, -2, 2, 'rgba(13,71,161,.35)'); }
   if (b.shape === 'oval') { ctx.fillStyle = 'rgba(255,255,255,.5)'; ctx.beginPath(); ctx.ellipse(-10, 8, 4, 2.5, 0.4, 0, 7); ctx.fill(); }
@@ -1218,6 +1277,8 @@ function drawActors(v, main) {
     if (r.isPlayer && r.out) { drawDrone(r.x, r.y); continue; }
     const by = r.y + Math.sin(r.bob) * 1.2;
     if (player.role === 'guard' && r.shield) { ctx.strokeStyle = `rgba(179,136,255,${0.6 + 0.3 * Math.sin(frame * 0.1)})`; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(r.x, by, 30, 0, 7); ctx.stroke(); }
+    if (r.isPlayer && myLook().pet) { const L = myLook(); const tx = r.x - Math.cos(r.face) * 38 + Math.sin(r.face) * 22, ty = r.y - Math.sin(r.face) * 38 - Math.cos(r.face) * 22; r.petX = r.petX === undefined ? tx : r.petX + (tx - r.petX) * 0.12; r.petY = r.petY === undefined ? ty : r.petY + (ty - r.petY) * 0.12;
+      text(L.pet, r.petX, r.petY + Math.sin(frame * 0.2) * 2, 22, '#fff', 'center', null); }
     drawBot(r, r.x, by, 1, r.face);
     const mate = player.sneaky && r.sneaky && !r.isPlayer;
     text(r.isPlayer ? 'YOU' : r.name, r.x, r.y - 42, 13, r.isPlayer ? '#40c4ff' : mate ? '#ff5252' : '#fff');
@@ -1396,7 +1457,7 @@ function drawTask() {
     B.forEach((b, i) => { const done = b.k < mg.next; text('⭐', b.x + b.w / 2, b.y + b.h / 2, done ? 60 : 52, '#fff', 'center', null); text(String(b.k + 1), b.x + b.w / 2, b.y + b.h / 2 + 4, 24, done ? '#69f0ae' : '#fff'); sel(i); });
   } else if (mg.type === 'scan') {
     hint(mg.prog < 0 ? 'Stand still on the scanner and tap START!' : 'Scanning... beep boop!');
-    drawRobo(PX + PW / 2, PY + 175, 2.4, Math.PI / 2);
+    drawMe(PX + PW / 2, PY + 175, 2.4, Math.PI / 2);
     if (mg.prog >= 0) { const sy = PY + 110 + ((mg.t * 3) % 130); ctx.fillStyle = 'rgba(0,230,118,.6)'; ctx.fillRect(PX + 220, sy, 160, 6); rr(PX + 150, PY + 250, 300, 22, 10, '#263238'); rr(PX + 150, PY + 250, 300 * mg.prog + 1, 22, 10, '#00e676'); }
     const b = B[0]; if (mg.prog < 0) { rr(b.x, b.y, b.w, b.h, 22, '#00897b', '#fff', 5); text('START', b.x + b.w / 2, b.y + b.h / 2, 30, '#fff'); }
   }
@@ -1478,7 +1539,7 @@ function drawTimeout() {
     drawBot(who, x, y, 2, p < 1 ? 0 : Math.PI / 2, p >= 1 ? (who.sneaky ? 'sneaky' : 'sad') : '');
     if (t < 70) bubble(x, y - 50, who.sneaky ? 'Uh oh... busted!' : 'But I didn\'t do it!', 170, 15);
     if (t > 110) {
-      const nm = who.isPlayer ? 'Robo (you!)' : who.name, left = active().filter(r => r.sneaky).length;
+      const nm = who.isPlayer ? who.name + ' (you!)' : who.name, left = active().filter(r => r.sneaky).length;
       text(who.sneaky ? `${nm} WAS a sneaky bot! 🎉` : `${nm} was NOT a sneaky bot. Oops!`, W / 2, 440, 32, who.sneaky ? '#69f0ae' : '#ffab91');
       text(`Sneaky bots left: ${left}`, W / 2, 476, 20, '#fff');
     }
@@ -1504,6 +1565,7 @@ function drawEnd() {
     text(`${ROLES[r.role].icon} ${r.sneaky ? 'SNEAKY' : r.role === 'worker' ? 'Worker' : ROLES[r.role].name[0] + ROLES[r.role].name.slice(1).toLowerCase()}`, x, y + 60, 12, r.sneaky ? '#ffcdd2' : '#fff');
   });
   if (endInfo.youWin) for (let k = 0; k < 16; k++) { const cx = (k * 137 + frame * 2) % W, cy = (k * 59 + frame * 3) % H; rr(cx, cy, 8, 12, 2, ['#ff5252', '#ffeb3b', '#69f0ae', '#40c4ff'][k % 4]); }
+  text(`🪙 +${endInfo.earned} coins!   (you have ${coins()})`, W / 2, 196, 20, '#ffd740');
   if (endInfo.t > 90 && frame % 60 < 44) text('Tap or SPACE to play again!', W / 2, 496, 22, '#fff59d');
 }
 
@@ -1514,13 +1576,14 @@ function drawTitle() {
     for (let j = 0; j < 16; j++) { const a = j * Math.PI / 8, r = j % 2 ? 40 : 54; ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r); } ctx.fill(); ctx.restore(); }
   'SUS FACTORY'.split('').forEach((ch, i) => text(ch, 250 + i * 46, 66 + Math.sin(frame * 0.08 + i * 0.6) * 6, 64, CREW[i % 15].col));
   text('15 robots. Some are SNEAKY. Who is putting robots in boxes? 📦', W / 2, 122, 22, '#fff');
-  drawRobo(70, 220, 1.6, Math.PI / 2); text('YOU', 70, 260, 15, '#40c4ff');
+  drawMe(70, 220, 1.6, Math.PI / 2); text('YOU', 70, 260, 15, '#40c4ff');
   CREW.forEach((c, k) => { const b = Object.assign({ id: k }, c), x = 135 + (k % 8) * 104 + (k >= 8 ? 52 : 0), y = k < 8 ? 205 : 300;
     drawBot(b, x, y + Math.sin(frame * 0.1 + k) * 4, 1.3, Math.PI / 2, k === Math.floor(frame / 50) % 15 ? 'sneaky' : ''); text(c.name, x, y + 38, 14, c.col); });
   drawBox({ x: 70, y: 330, victim: { id: 3, col: '#ffd740', name: '???' } });
   text('Do tasks ✋  Report boxes 📢  Ring the bell 🔔  Vote out the sneaky bots 🗳️', W / 2, 390, 18, '#fff59d');
   text('Arrows / D-pad = move     SPACE / USE = do things     Q = map', W / 2, 420, 15, '#fff');
   if ((saveData.wins || 0) > 0) text(`🏆 Matches won: ${saveData.wins}`, W / 2, 454, 18, '#ffd740');
+  rr(SHOP_BTN.x, SHOP_BTN.y, SHOP_BTN.w, SHOP_BTN.h, 22, '#ff6f00', '#fff', 4); text('👕 Dress-Up Shop', SHOP_BTN.x + SHOP_BTN.w / 2, SHOP_BTN.y + 26, 22, '#fff'); text(`🪙 ${coins()}   (key: C)`, SHOP_BTN.x + SHOP_BTN.w / 2, SHOP_BTN.y + 50, 14, '#fff59d');
   if (frame % 60 < 42) text('Tap or press SPACE to start!', W / 2, 490, 24, '#69f0ae');
 }
 function previewMap(def, x, y, w, h) {
@@ -1565,10 +1628,50 @@ function drawRole() {
   if (roleCard.seen) { rr(READY.x, READY.y, READY.w, READY.h, 20, '#43a047', '#fff', 4); text('READY! ▶', READY.x + READY.w / 2, READY.y + 34, 30, '#fff'); text('(tap the card to hide it)', W / 2, 505, 14, '#b0bec5'); }
 }
 
+function drawShop() {
+  purpleBG('#4a148c', '#ff6f00');
+  text('👕 Dress-Up Shop', 165, 36, 30, '#ffeb3b'); text(`🪙 ${coins()} coins`, 165, 72, 22, '#ffd740');
+  const L = myLook();
+  rr(20, 96, 290, 340, 24, 'rgba(255,255,255,.15)', '#fff', 3);
+  drawMe(165, 250 + Math.sin(frame * 0.08) * 5, 3, Math.PI / 2);
+  if (L.pet) text(L.pet, 250, 330 + Math.sin(frame * 0.2) * 4, 44, '#fff', 'center', null);
+  text(charLook(L.char).name, 165, 400, 26, '#fff');
+  SHOP_TABS.forEach(([id, nm], k) => { const b = shopTabBox(k); rr(b.x, b.y, b.w, b.h, 16, k === shopTab ? '#ffeb3b' : '#311b92', '#fff', 3); text(nm, b.x + b.w / 2, b.y + 26, 17, k === shopTab ? '#311b92' : '#fff', 'center', null); });
+  const t = SHOP_TABS[shopTab][0], items = shopItems();
+  if (t === 'bundle') {
+    BUNDLES.forEach(([nm, price, what], i) => { const b = { x: 330, y: 124 + i * 104, w: 610, h: 94 }, has = bundleHas(i);
+      rr(b.x, b.y, b.w, b.h, 18, has ? '#2e7d32' : i === 2 ? '#c62828' : '#1565c0', i === shopSel ? '#ffeb3b' : '#fff', i === shopSel ? 6 : 3);
+      text('🎁 ' + nm, b.x + 20, b.y + 30, 24, '#fff', 'left'); text(what, b.x + 20, b.y + 66, 20, '#fff59d', 'left');
+      text(has ? '✅ Opened!' : `🪙 ${price}`, b.x + b.w - 20, b.y + 47, 24, '#fff', 'right'); });
+  } else items.forEach((it, i) => {
+    const b = shopCard(i), on = i === shopSel;
+    let icon, nm, tag, worn;
+    if (t === 'char') { const c = charLook(it); nm = c.name; worn = L.char === it; tag = it === 15 && !bundleHas(2) ? '🎁 MEGA' : worn ? '✅ YOU' : 'Free';
+      rr(b.x, b.y, b.w, b.h, 16, worn ? '#2e7d32' : '#283593', on ? '#ffeb3b' : '#fff', on ? 5 : 2);
+      if (c.shape === 'robo') drawRobo(b.x + b.w / 2, b.y + 42, 1.2, Math.PI / 2); else drawBot(Object.assign({ id: i }, c), b.x + b.w / 2, b.y + 42, 1.2, Math.PI / 2);
+      if (tag === '🎁 MEGA') { ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(b.x + 4, b.y + 4, b.w - 8, b.h - 8); }
+    } else { [icon, nm] = it; const own = owns(t, it); worn = L[t] === it[0];
+      tag = worn ? '✅ ON' : own ? 'Tap to wear' : typeof it[2] === 'string' ? '🎁 Bundle' : `🪙 ${it[2]}`;
+      rr(b.x, b.y, b.w, b.h, 16, worn ? '#2e7d32' : own ? '#283593' : '#37474f', on ? '#ffeb3b' : '#fff', on ? 5 : 2);
+      text(icon, b.x + b.w / 2, b.y + 38, 38, '#fff', 'center', null); }
+    text(nm, b.x + b.w / 2, b.y + 76, 13, '#fff'); text(tag, b.x + b.w / 2, b.y + 94, 12, '#fff59d');
+  });
+  rr(SHOP_BACK.x, SHOP_BACK.y, SHOP_BACK.w, SHOP_BACK.h, 18, '#455a64', '#fff', 3); text('◀ BACK', SHOP_BACK.x + SHOP_BACK.w / 2, SHOP_BACK.y + 28, 22, '#fff');
+  if (shopMsgT > 0) { shopMsgT--; rr(190, 456, 750, 50, 18, 'rgba(0,0,0,.6)'); text(shopMsg, 565, 481, 19, '#fff'); }
+  else text('Tap to buy or wear!  Q = next tab.  Do tasks and win matches for 🪙!', 565, 481, 16, '#fff');
+}
+function shopTap(x, y) {
+  if (inBox(SHOP_BACK, x, y)) { state = 'title'; return sfx.tap(); }
+  for (let k = 0; k < SHOP_TABS.length; k++) if (inBox(shopTabBox(k), x, y)) { shopTab = k; shopSel = 0; return sfx.tap(); }
+  if (SHOP_TABS[shopTab][0] === 'bundle') { for (let i = 0; i < 3; i++) if (inBox({ x: 330, y: 124 + i * 104, w: 610, h: 94 }, x, y)) return shopPick(i); return; }
+  shopItems().forEach((it, i) => { if (inBox(shopCard(i), x, y)) shopPick(i); });
+}
+
 // ---------- Draw + main loop ----------
 function draw() {
   ctx.textBaseline = 'middle';
   if (state === 'title') return drawTitle();
+  if (state === 'shop') return drawShop();
   if (state === 'maps') return drawMaps();
   if (state === 'role') return drawRole();
   if (state === 'meeting') return drawMeeting();
