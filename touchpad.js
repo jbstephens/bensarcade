@@ -18,6 +18,33 @@
 //   - Reads game controllers (like 8BitDo) on any device and sends the same key presses.
 //   - Wakes up game sounds on the iPad (Safari only allows sound after a real tap).
 //   - Add ?touch=1 to the address to see the touch controls on a laptop.
+// ---------- 🔊 talking voices that keep working ----------
+// Chrome only lets a page talk after a tap IN THAT PAGE, and games inside the book are their own little page.
+// So a game borrows the book's voice (the book already got Ben's tap). If the voice gets stuck, it un-sticks it and tries again.
+(function () {
+  try {
+    let synth = window.speechSynthesis, Utt = window.SpeechSynthesisUtterance;
+    try { if (window.parent !== window && parent.speechSynthesis && parent.location.host === location.host) { synth = parent.speechSynthesis; Utt = parent.SpeechSynthesisUtterance; } } catch (_) {}
+    if (!synth || !Utt) return;
+    const realSpeak = synth.speak.bind(synth);
+    const voice = {
+      speak(u) {
+        const wasIdle = !synth.speaking && !synth.pending;
+        let started = false;
+        try { u.addEventListener('start', () => { started = true; }); } catch (_) {}
+        realSpeak(u);
+        if (wasIdle) setTimeout(() => { if (!started && (synth.speaking || synth.pending)) { synth.cancel(); setTimeout(() => realSpeak(u), 60); } }, 2500);   // stuck? un-stick it once
+      },
+      cancel() { synth.cancel(); }, pause() { synth.pause(); }, resume() { synth.resume(); },
+      getVoices() { return synth.getVoices(); },
+      get speaking() { return synth.speaking; }, get pending() { return synth.pending; }, get paused() { return synth.paused; },
+      addEventListener(t, f) { synth.addEventListener(t, f); }, removeEventListener(t, f) { synth.removeEventListener(t, f); },
+      get onvoiceschanged() { return synth.onvoiceschanged; }, set onvoiceschanged(f) { synth.onvoiceschanged = f; },
+    };
+    Object.defineProperty(window, 'speechSynthesis', { configurable: true, get: () => voice });
+    window.SpeechSynthesisUtterance = Utt;
+  } catch (_) {}
+})();
 (function () {
   const T = window.TOUCHPAD || {}, hasPad = T.dpad || T.south || T.east || T.west || T.north;
   // tap-only games get no START / BACK pills unless they ask for them
