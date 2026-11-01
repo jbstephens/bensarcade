@@ -1,0 +1,1894 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Jimmy's Big Escape</title>
+<script>TOUCHPAD = { dpad: true, south: [' ', 'POUNCE'], east: ['x', 'CUTE / HISS'], west: ['z', 'RUN'], north: ['c', 'PURR'] };</script>
+<script src="touchpad.js?v=3"></script>
+<style>
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: #0b1630; display: flex;
+    align-items: center; justify-content: center; overflow: hidden;
+  }
+  canvas {
+    width: min(100vw, calc(100vh * 960 / 520));
+    height: auto; display: block; border-radius: 12px;
+    box-shadow: 0 10px 40px rgba(0,0,0,.5);
+  }
+</style>
+<canvas id="game" width="960" height="520"></canvas>
+<script>
+// JIMMY'S BIG ESCAPE
+// Jimmy is an ORANGE TABBY with darker orange stripes, four WHITE PAWS (like socks) and GREEN eyes.
+// He is very lovable... unless he's in a bad mood! One day his favorite fluffy cushion (his sunny napping spot)
+// gets taken to the LOST & FOUND at the Game Factory, so he sneaks all the way there to get it back.
+// The big new thing: JIMMY'S MOOD METER (from 😻 happy to 😾 grumpy).
+//   Mood goes DOWN: getting wet (sprinklers, bath tubs, puddles), the vacuum, being woken up from a nap, getting caught.
+//   Mood goes UP: fish treats, pets from a friendly person, napping in a sunbeam, playing with a toy.
+//   HAPPY Jimmy: CUTE head-bump (guards melt: "Awww, Jimmy!"), PURR, CLIMB, full speed.
+//   GRUMPY Jimmy: a big HISS that scares guards + robots back for a few seconds, but he's slower and won't climb or purr.
+// Same cat moves as Sammy's Big Escape 2: climb, leap, hide, knock things off shelves, purr, disguise box.
+const C = document.getElementById('game'), ctx = C.getContext('2d');
+const W = 960, H = 520, T = 40, COLS = 24, ROWS = 13;
+const SNEAK = 2.0, RUN = 3.8, BOXSPEED = 1.5, GRUMPY_AT = 35;
+let frame = 0;
+
+// ---------- Game Factory book helpers ----------
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }
+let stickerNew = 0, stickerName = '';
+function sticker(id, name) { try { const s = JSON.parse(localStorage.getItem('gfStickers') || '{}'); if (!s[id]) { s[id] = 1; localStorage.setItem('gfStickers', JSON.stringify(s)); stickerNew = 150; stickerName = name || ''; } } catch (_) {} }   // for the Sticker Book in the Game Factory book
+
+let firstOpen = true;
+try { firstOpen = localStorage.getItem('jimmyEscapeOpened') !== 'true'; localStorage.setItem('jimmyEscapeOpened', 'true'); } catch (_) {}
+const NLEV = 9;
+let save = { stars: {}, fish: {}, mice: {}, unlocked: 1, music: true, won: false, costume: 'none' };
+function loadSave() {
+  try { const s = JSON.parse(localStorage.getItem('jimmyEscape') || 'null'); if (s && typeof s === 'object') save = Object.assign(save, s); } catch (_) {}
+  save.stars = save.stars || {}; save.fish = save.fish || {}; save.mice = save.mice || {};
+  save.unlocked = Math.max(1, Math.min(NLEV, save.unlocked | 0 || 1));
+  if (typeof save.costume !== 'string') save.costume = 'none';
+}
+function writeSave() { try { localStorage.setItem('jimmyEscape', JSON.stringify(save)); } catch (_) {} }
+loadSave();
+// 🐭 costumes: find the hidden toy mouse in each level to unlock them
+const COSTUMES = [
+  { id: 'none', name: 'Just Jimmy', icon: '🐱', need: 0 },
+  { id: 'bandana', name: 'Cowboy Bandana', icon: '🤠', need: 2 },
+  { id: 'shades', name: 'Cool Sunglasses', icon: '😎', need: 5 },
+  { id: 'crown', name: 'King Jimmy Crown', icon: '👑', need: 8 },
+];
+const miceCount = () => Object.keys(save.mice).filter(k => save.mice[k]).length;
+const costumeOpen = c => miceCount() >= c.need;
+function wearing() { const c = COSTUMES.find(c => c.id === save.costume); return c && costumeOpen(c) ? c.id : 'none'; }
+
+// ---------- Sound effects ----------
+let actx = null, master = null, musicBus = null, sfxBus = null, delayIn = null, noiseBuf = null;
+let musicOn = save.music !== false;
+const midi = n => 440 * Math.pow(2, (n - 69) / 12);
+function setupAudio() {
+  master = actx.createGain(); master.gain.value = 0.9;
+  if (actx.createDynamicsCompressor) {
+    const comp = actx.createDynamicsCompressor();
+    comp.threshold.value = -14; comp.ratio.value = 4; comp.attack.value = 0.005; comp.release.value = 0.2;
+    master.connect(comp); comp.connect(actx.destination);
+  } else master.connect(actx.destination);
+  musicBus = actx.createGain(); musicBus.gain.value = musicOn ? 0.6 : 0; musicBus.connect(master);
+  sfxBus = actx.createGain(); sfxBus.gain.value = 0.85; sfxBus.connect(master);
+  delayIn = actx.createGain(); delayIn.gain.value = 0.26;               // echo for the lead
+  const dn = actx.createDelay(2); dn.delayTime.value = 0.4;
+  const fb = actx.createGain(); fb.gain.value = 0.3;
+  const dlp = actx.createBiquadFilter(); dlp.type = 'lowpass'; dlp.frequency.value = 2400;
+  delayIn.connect(dn); dn.connect(dlp); dlp.connect(fb); fb.connect(dn); dlp.connect(musicBus);
+  noiseBuf = actx.createBuffer(1, actx.sampleRate, actx.sampleRate);
+  const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+}
+function wakeAudio() {
+  if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); setupAudio(); } catch (_) { actx = null; } }
+  if (actx && actx.state === 'suspended' && actx.resume) actx.resume();
+}
+function note(freq, start, dur, wave = 'square', vol = 0.12, slideTo = null) {
+  if (!actx) return;
+  const t = actx.currentTime + start;
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type = wave; o.frequency.setValueAtTime(freq, t);
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+  g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.006);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g); g.connect(sfxBus || actx.destination);
+  o.start(t); o.stop(t + dur + 0.02);
+}
+function noiseBurst(start, dur, freq, vol, type = 'bandpass') {
+  if (!actx || !noiseBuf) return;
+  const t = actx.currentTime + start, s = actx.createBufferSource(); s.buffer = noiseBuf;
+  const f = actx.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = 1;
+  const g = actx.createGain(); g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  s.connect(f); f.connect(g); g.connect(sfxBus); s.start(t); s.stop(t + dur + 0.05);
+}
+// a real-sounding little "meow": a buzzy voice through a mouth filter that opens and closes
+function meowSound(pitch = 1, start = 0) {
+  if (!actx) return;
+  const t = actx.currentTime + start, d = 0.55;
+  const o = actx.createOscillator(); o.type = 'sawtooth';
+  o.frequency.setValueAtTime(520 * pitch, t); o.frequency.linearRampToValueAtTime(820 * pitch, t + 0.16);
+  o.frequency.linearRampToValueAtTime(700 * pitch, t + 0.32); o.frequency.exponentialRampToValueAtTime(430 * pitch, t + d);
+  const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 3;
+  bp.frequency.setValueAtTime(700, t); bp.frequency.linearRampToValueAtTime(1800, t + 0.18); bp.frequency.linearRampToValueAtTime(900, t + d);
+  const g = actx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.5, t + 0.05);
+  g.gain.setValueAtTime(0.45, t + d - 0.15); g.gain.linearRampToValueAtTime(0, t + d);
+  o.connect(bp); bp.connect(g); g.connect(sfxBus); o.start(t); o.stop(t + d + 0.05);
+}
+const sfx = {
+  click:  () => note(700, 0, 0.06, 'square', 0.06),
+  step:   () => note(90 + Math.random() * 30, 0, 0.05, 'triangle', 0.05),
+  pounce: () => { note(300, 0, 0.18, 'sine', 0.14, 900); noiseBurst(0, 0.1, 3000, 0.08); },
+  bat:    () => { note(900, 0, 0.08, 'square', 0.07, 400); note(1300, 0.04, 0.08, 'sine', 0.08); },
+  toyLand: () => { note(1400, 0, 0.12, 'sine', 0.12, 1900); note(1600, 0.12, 0.12, 'sine', 0.1, 2100); },   // squeak squeak!
+  fish:   () => { note(988, 0, 0.08, 'triangle', 0.12); note(1319, 0.07, 0.1, 'triangle', 0.12); note(1760, 0.14, 0.22, 'sine', 0.12); },
+  snack:  () => [784, 988, 1175, 1568].forEach((f, i) => note(f, i * 0.07, 0.25, 'triangle', 0.12)),
+  hide:   () => { noiseBurst(0, 0.15, 900, 0.12); note(300, 0, 0.12, 'sine', 0.08, 180); },
+  huh:    () => { note(500, 0, 0.12, 'square', 0.06, 700); note(700, 0.13, 0.12, 'square', 0.06, 1000); },
+  alert:  () => { note(880, 0, 0.1, 'square', 0.08); note(1175, 0.1, 0.18, 'square', 0.08); },
+  caught: () => { note(600, 0, 0.18, 'square', 0.1, 300); note(400, 0.18, 0.18, 'square', 0.1, 200); note(260, 0.36, 0.4, 'triangle', 0.12, 130); },
+  woof:   () => { for (const s of [0, 0.25]) { note(220, s, 0.16, 'sawtooth', 0.14, 120); noiseBurst(s, 0.12, 600, 0.12); } },
+  vroom:  () => { note(110, 0, 0.6, 'sawtooth', 0.1, 220); noiseBurst(0, 0.6, 1200, 0.08); },
+  check:  () => { note(660, 0, 0.1, 'triangle', 0.12); note(880, 0.1, 0.2, 'triangle', 0.12); },
+  door:   () => [523, 659, 784, 1047, 1319].forEach((f, i) => note(f, i * 0.08, 0.3, 'triangle', 0.11)),
+  star:   () => [880, 1109, 1319, 1760].forEach((f, i) => note(f, i * 0.09, 0.3, 'sine', 0.12)),
+  boing:  () => note(260, 0, 0.22, 'sine', 0.14, 620),
+  pop:    () => { noiseBurst(0, 0.25, 1500, 0.35, 'highpass'); note(150, 0, 0.3, 'sine', 0.3, 60); },
+  firework: () => { noiseBurst(0, 0.7, 800, 0.25, 'lowpass'); note(900 + Math.random() * 600, 0, 0.5, 'sine', 0.05, 300); },
+  whoosh: () => noiseBurst(0, 0.5, 1200, 0.15),
+  purr:   () => { for (let i = 0; i < 8; i++) note(48 + (i % 2) * 6, i * 0.11, 0.12, 'sawtooth', 0.07); },
+  shake:  i => note(300 + i * 25, 0, 0.06, 'square', 0.05),
+};
+
+// ---------- MUSIC ENGINE ----------
+// 5 tracks: LEAD (pizzicato strings or a breathy flute, with vibrato on long notes and an echo),
+// a COUNTER voice (clarinet) on the second time round, soft string PADS, a plucky upright BASS and light DRUMS
+// (kick, rim click, shaker). Songs are written one 8th note per step: a MIDI note, 0 = rest, -1 = keep holding.
+let MUSIC_LOG = null;                                  // tests set this to an array to see every scheduled note
+function envGain(t, a, peak, sus, dur, rel, out) {
+  const g = actx.createGain(), hold = t + Math.max(a + 0.002, dur);
+  g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(peak, t + a);
+  if (sus < 1) g.gain.setTargetAtTime(peak * sus, t + a, Math.max(0.03, dur * 0.35));
+  g.gain.setTargetAtTime(0, hold, rel / 4);
+  g.connect(out); return g;
+}
+function osc(type, f, t, end, detune = 0) {
+  const o = actx.createOscillator(); o.type = type; o.frequency.setValueAtTime(f, t);
+  if (detune) o.detune.setValueAtTime(detune, t);
+  o.start(t); o.stop(end + 0.05); return o;
+}
+function lowpass(f, q, t) { const b = actx.createBiquadFilter(); b.type = 'lowpass'; b.frequency.setValueAtTime(f, t); b.Q.value = q; return b; }
+function vibrato(t, end, f, o1, o2) {
+  const lfo = osc('sine', 5.4, t, end), lg = actx.createGain();
+  lg.gain.setValueAtTime(0, t); lg.gain.linearRampToValueAtTime(0, t + 0.12); lg.gain.linearRampToValueAtTime(f * 0.01, t + 0.45);
+  lfo.connect(lg); lg.connect(o1.frequency); if (o2) lg.connect(o2.frequency);
+}
+// 🎻 pizzicato: a plucked string that rings out quickly
+function pizzVoice(m, t, dur, vol, out) {
+  const f = midi(m), end = t + 0.5;
+  const g = envGain(t, 0.003, vol, 0.15, 0.09, 0.35, out);
+  const lp = lowpass(3200, 2, t); lp.frequency.setTargetAtTime(700, t + 0.01, 0.06); lp.connect(g);
+  osc('triangle', f, t, end).connect(lp); osc('sawtooth', f, t, end, 6).connect(lp);
+  const g2 = actx.createGain(); g2.gain.value = 0.25; osc('sine', f * 2, t, end).connect(g2); g2.connect(g);
+  if (delayIn) g.connect(delayIn);
+}
+// 🪈 flute / clarinet: breathy sustained voices with vibrato
+function windVoice(m, t, dur, vol, kind, out) {
+  const f = midi(m), end = t + dur + 0.3;
+  const g = envGain(t, kind === 'flute' ? 0.04 : 0.02, vol, 0.85, dur, 0.15, out);
+  const lp = lowpass(kind === 'flute' ? 3800 : 1300, 1, t); lp.connect(g);
+  const o1 = osc(kind === 'flute' ? 'sine' : 'square', f, t, end, -4), o2 = osc(kind === 'flute' ? 'triangle' : 'square', f, t, end, 4);
+  const mix = actx.createGain(); mix.gain.value = 0.5; o1.connect(mix); o2.connect(mix); mix.connect(lp);
+  if (kind === 'flute') { const n = actx.createBufferSource(); n.buffer = noiseBuf; const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f * 2; bp.Q.value = 2;
+    const ng = actx.createGain(); ng.gain.value = 0.05; n.connect(bp); bp.connect(ng); ng.connect(g); n.start(t); n.stop(end); }   // breath
+  if (dur > 0.3) vibrato(t, end, f, o1, o2);
+  if (delayIn && kind === 'flute') g.connect(delayIn);
+}
+function padVoice(notes, t, dur, vol, out) {
+  for (const m of notes) {
+    const f = midi(m), end = t + dur + 0.6;
+    const g = envGain(t, 0.3, vol, 0.85, dur, 0.5, out);
+    const lp = lowpass(1000, 0.7, t); lp.connect(g);
+    osc('sawtooth', f, t, end, -10).connect(lp); osc('sawtooth', f, t, end, 10).connect(lp);
+  }
+}
+function bassVoice(m, t, vol, out) {                   // 🎸 upright bass pluck
+  const f = midi(m), end = t + 0.5;
+  const g = envGain(t, 0.004, vol, 0.3, 0.12, 0.25, out);
+  const lp = lowpass(900, 3, t); lp.frequency.setTargetAtTime(250, t + 0.01, 0.07); lp.connect(g);
+  osc('triangle', f, t, end).connect(lp); const sg = actx.createGain(); sg.gain.value = 0.7; osc('sine', f, t, end).connect(sg); sg.connect(g);
+}
+function guitarStrum(notes, t, vol, out) {             // 🎸 campfire guitar: notes rolled one after another
+  notes.forEach((m, i) => {
+    const f = midi(m), s = t + i * 0.018, end = s + 0.9;
+    const g = envGain(s, 0.003, vol, 0.3, 0.2, 0.6, out);
+    const lp = lowpass(2600, 1, s); lp.frequency.setTargetAtTime(800, s, 0.12); lp.connect(g);
+    osc('triangle', f, s, end).connect(lp); osc('sawtooth', f, s, end, 3).connect(lp);
+  });
+}
+function noiseHit(t, type, freq, q, vol, decay, out) {
+  const s = actx.createBufferSource(); s.buffer = noiseBuf;
+  const fl = actx.createBiquadFilter(); fl.type = type; fl.frequency.value = freq; fl.Q.value = q;
+  const g = actx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.002); g.gain.exponentialRampToValueAtTime(0.001, t + decay);
+  s.connect(fl); fl.connect(g); g.connect(out); s.start(t); s.stop(t + decay + 0.05);
+}
+function drumHit(kind, t, vol, out) {
+  if (kind === 'k') {
+    const o = osc('sine', 130, t, t + 0.3); o.frequency.exponentialRampToValueAtTime(45, t + 0.1);
+    const g = actx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.003); g.gain.exponentialRampToValueAtTime(0.001, t + 0.26);
+    o.connect(g); g.connect(out);
+  } else if (kind === 'r') {                            // rim click (tiptoe!)
+    const o = osc('square', 1700, t, t + 0.04), g = actx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.001); g.gain.exponentialRampToValueAtTime(0.001, t + 0.03);
+    const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1700; o.connect(bp); bp.connect(g); g.connect(out);
+  } else if (kind === 'h') noiseHit(t, 'highpass', 6500, 1, vol, 0.05, out);           // shaker
+  else if (kind === 's') noiseHit(t, 'bandpass', 2200, 0.8, vol, 0.14, out);           // brush snare
+}
+// chords (MIDI triads, low)
+// new sounds for the new cat moves
+Object.assign(sfx, {
+  crash:  () => { noiseBurst(0, 0.35, 2500, 0.3, 'highpass'); [1300, 900, 1500, 700].forEach((f, i) => note(f, 0.04 + i * 0.07, 0.12, 'triangle', 0.1)); },   // CLATTER!
+  wobble: () => { note(500, 0, 0.1, 'sine', 0.08, 650); note(450, 0.1, 0.1, 'sine', 0.08, 600); },
+  splash: () => { noiseBurst(0, 0.6, 1800, 0.25); noiseBurst(0.05, 0.4, 4000, 0.12, 'highpass'); },
+  drip:   () => note(1500 + Math.random() * 400, 0, 0.07, 'sine', 0.05, 900),
+  climb:  () => [0, 0.08, 0.16].forEach((s, i) => { note(260 + i * 90, s, 0.07, 'triangle', 0.08); noiseBurst(s, 0.04, 2200, 0.05); }),
+  leap:   () => { note(260, 0, 0.3, 'sine', 0.13, 1000); noiseBurst(0, 0.25, 1800, 0.06); },
+  land:   () => { note(150, 0, 0.1, 'sine', 0.15, 80); noiseBurst(0, 0.06, 900, 0.08); },
+  box:    () => { noiseBurst(0, 0.12, 600, 0.2, 'lowpass'); note(200, 0, 0.12, 'square', 0.05, 140); },
+  chitter: () => { for (let i = 0; i < 7; i++) note(1800 + (i % 2) * 500, i * 0.05, 0.04, 'square', 0.05); },
+  tweet:  () => { note(2200, 0, 0.08, 'sine', 0.08, 3000); note(2600, 0.1, 0.08, 'sine', 0.08, 3400); note(2400, 0.22, 0.1, 'sine', 0.07, 3100); },
+  squeak: () => { note(1500, 0, 0.1, 'sine', 0.1, 2100); note(1700, 0.12, 0.12, 'sine', 0.09, 2300); },
+  hoot:   () => { note(400, 0, 0.25, 'sine', 0.12, 370); note(380, 0.35, 0.35, 'sine', 0.12, 350); },
+  ding:   i => { note(midi(72 + [0, 4, 7, 12][i % 4]), 0, 0.35, 'triangle', 0.12); note(midi(84 + [0, 4, 7, 12][i % 4]), 0, 0.3, 'sine', 0.06); },
+  buzz:   () => { note(140, 0, 0.35, 'sawtooth', 0.08); note(147, 0, 0.35, 'square', 0.05); },
+  vault:  () => { note(80, 0, 1.2, 'sawtooth', 0.1, 50); noiseBurst(0, 1.0, 400, 0.15, 'lowpass'); [523, 659, 784, 1047, 1319, 1568].forEach((f, i) => note(f, 0.6 + i * 0.1, 0.4, 'triangle', 0.1)); },
+  meet:   () => [659, 784, 988, 1319].forEach((f, i) => note(f, i * 0.09, 0.25, 'sine', 0.11)),
+  zzz:    () => { note(300, 0, 0.5, 'sine', 0.06, 200); },
+  beep:   () => { note(1200, 0, 0.06, 'square', 0.05); note(900, 0.08, 0.08, 'square', 0.05); },
+  sparkle: () => [1568, 1976, 2349, 2637, 3136].forEach((f, i) => note(f, i * 0.06, 0.3, 'sine', 0.06)),
+});
+// 🔔 a music box bell (for Sammy's dream)  +  👾 a bright chip lead (for the Game Factory)
+function bellVoice(m, t, dur, vol, out) {
+  const f = midi(m), end = t + 1.6;
+  const g = envGain(t, 0.002, vol, 0.2, 0.2, 1.2, out);
+  osc('sine', f, t, end).connect(g);
+  const g2 = actx.createGain(); g2.gain.setValueAtTime(0.35, t); g2.gain.exponentialRampToValueAtTime(0.001, t + 0.6); osc('sine', f * 3.01, t, end).connect(g2); g2.connect(g);
+  if (delayIn) g.connect(delayIn);
+}
+function chipVoice(m, t, dur, vol, out) {
+  const f = midi(m), end = t + dur + 0.2;
+  const g = envGain(t, 0.005, vol, 0.7, dur * 0.9, 0.08, out);
+  const lp = lowpass(2600, 3, t); lp.frequency.setTargetAtTime(1200, t, 0.1); lp.connect(g);
+  const o1 = osc('square', f, t, end, -5), o2 = osc('square', f, t, end, 5); o1.connect(lp); o2.connect(lp);
+  if (dur > 0.3) vibrato(t, end, f, o1, o2);
+  if (delayIn) g.connect(delayIn);
+}
+// 😻😾 new sounds for Jimmy's moods
+Object.assign(sfx, {
+  hiss:   () => { noiseBurst(0, 0.55, 5200, 0.32, 'highpass'); noiseBurst(0.02, 0.45, 2600, 0.14); note(180, 0, 0.25, 'sawtooth', 0.05, 120); },   // HSSSSS!
+  cute:   () => { meowSound(1.35); [1319, 1568, 2093].forEach((f, i) => note(f, 0.3 + i * 0.08, 0.25, 'sine', 0.07)); },               // mew! + sparkles
+  melt:   () => [784, 740, 698, 659].forEach((f, i) => note(f, i * 0.12, 0.25, 'sine', 0.09, f * 0.97)),                                 // awwww...
+  scared: () => { note(900, 0, 0.12, 'square', 0.06, 1500); note(1300, 0.1, 0.14, 'square', 0.05, 2000); },
+  grump:  () => { note(196, 0, 0.3, 'sawtooth', 0.08, 147); note(147, 0.28, 0.4, 'sawtooth', 0.08, 110); },                             // hmph!
+  happy:  () => [659, 784, 1047, 1319].forEach((f, i) => note(f, i * 0.07, 0.25, 'triangle', 0.1)),                                       // back to happy!
+  pet:    () => { for (let i = 0; i < 4; i++) note(52 + (i % 2) * 5, i * 0.12, 0.13, 'sawtooth', 0.05); note(1568, 0, 0.2, 'sine', 0.05); },
+  nap:    () => [523, 440, 392, 330].forEach((f, i) => note(f, i * 0.18, 0.4, 'sine', 0.06)),
+  wakeup: () => { note(1200, 0, 0.06, 'square', 0.06); note(300, 0.06, 0.3, 'sawtooth', 0.07, 200); },
+});
+// 🎷 a low, grumbly bassoon for grumpy mode
+function bassoonVoice(m, t, dur, vol, out) {
+  const f = midi(m), end = t + dur + 0.25;
+  const g = envGain(t, 0.03, vol, 0.8, dur, 0.12, out);
+  const lp = lowpass(900, 4, t); lp.connect(g);
+  const o1 = osc('sawtooth', f, t, end, -6), o2 = osc('square', f, t, end, 6);
+  const mix = actx.createGain(); mix.gain.value = 0.5; o1.connect(mix); o2.connect(mix); mix.connect(lp);
+  if (dur > 0.3) vibrato(t, end, f, o1, o2);
+}
+// chords (MIDI triads, low)
+const CH = { Dm: [50, 53, 57], A: [49, 52, 57], A7: [49, 52, 55], Gm: [50, 55, 58], Bb: [50, 53, 58], C: [52, 55, 60], F: [53, 57, 60],
+             G: [55, 59, 62], Em: [52, 55, 59], D: [50, 54, 57], D7: [50, 54, 60], Am: [52, 57, 60], E: [52, 56, 59], E7: [50, 52, 56],
+             B7: [51, 54, 57], C7: [52, 55, 58], Cm: [51, 55, 60], Ab: [51, 56, 60], Eb: [51, 55, 58], Fm: [53, 56, 60],
+             Bbm: [49, 53, 58], Db: [49, 53, 56], G7: [53, 55, 59] };
+const ROOT = { Dm: 38, A: 45, A7: 45, Gm: 43, Bb: 46, C: 48, F: 41, G: 43, Em: 40, D: 38, D7: 38, Am: 45, E: 40, E7: 40,
+               B7: 47, C7: 48, Cm: 48, Ab: 44, Eb: 39, Fm: 41, Bbm: 46, Db: 37, G7: 43 };
+// All songs are ORIGINAL. One 8th note per step: a MIDI note, 0 = rest, -1 = keep holding.
+// key = the song's home note (0 = C, 5 = F, 7 = G). In GRUMPY mode the happy songs turn into their own
+// grumpy variation: the major notes slide down into minor, the tempo slows, and a low bassoon grumbles the tune.
+const SONGS = {
+  // 🐾 "Jimmy's Tiptoe": the main theme (F major, bouncy pizzicato)
+  jimmy: { bpm: 124, bar: 8, lead: 'pizz', counter: 'clarinet', key: 5,
+    mel: [72, 0, 69, 0, 65, 0, 69, 72,  0, 77, 0, 76, 74, 0, 72, 0,  70, 0, 74, 0, 77, 0, 74, 70,  72, -1, -1, 0, 76, 0, 79, 0,
+          81, 0, 77, 0, 72, 0, 77, 81,  0, 74, 0, 77, 81, 0, 77, 74,  70, 0, 74, 0, 79, 0, 77, 76,  74, 0, 72, 0, 67, -1, -1, 0,
+          74, 0, 77, 0, 74, 0, 70, 0,  72, 0, 76, 0, 79, -1, -1, 0,  76, 0, 72, 0, 69, 0, 72, 76,  77, -1, -1, 0, 74, 0, 0, 0,
+          70, 72, 74, 0, 79, 0, 77, 0,  76, 0, 79, 0, 84, 0, 79, 76,  77, 0, 72, 0, 69, 0, 72, 0,  65, 0, 0, 0, 77, 0, 65, 0],
+    chords: ['F', 'F', 'Bb', 'C', 'F', 'Dm', 'Gm', 'C', 'Bb', 'C', 'Am', 'Dm', 'Gm', 'C', 'F', 'F'],
+    gchords: ['Fm', 'Fm', 'Bbm', 'C', 'Fm', 'Db', 'Bbm', 'C', 'Bbm', 'C', 'Ab', 'Db', 'Bbm', 'C', 'Fm', 'Fm'],
+    drums: { k: 'x...x...', r: '..x...x.', h: '.x.x.x.x' }, bass: [0, 7, 12, 7] },
+  // 🌻 "Sunny Paws": bouncy garden + alley tune (G major)
+  garden: { bpm: 128, bar: 8, lead: 'pizz', counter: 'clarinet', key: 7,
+    mel: [74, 0, 71, 0, 67, 0, 71, 74,  76, 0, 72, 0, 76, 79, 0, 0,  78, 0, 74, 0, 78, 81, 0, 78,  79, -1, -1, 0, 74, 0, 71, 0,
+          71, 0, 76, 0, 79, 0, 76, 71,  72, 0, 76, 0, 79, 0, 84, 0,  81, 0, 78, 0, 74, 0, 72, 78,  79, -1, -1, 0, 0, 0, 67, 0,
+          76, 0, 72, 0, 79, 0, 76, 72,  74, 0, 71, 0, 67, 0, 71, 74,  72, 0, 76, 0, 81, -1, 79, 0,  78, -1, -1, 0, 74, 0, 78, 81,
+          83, 0, 79, 0, 74, 0, 79, 83,  84, 0, 79, 0, 76, 0, 79, 0,  81, 0, 78, 0, 74, 0, 72, 78,  79, -1, -1, -1, 67, 0, 0, 0],
+    chords: ['G', 'C', 'D', 'G', 'Em', 'C', 'D7', 'G', 'C', 'G', 'Am', 'D', 'G', 'C', 'D7', 'G'],
+    gchords: ['Gm', 'Cm', 'D', 'Gm', 'Eb', 'Cm', 'D7', 'Gm', 'Cm', 'Gm', 'Cm', 'D', 'Gm', 'Cm', 'D7', 'Gm'],
+    drums: { k: 'x...x...', r: '..x...x.', h: 'xxxxxxxx' }, bass: [0, 7, 12, 7] },
+  // 🐠 "Pet Shop Waltz": a cute waltz with guitar (C major, 6 steps per bar)
+  shop: { bpm: 104, bar: 6, lead: 'flute', counter: null, key: 0,
+    mel: [76, -1, 79, -1, 84, -1,  81, -1, -1, -1, 76, -1,  77, -1, 81, -1, 84, -1,  83, -1, -1, -1, 79, -1,
+          76, -1, 79, -1, 84, -1,  81, -1, 79, -1, 76, -1,  74, -1, 77, -1, 81, -1,  79, -1, -1, -1, -1, 0,
+          81, -1, 77, -1, 72, -1,  74, -1, 79, -1, 83, -1,  79, -1, 76, -1, 71, -1,  72, -1, 76, -1, 81, -1,
+          77, -1, 81, -1, 84, -1,  83, -1, 79, -1, 74, -1,  76, -1, 79, -1, 84, -1,  84, -1, -1, -1, -1, 0],
+    chords: ['C', 'Am', 'F', 'G', 'C', 'Am', 'Dm', 'G', 'F', 'G', 'Em', 'Am', 'F', 'G', 'C', 'C'],
+    gchords: ['Cm', 'Ab', 'Fm', 'G', 'Cm', 'Ab', 'Fm', 'G', 'Fm', 'G', 'Eb', 'Ab', 'Fm', 'G', 'Cm', 'Cm'],
+    drums: { h: '..x.x.', k: 'x.....' }, bass: [0] },
+  // 🌧️ "Raindrop Rooftops": a soft rainy tune (D minor, flute over twinkly harp)
+  rain: { bpm: 96, bar: 8, lead: 'flute', counter: 'clarinet', arp: true, minor: true,
+    mel: [69, -1, -1, 0, 74, -1, 72, -1,  70, -1, -1, 0, 65, -1, -1, 0,  67, -1, 69, -1, 72, -1, 76, -1,  73, -1, -1, -1, -1, 0, 0, 0,
+          74, -1, -1, 0, 77, -1, 76, -1,  74, -1, 72, -1, 70, -1, -1, 0,  70, -1, 69, -1, 67, -1, 70, -1,  69, -1, -1, -1, -1, 0, 0, 0],
+    chords: ['Dm', 'Bb', 'C', 'A', 'Dm', 'Bb', 'Gm', 'A'],
+    drums: { k: 'x.......', r: '....x...', h: '..x...x.' }, bass: [0, 7] },
+  // 🤖 "Bot Patrol": sneaky robot-factory groove (C minor, chip lead)
+  factory: { bpm: 122, bar: 8, lead: 'chip', counter: 'clarinet', minor: true,
+    mel: [72, 0, 75, 0, 79, 0, 75, 72,  80, 0, 0, 79, 0, 77, 75, 0,  74, 0, 77, 0, 82, 0, 77, 74,  79, -1, -1, 0, 74, 0, 71, 0,
+          72, 0, 75, 0, 79, 0, 84, 0,  80, 0, 79, 0, 77, 0, 75, 77,  77, 0, 80, 0, 84, 0, 80, 77,  79, -1, -1, 0, 83, 0, 79, 0],
+    chords: ['Cm', 'Ab', 'Bb', 'G', 'Cm', 'Ab', 'Fm', 'G'],
+    drums: { k: 'x...x...', r: '..x...x.', h: '.x.x.x.x' }, bass: [0, 12, 0, 12] },
+  // 🎉 "Cushion Celebration": the big finale song (C major, everyone plays!)
+  finale: { bpm: 128, bar: 8, lead: 'bright', counter: 'clarinet', key: 0, noGrump: true,
+    mel: [72, 0, 76, 0, 79, -1, -1, 0,  79, 0, 83, 0, 86, -1, 84, 0,  84, 0, 81, 0, 76, -1, -1, 0,  77, 0, 81, 0, 84, -1, -1, 0,
+          84, 0, 79, 0, 76, 0, 79, 84,  81, -1, -1, 0, 77, 0, 81, 0,  79, 0, 77, 0, 74, 0, 71, 74,  72, -1, -1, -1, -1, 0, 0, 0,
+          81, 0, 77, 0, 72, 0, 77, 81,  83, 0, 79, 0, 74, 0, 79, 83,  84, 0, 79, 0, 76, 0, 79, 84,  84, -1, 81, -1, 76, -1, -1, 0,
+          77, 0, 81, 0, 84, 0, 86, 0,  86, -1, 83, -1, 79, -1, -1, 0,  84, 0, 79, 0, 76, 0, 79, 0,  84, -1, -1, -1, -1, -1, 0, 0],
+    chords: ['C', 'G', 'Am', 'F', 'C', 'F', 'G', 'C', 'F', 'G', 'C', 'Am', 'F', 'G', 'C', 'C'],
+    drums: { k: 'x...x...', r: '..x...x.', h: 'xxxxxxxx' }, bass: [0, 7, 12, 7], big: true },
+  // ☀️ "Sunbeam Lullaby": a music-box waltz for Jimmy's nap (F major)
+  cozy: { bpm: 84, bar: 6, lead: 'bell', counter: null, noGuitar: true, key: 5, noGrump: true,
+    mel: [81, -1, 77, -1, 72, -1,  74, -1, 77, -1, 81, -1,  82, -1, -1, -1, 77, -1,  79, -1, -1, -1, -1, 0,
+          81, -1, 84, -1, 81, -1,  77, -1, 74, -1, 77, -1,  79, -1, 82, -1, 79, -1,  76, -1, -1, -1, -1, 0],
+    chords: ['F', 'Dm', 'Bb', 'C', 'F', 'Dm', 'Gm', 'C'],
+    drums: {}, bass: [0] },
+};
+let song = null, songName = '', nextT = 0, step = 0, loopN = 0, grumpyMusic = false;
+function playSong(name) {
+  if (songName === name) return;
+  songName = name; song = SONGS[name] || null; step = 0; loopN = 0; nextT = 0;
+}
+const isGrumpyMusic = () => grumpyMusic && song && !song.noGrump;
+function grumpNote(m) {                                // 😾 major -> minor: the 3rd, 6th and 7th notes of the scale slide down
+  if (!song.minor) { const d = ((m - song.key) % 12 + 12) % 12; if (d === 4 || d === 9 || d === 11) m -= 1; }
+  return m - 12;
+}
+function musicTick() {
+  if (!actx || !song || !musicOn) return;
+  const now = actx.currentTime, sp = 60 / (song.bpm * (isGrumpyMusic() ? 0.82 : 1)) / 2;
+  if (nextT < now) nextT = now + 0.06;
+  while (nextT < now + 0.25) { scheduleStep(nextT, sp); nextT += sp; step++; if (step >= song.mel.length) { step = 0; loopN++; } }
+}
+function scheduleStep(t, sp) {
+  const s = song, i = step, bar = Math.floor(i / s.bar), inBar = i % s.bar, gr = isGrumpyMusic();
+  const ch = (gr && s.gchords ? s.gchords : s.chords)[bar % s.chords.length];
+  const swing = s.bar === 8 && inBar % 2 ? sp * (gr ? 0.2 : 0.12) : 0, tt = t + swing;
+  const m = s.mel[i];
+  if (m > 0) {                                         // how long is this note? (count the holds)
+    let n = 1; while (s.mel[i + n] === -1) n++;
+    const dur = n * sp;
+    if (MUSIC_LOG) MUSIC_LOG.push(m);
+    if (gr) {                                          // 😾 the grumpy variation: a low grumbly bassoon, a bit slower
+      const gm = grumpNote(m);
+      bassoonVoice(gm, tt, Math.max(sp * 0.9, dur * 0.92), 0.075, musicBus);
+      if (n === 1) pizzVoice(gm + 12, tt, dur, 0.05, musicBus);
+    }
+    else if (s.lead === 'pizz') { if (n > 1) windVoice(m, tt, dur * 0.95, 0.07, 'flute', musicBus); else pizzVoice(m, tt, dur, 0.16, musicBus); }
+    else if (s.lead === 'bell') bellVoice(m, tt, dur, 0.13, musicBus);
+    else if (s.lead === 'chip') chipVoice(m, tt, dur * 0.9, 0.05, musicBus);
+    else if (s.lead === 'bright') { windVoice(m, tt, dur * 0.95, 0.08, 'flute', musicBus); chipVoice(m + 12, tt, dur * 0.8, 0.02, musicBus); if (n === 1) pizzVoice(m, tt, dur, 0.08, musicBus); }
+    else windVoice(m, tt, dur * 0.95, 0.09, 'flute', musicBus);
+    if (!gr && s.counter && loopN % 2 === 1) windVoice(m - 12, tt, Math.max(sp, dur) * 0.9, 0.035, 'clarinet', musicBus);
+  }
+  if (s.arp && inBar % 2 === 1) { const c = CH[ch]; pizzVoice(c[((inBar - 1) / 2) % 3] + 12, tt, sp, 0.05, musicBus); }   // twinkly harp
+  if (inBar === 0) padVoice(gr ? CH[ch].map(n => n - 12) : CH[ch], t, sp * s.bar, s.lead === 'pizz' ? 0.018 : s.big ? 0.03 : 0.025, musicBus);
+  if (s.bar === 6) {                                   // waltz: bass on 1, guitar strums on 2 and 3
+    if (inBar === 0) bassVoice(ROOT[ch], t, 0.3, musicBus);
+    if (!s.noGuitar && (inBar === 2 || inBar === 4)) guitarStrum(CH[ch].map(n => n + (gr ? 0 : 12)), t, 0.05, musicBus);
+    if (s.noGuitar && inBar === 3) bellVoice(CH[ch][1] + 12, t, sp, 0.03, musicBus);
+    if (inBar === 3 && loopN > 0) bassVoice(ROOT[ch] + 7, t, 0.2, musicBus);
+  } else if (gr) { if (inBar % 4 === 0) bassVoice(ROOT[ch] - (inBar ? 5 : 0), tt, 0.36, musicBus); }   // plod... plod...
+  else if (inBar % 2 === 0) bassVoice(ROOT[ch] + s.bass[(inBar / 2) % s.bass.length], tt, 0.32, musicBus);
+  if (gr && s.bar === 8) { if (inBar === 0 || inBar === 4) drumHit('k', tt, 0.4, musicBus); if (inBar === 6) drumHit('s', tt, 0.09, musicBus); if (inBar % 2 === 1) drumHit('h', tt, 0.03, musicBus); }
+  else for (const k in s.drums) if (s.drums[k][inBar] === 'x') drumHit(k, tt, k === 'k' ? 0.35 : k === 'h' ? 0.05 : 0.12, musicBus);
+  if (!gr && s.bar === 8 && (loopN > 0 || s.big) && inBar === 4 && (bar % 2 || s.big)) drumHit('s', tt, 0.1, musicBus);
+  if (s.big && inBar === 0 && bar % 4 === 0) guitarStrum(CH[ch].map(n => n + 12), t, 0.05, musicBus);
+}
+function toggleMusic() {
+  musicOn = !musicOn; save.music = musicOn; writeSave();
+  if (actx && musicBus) { const t = actx.currentTime; musicBus.gain.cancelScheduledValues(t); musicBus.gain.setValueAtTime(musicBus.gain.value, t); musicBus.gain.linearRampToValueAtTime(musicOn ? 0.6 : 0, t + 0.25); }
+  nextT = 0;
+}
+function fanfare() {                                   // the "TA-DAAA!"
+  [[67, 0], [72, 0.12], [76, 0.24], [79, 0.36], [84, 0.5]].forEach(([m, s]) => { note(midi(m), s, 0.5, 'triangle', 0.13); note(midi(m - 12), s, 0.4, 'square', 0.04); });
+  note(midi(88), 0.66, 0.9, 'sine', 0.12); note(midi(84), 0.66, 0.9, 'triangle', 0.1); note(midi(79), 0.66, 0.9, 'triangle', 0.08);
+}
+
+// ---------- THE 9 LEVELS ----------
+// #  wall          .  floor           T  furniture (blocks walking, not seeing)   B  box / bush / basket (HIDE in it!)
+// H  shadow (HIDE) L  fence / ladder / tires (CLIMB over it, only when Jimmy is happy)   G  gap (LEAP over it)
+// k  something on a shelf (POUNCE next to it to KNOCK it off: CLATTER!)         X  a pile of boxes (wear a DISGUISE BOX)
+// S  start   C  checkpoint (paw mat)   E  way out   f  fish treat (3 each, cheer Jimmy up)   y  hidden toy mouse (costumes!)
+// u  sunbeam (stand still = NAP = happy)   t  a toy (play = happy)   P  a friendly person who PETS Jimmy (happy!)
+// W  bath tub / puddle (SPLASH = grumpy)   w  sprinkler (SPLASH = grumpy)   q  squirrel   b  birds   D  a sleepy dog   Y  Sammy!
+// Guards: path = patrol points [col, row]; at + looks = sits still and looks around (angles in degrees, 0 = right, 90 = down)
+const LEVELS = [
+  { name: 'The Kitchen', icon: '🍳', song: 'jimmy', pet: 'ben',
+    tip: "Sneak past Mom and Dad! Ben gives pets = HAPPY Jimmy. Happy Jimmy can do a CUTE head-bump (X) on a guard!",
+    th: { floor: '#ffe0b2', floor2: '#ffd59a', wall: '#8d6e63', furn: '#bcaaa4', box: 'chair', exit: 'flap', knock: 'pot', tiles: true },
+    map: ["########################",
+          "#TTTTkTTT.....TTTkTTTTT#",
+          "#S.......f.....B.......#",
+          "#..P...........B..u....#",
+          "#.....TTTT.........f...#",
+          "#..B..TTTT..B..........#",
+          "#..........C...........#",
+          "#.......B.......TTTT...#",
+          "#..u............TTTT.y.#",
+          "#....TT.....B..........#",
+          "#.f..TT................#",
+          "#.........B.....B.....E#",
+          "########################"],
+    guards: [{ type: 'dad', path: [[6, 3], [20, 3], [20, 9], [8, 9]], speed: 0.85 }, { type: 'mom', at: [12, 10], looks: [180, 0, 270] }] },
+  { name: 'The Laundry Room', icon: '🧺', song: 'jimmy', pet: 'gran',
+    tip: "Bath time? NO WAY! Bubble tubs make Jimmy wet and GRUMPY. And the vacuum... Jimmy HATES the vacuum!",
+    th: { floor: '#e3f2fd', floor2: '#d6eaf8', wall: '#5c6bc0', furn: '#cfd8dc', box: 'basket', exit: 'door', knock: 'soap', washers: true, bath: 'tub' },
+    map: ["########################",
+          "#S...TTTT....k.TTTT..y.#",
+          "#....TTTT......TTTT....#",
+          "#..f......WW...........#",
+          "#.........WW.....B..f..#",
+          "#..B...........u.......#",
+          "#......C....B.....WW...#",
+          "#TTTT.............WW...#",
+          "#TTTT...B...TTTT.......#",
+          "#.......WW..TTTT...B...#",
+          "#..u....WW.......f..P..#",
+          "#.....B...........t..E.#",
+          "########################"],
+    guards: [{ type: 'vac2', path: [[5, 5], [20, 5]], speed: 1.2 }, { type: 'mom', path: [[9, 2], [20, 2], [20, 7], [9, 7]], speed: 0.85 }] },
+  { name: 'The Garden', icon: '🌻', song: 'garden', pet: 'gran',
+    tip: "Sprinklers go drip... drip... SPLASH! Stay dry! The gnome is WATCHING. Climb the fence to get out.",
+    th: { floor: '#81c784', floor2: '#77bf7b', wall: '#8d6e63', furn: '#a1887f', box: 'bush', exit: 'gate', grass: true, climb: 'fence' },
+    map: ["########################",
+          "#S...B.....w....TT...f.#",
+          "#.........B.....TT.....#",
+          "#..u...TT..............#",
+          "#......TT...w....B..P..#",
+          "#.f..........b.........#",
+          "#.....B...C......w.....#",
+          "#TTT.............TTT...#",
+          "#TTT...w...B.....TTTLLL#",
+          "#.........TT.....y.L...#",
+          "#..t...B..TT.......L...#",
+          "#..........f.......L..E#",
+          "########################"],
+    guards: [{ type: 'gnome', at: [13, 7], looks: [0, 90, 180, 270] }, { type: 'neighbor', path: [[4, 2], [20, 2], [20, 6], [4, 6]], speed: 0.85 }] },
+  { name: 'The Garage', icon: '🔧', song: 'jimmy', pet: 'dad',
+    tip: "Hide in boxes! Climb the tires! POUNCE next to a paint can: CLATTER! Walk onto the box pile for a DISGUISE BOX!",
+    th: { floor: '#b0bec5', floor2: '#a7b6bd', wall: '#455a64', furn: '#8d6e63', box: 'box', exit: 'flap', climb: 'tires', knock: 'paint' },
+    map: ["########################",
+          "#TTTkTTTT...#y...TTkTTT#",
+          "#S..........#.....f....#",
+          "#...........#..........#",
+          "#..B....TTTT#....B.....#",
+          "#.......TTTT.....TT..u.#",
+          "#..u..........C........#",
+          "#.......B..........B...#",
+          "#LLLL...........TTT....#",
+          "#...L......X....TTT....#",
+          "#.f.L..........t....f..#",
+          "#.t.L....P.....B......E#",
+          "########################"],
+    guards: [{ type: 'robo', at: [10, 6], looks: [90, 0, 180, 90] }, { type: 'vac2', path: [[6, 10], [21, 10]], speed: 1.2 }] },
+  { name: 'The Alley Fences', icon: '🐾', song: 'garden', pet: 'gran', night: 0.35, fireflies: true,
+    tip: "So many fences! Climb, climb, climb! Shh... don't wake the sleepy pup. Trash cans are great hiding spots.",
+    th: { floor: '#90a4ae', floor2: '#86979f', wall: '#6d4c41', furn: '#607d8b', box: 'can', exit: 'gate', climb: 'fence', alley: true },
+    map: ["########################",
+          "#S..L.....B...L....f...#",
+          "#...L.........L........#",
+          "#.u.L...D.....L...B....#",
+          "#...L.........L........#",
+          "#...LLLLL..C..LLLL..t..#",
+          "#.f......H.........H...#",
+          "#........H....P....H...#",
+          "#LLLLL..........LLLLLLL#",
+          "#....L....B.....L......#",
+          "#..y.L..........L..B...#",
+          "#....L....f.....L....E.#",
+          "########################"],
+    guards: [{ type: 'walker', path: [[6, 6], [17, 6], [17, 7], [6, 7]], speed: 0.8 }, { type: 'neighbor', path: [[6, 10], [15, 10]], speed: 0.8 }] },
+  { name: 'The Pet Shop', icon: '🐠', song: 'shop', pet: 'ben', friend: 'sammy',
+    tip: "Look! It's SAMMY the brown tabby! Find him and he'll help: he runs off and meows when a guard spots you.",
+    th: { floor: '#fff3e0', floor2: '#ffe9cc', wall: '#26a69a', furn: '#80cbc4', box: 'box', exit: 'door', tanks: true, knock: 'toy' },
+    map: ["########################",
+          "#S.....TTTTTT......k.y.#",
+          "#......TTTTTT..........#",
+          "#..X.........B......f..#",
+          "#.......Y..............#",
+          "#TTTT..TTTT..TTTT..TTTT#",
+          "#..........C...........#",
+          "#.f..B..........B......#",
+          "#.......TTTTTTTT.......#",
+          "#..u....TTTTTTTT...P...#",
+          "#...........t..........#",
+          "#....B....f.......B...E#",
+          "########################"],
+    guards: [{ type: 'clerk', path: [[2, 6], [21, 6], [21, 10], [2, 10]], speed: 0.85 }, { type: 'clerk', at: [17, 2], looks: [180, 90, 0] }] },
+  { name: 'The Rainy Rooftop', icon: '🌧️', song: 'rain', pet: 'gran', night: 0.3, rain: true,
+    tip: "Pitter patter! LEAP over the gaps. Puddles make Jimmy grumpy... HISS (X) scares the Sky-Drone away!",
+    th: { floor: '#a1887f', floor2: '#97806f', wall: '#263238', furn: '#bf6f4a', box: 'box', exit: 'window', gap: 'alley', roof: true, bath: 'puddle' },
+    map: ["########################",
+          "#S...T...GG....T....f..#",
+          "#..H.....GG..........H.#",
+          "#..u.....GG..W.........#",
+          "#....W...GG......B.....#",
+          "#.f......GG.....TT.....#",
+          "#GGGGG.GGGGGGGGGGGGGGGG#",
+          "#.....H....C...........#",
+          "#..B.......W......u....#",
+          "#....TT.........H......#",
+          "#....TT..W..y.....GG.P.#",
+          "#..........f......GG..E#",
+          "########################"],
+    guards: [{ type: 'drone', path: [[5, 8], [20, 8]], speed: 1 }, { type: 'drone', at: [15, 3], looks: [180, 90, 0] }] },
+  { name: 'The Game Factory Halls', icon: '🏭', song: 'factory', pet: 'robo',
+    tip: "The Game Factory! Sneak past Robo's Security Bots and the Gloops. Robo is a friend: he gives the best pets!",
+    th: { floor: '#cfd8dc', floor2: '#c5ced3', wall: '#37474f', furn: '#78909c', box: 'crate', exit: 'door', factory: true, climb: 'ladder' },
+    map: ["########################",
+          "#S.....B......TT....y..#",
+          "#......B......TT.......#",
+          "#..TTTT....H.....TTTT..#",
+          "#..TTTT....H..f..TTTT..#",
+          "#.u...................P#",
+          "#LLLLLL.....C.....LLLLL#",
+          "#.f....TTTTTTTTT.......#",
+          "#..........X...........#",
+          "#....B...TTTTTT...B..t.#",
+          "#..X........H..........#",
+          "#.TTT....f..H.....u...E#",
+          "########################"],
+    guards: [{ type: 'gloop', path: [[2, 8], [21, 8]], speed: 0.9 }, { type: 'sbot', path: [[8, 10], [16, 10]], speed: 1 },
+             { type: 'sbot', path: [[9, 1], [9, 5]], speed: 0.9 }, { type: 'gloop', at: [21, 3], looks: [180, 90] }] },
+  { name: 'The Lost & Found', icon: '📦', song: 'jimmy', pet: 'ben',
+    tip: "The LOST & FOUND! Jimmy's fluffy cushion is here somewhere... Sneak all the way to it!",
+    th: { floor: '#ffecb3', floor2: '#ffe48f', wall: '#6d4c41', furn: '#a1887f', box: 'crate', exit: 'cushion', knock: 'lost', lost: true },
+    map: ["########################",
+          "#S..B...TTTkTT...B...f.#",
+          "#.......TTTTTT.........#",
+          "#..u.B..........B..X...#",
+          "#.........H............#",
+          "#TTTT.....H...TTTTTT...#",
+          "#..f..B.....C..........#",
+          "#.......TTTT.....B..P..#",
+          "#..B....TTTT...........#",
+          "#.............H...TTTTT#",
+          "#..t...B..y...H...T....#",
+          "#.......f....B.....u..E#",
+          "########################"],
+    guards: [{ type: 'sbot', path: [[5, 4], [20, 4]], speed: 1 }, { type: 'sbot', path: [[2, 9], [12, 9]], speed: 0.9 },
+             { type: 'gloop', path: [[15, 6], [22, 6], [22, 8], [15, 8]], speed: 0.85 }, { type: 'gloop', at: [16, 11], looks: [270, 180] }] },
+];
+const CATCH_LINES = {
+  robo: ['BEEP BOOP! Got you, Jimmy!', 'Robo found an orange kitty!'],
+  vac2: ['VROOOM! Got you, Jimmy!', 'The vacuum chased Jimmy! EEK!'],
+  dad: ['Got you, Jimmy!', 'Ha ha! Nice try, Jimmy!', 'Got you, Jimmy! Who has white socks? YOU do!'],
+  mom: ['Got you, Jimmy!', 'Jimmy! What are you up to, silly kitty?'],
+  neighbor: ['Got you, Jimmy! What a pretty orange kitty!', 'Oh my! Got you, Jimmy!'],
+  gnome: ['The gnome saw you! Got you, Jimmy!', 'Gnome-body sneaks past ME!'],
+  drone: ['BZZZT! Got you, Jimmy!', 'The Sky-Drone took your picture! Say cheese!'],
+  walker: ['*yawn* ...Hey! Got you, Jimmy!', 'Got you, Jimmy! Want to come on a walk?'],
+  dog: ['WOOF WOOF! The pup woke up!', 'The pup wants to play! WOOF!'],
+  clerk: ['Got you, Jimmy! No kitties on the shelves!', 'Got you, Jimmy! Are you for sale? Ha ha, no!'],
+  gloop: ['GLOOP GLOOP! Got you, Jimmy!', 'Sticky! A Gloop got you, Jimmy!'],
+  sbot: ['INTRUDER KITTY! Got you, Jimmy!', 'BLEEP! Security Bot got you, Jimmy!'],
+};
+const ROBOTS = { robo: 1, vac2: 1, drone: 1, sbot: 1 };
+const MELT_LINES = ['Awww, Jimmy!', 'Awww! So cute!', 'Awww... white socks!', 'Awww, who can say no to THAT?'];
+const ROBO_MELT = ['Awww, Jimmy! BEEP!', 'CUTENESS OVERLOAD! Awww!', 'Awww... *happy beeps*'];
+
+// ---------- Game state ----------
+let state = 'story', stateT = 0, lvl = 0, L = null, map = [];
+let jimmy = null, guards = [], treats = [], parts = [], pops = [], rings = [], buttons = [];
+let mouse = null, knocks = [], sprinklers = [], critters = [], toys = [], petters = [], friend = null, trail = [];
+let check = null, caughtN = 0, caughtBy = null, caughtLine = '', clearInfo = null, menuSel = 0, CHEAT = false;
+let shake = 0, flash = 0, needMsgT = 0, tipT = 0, moodTipT = 0, everHissed = false;
+let mood = 80, moodShow = 80, wasGrumpy = false;
+const keys = {};
+const tileAt = (c, r) => (r < 0 || r >= ROWS || c < 0 || c >= COLS) ? '#' : map[r][c];
+const tAt = (x, y) => tileAt(Math.floor(x / T), Math.floor(y / T));
+const catSolid = ch => ch === '#' || ch === 'T' || ch === 'L' || ch === 'G' || ch === 'k' || ch === 'o' || ch === 'P';
+const guardSolid = ch => catSolid(ch) || ch === 'B';
+const hideTile = ch => ch === 'B' || ch === 'H';
+const sightBlock = ch => ch === '#' || ch === 'L';
+const cx = c => c * T + T / 2;
+const dist = (a, b, x, y) => Math.hypot(a - x, b - y);
+const angDiff = (a, b) => { let d = (a - b) % (Math.PI * 2); if (d > Math.PI) d -= Math.PI * 2; if (d < -Math.PI) d += Math.PI * 2; return d; };
+function cardinal(a) { const k = ((Math.round(a / (Math.PI / 2)) % 4) + 4) % 4; return [[1, 0], [0, 1], [-1, 0], [0, -1]][k]; }
+const grumpy = () => mood < GRUMPY_AT;
+function moodFace(m = mood) { return m >= 75 ? '😻' : m >= 50 ? '😺' : m >= GRUMPY_AT ? '😼' : '😾'; }
+// 😻 / 😾 change Jimmy's mood (and say so when he flips between happy and grumpy)
+function addMood(n, why) {
+  if (CHEAT && n < 0) return;
+  const was = grumpy();
+  mood = Math.max(0, Math.min(100, mood + n));
+  if (why && Math.abs(n) >= 5) addPop(jimmy.x, jimmy.y - 46, why, n > 0 ? '#ffd1e8' : '#b3c7ff');
+  if (!was && grumpy()) moodFlip();
+  else if (was && !grumpy()) moodFlip();
+}
+function moodFlip() {
+  const g = grumpy(); grumpyMusic = g; nextT = 0; padLabel();
+  if (g) { sfx.grump(); moodTipT = 260; addPop(jimmy.x, jimmy.y - 66, 'GRUMPY JIMMY! 😾', '#9fa8da'); burst(jimmy.x, jimmy.y, ['#78909c', '#b0bec5'], 14, 2); }
+  else { sfx.happy(); moodTipT = 200; addPop(jimmy.x, jimmy.y - 66, 'Happy Jimmy is back! 😻', '#ff80ab'); hearts(jimmy.x, jimmy.y - 10, 8); }
+}
+function padLabel() {                                  // the touch button says CUTE or HISS to match Jimmy's mood
+  try { for (const el of document.querySelectorAll('#tp .tp-face')) if (/CUTE|HISS/.test(el.textContent)) el.textContent = grumpy() ? '😾 HISS' : '😻 CUTE'; } catch (_) {}
+}
+
+// 🗺️ find a way around the furniture (breadth-first search over the tiles)
+function nearestOpen(c, r) {
+  if (!guardSolid(tileAt(c, r))) return [c, r];
+  for (let d = 1; d < 6; d++) for (let dy = -d; dy <= d; dy++) for (let dx = -d; dx <= d; dx++)
+    if (!guardSolid(tileAt(c + dx, r + dy))) return [c + dx, r + dy];
+  return [c, r];
+}
+function findPath(c0, r0, c1, r1) {
+  [c1, r1] = nearestOpen(c1, r1); [c0, r0] = nearestOpen(c0, r0);
+  const prev = new Int16Array(COLS * ROWS).fill(-1), q = [r0 * COLS + c0]; prev[q[0]] = q[0];
+  for (let qi = 0; qi < q.length; qi++) {
+    const k = q[qi], c = k % COLS, r = (k - c) / COLS;
+    if (c === c1 && r === r1) break;
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nc = c + dx, nr = r + dy, nk = nr * COLS + nc;
+      if (guardSolid(tileAt(nc, nr)) || prev[nk] !== -1) continue;
+      prev[nk] = k; q.push(nk);
+    }
+  }
+  const end = r1 * COLS + c1; if (prev[end] === -1) return [];
+  const out = []; for (let k = end; k !== r0 * COLS + c0; k = prev[k]) out.push([cx(k % COLS), cx(Math.floor(k / COLS))]);
+  return out.reverse();
+}
+function lineClear(x0, y0, x1, y1) {                    // can a guard see from here to there? (walls, fences + the vault door block)
+  const n = Math.ceil(dist(x0, y0, x1, y1) / 10);
+  for (let i = 1; i < n; i++) { const k = i / n; if (sightBlock(tAt(x0 + (x1 - x0) * k, y0 + (y1 - y0) * k))) return false; }
+  return true;
+}
+
+// ---------- Starting a level ----------
+const LOOK_LEN = { robo: 165, vac2: 95, dad: 140, mom: 140, neighbor: 135, gnome: 165, drone: 140, walker: 135, clerk: 140, gloop: 130, sbot: 160 };
+const LOOK_HALF = { robo: 0.42, vac2: 0.5, gnome: 0.34, drone: 0.45, sbot: 0.38 };
+function makeGuard(g) {
+  const o = { type: g.type, speed: g.speed || 1, sus: 0, mode: 'patrol', route: [], wait: 0, step: 0, bub: '', bubT: 0, noise: null, snooze: 0, melt: 0, scared: 0, yawn: 200 + Math.random() * 200, sweep: 0 };
+  if (g.path) { o.path = g.path.map(([c, r]) => [cx(c), cx(r)]); o.pi = 1 % o.path.length; o.x = o.path[0][0]; o.y = o.path[0][1]; o.a = 0; }
+  else { o.x = cx(g.at[0]); o.y = cx(g.at[1]); o.looks = g.looks.map(d => d * Math.PI / 180); o.li = 0; o.lt = 0; o.a = o.looks[0]; o.mode = 'sit'; }
+  if (g.type === 'dog') o.mode = 'sleep';
+  o.home = [o.x, o.y]; o.len = LOOK_LEN[g.type] || 0; o.len0 = o.len;
+  o.half = LOOK_HALF[g.type] || 0.5;
+  return o;
+}
+function resetGuards() {
+  guards = L.guards.map(makeGuard);
+  map.forEach((row, r) => row.forEach((ch, c) => { if (ch === 'D') guards.push(makeGuard({ type: 'dog', at: [c, r], looks: [0] })); }));
+}
+function newJimmy(x, y) { return { x, y, a: 0, hidden: false, pounceT: 0, cuteCD: 0, cuteT: 0, hissCD: 0, hissT: 0, purrCD: 0, purrT: 0, run: false, moving: false, wag: 0, ringT: 0, push: 0, act: null, box: false, boxCD: 0,
+  napT: 0, napping: false, wetT: 0, wetCD: 0, dryX: x, dryY: y, vacT: 0, petT: 0 }; }
+function startLevel(i) {
+  lvl = i; L = LEVELS[i]; map = L.map.map(r => r.split(''));
+  treats = []; parts = []; pops = []; rings = []; knocks = []; sprinklers = []; critters = []; toys = []; petters = []; trail = [];
+  caughtN = 0; mouse = null; friend = null; mood = 80; moodShow = 80; grumpyMusic = false; moodTipT = 0;
+  map.forEach((row, r) => row.forEach((ch, c) => {
+    const x = cx(c), y = cx(r);
+    if (ch === 'S') { jimmy = newJimmy(x, y); check = { x, y }; }
+    if (ch === 'f') treats.push({ x, y, got: false });
+    if (ch === 'y') mouse = { x, y, got: false };
+    if (ch === 'k') knocks.push({ c, r, x, y, st: 'shelf', t: 0, lx: x, ly: y, kind: L.th.knock || 'paint' });
+    if (ch === 'w') sprinklers.push({ x, y, t: (sprinklers.length * 140) % 420 });
+    if (ch === 'q' || ch === 'b') critters.push({ x, y, kind: ch, cd: 0, chat: 0, away: 0 });
+    if (ch === 't') toys.push({ x, y, cd: 0, kind: toys.length % 2 ? 'ball' : 'feather', spin: 0 });
+    if (ch === 'P') petters.push({ x, y, who: L.pet || 'ben', petT: 0, sayT: 0 });
+    if (ch === 'Y') friend = { x, y, a: Math.PI / 2, mode: 'nap', route: [], t: 0, wag: 0, say: '', sayT: 0, cd: 0 };
+  }));
+  resetGuards();
+  playSong(L.song || 'jimmy'); padLabel();
+  state = 'intro'; stateT = 0; tipT = 420;
+}
+function respawn() {
+  const j = jimmy;
+  j.x = check.x; j.y = check.y; j.hidden = false; j.pounceT = 0; j.act = null; j.box = false; j.push = 0; j.napping = false; j.napT = 0; j.dryX = j.x; j.dryY = j.y;
+  if (friend && friend.mode !== 'nap') { friend.mode = 'follow'; friend.x = j.x; friend.y = j.y; friend.route = []; }
+  trail = [];
+  resetGuards(); state = 'play'; stateT = 0;
+  addMood(-20, 'Hmph! Caught! 😾');
+}
+
+// ---------- Input ----------
+const KEYMAP = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down', a: 'left', d: 'right', w: 'up', s: 'down',
+                 ' ': 'pounce', x: 'mood', X: 'mood', z: 'run', Z: 'run', Shift: 'run', c: 'purr', C: 'purr',
+                 Enter: 'ok', Escape: 'back', m: 'music', M: 'music' };
+window.addEventListener('keydown', e => {
+  const k = KEYMAP[e.key]; if (!k) return;
+  if (k !== 'music' || e.key.length > 1) e.preventDefault && e.preventDefault();
+  wakeAudio();
+  if (!keys[k]) press(k);
+  keys[k] = true;
+});
+window.addEventListener('keyup', e => { const k = KEYMAP[e.key]; if (k) keys[k] = false; });
+function press(k) {
+  if (k === 'music') { toggleMusic(); return; }
+  if (state === 'story') { storyKey(k); return; }
+  if (state === 'play') {
+    if (k === 'pounce') pounce();
+    else if (k === 'mood') { if (grumpy()) hiss(); else cute(); }
+    else if (k === 'purr') purr();
+    else if (k === 'back' || k === 'ok') { state = 'paused'; menuSel = 0; sfx.click(); }
+    return;
+  }
+  if (state === 'intro') { if (k === 'ok' || k === 'pounce') { state = 'play'; stateT = 0; sfx.click(); } else if (k === 'back') { state = 'levels'; menuSel = lvl; } return; }
+  if (state === 'caught') { if (stateT > 40 && (k === 'ok' || k === 'pounce')) respawn(); return; }
+  if (state === 'clear') { if (stateT > 50 && (k === 'ok' || k === 'pounce')) nextAfterClear(); else if (k === 'back') { state = 'levels'; menuSel = lvl; } return; }
+  if (state === 'finale') { finaleKey(k); return; }
+  // menus: arrows move, SPACE / ENTER picks, ESCAPE goes back
+  const menu = menuItems(); if (!menu.length) return;
+  const cols = state === 'levels' ? 5 : state === 'costumes' ? 4 : state === 'title' ? 3 : 1;
+  if (k === 'left') menuSel = Math.max(0, menuSel - 1);
+  if (k === 'right') menuSel = Math.min(menu.length - 1, menuSel + 1);
+  if (k === 'up') menuSel = Math.max(0, menuSel - cols);
+  if (k === 'down') menuSel = Math.min(menu.length - 1, menuSel + cols);
+  if (k === 'left' || k === 'right' || k === 'up' || k === 'down') sfx.click();
+  if (k === 'ok' || k === 'pounce') menu[menuSel] && menu[menuSel].act();
+  if (k === 'back') {
+    if (state === 'levels' || state === 'costumes') { state = 'title'; menuSel = 0; }
+    else if (state === 'paused') state = 'play';
+    else if (state === 'title') goBook();
+  }
+}
+function goBook() {
+  try { if (window.parent && window.parent !== window && parent.closeGame) { parent.closeGame && parent.closeGame(); return; } } catch (_) {}
+  try { location.href = 'arcade.html'; } catch (_) {}
+}
+// taps / clicks: touchpad.js turns finger taps on the canvas into mouse events
+C.addEventListener('mousedown', e => {
+  wakeAudio();
+  const r = C.getBoundingClientRect(), x = (e.clientX - r.left) * W / r.width, y = (e.clientY - r.top) * H / r.height;
+  for (let i = buttons.length - 1; i >= 0; i--) { const b = buttons[i]; if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) { sfx.click(); b.act(); return; } }
+  if (state === 'story') storyKey('ok');
+  else if (state === 'intro') { state = 'play'; stateT = 0; }
+  else if (state === 'caught' && stateT > 40) respawn();
+  else if (state === 'clear' && stateT > 50) nextAfterClear();
+  else if (state === 'finale') finaleKey('ok');
+});
+
+// ---------- Jimmy's moves ----------
+function catBlocked(x, y) {
+  const r = 11;
+  for (const [ox, oy] of [[-r, -r], [r, -r], [-r, r], [r, r]]) if (catSolid(tAt(x + ox, y + oy))) return true;
+  return false;
+}
+// 🧗 CLIMB over a fence / ladder, or 🦘 LEAP over a gap: find the first safe tile on the other side
+function tryCross(kind, ddx, ddy, quiet) {
+  const s = jimmy, c = Math.floor(s.x / T), r = Math.floor(s.y / T), max = kind === 'L' ? 3 : 4;
+  if (kind === 'L' && grumpy()) {                      // 😾 "Hmph. I don't FEEL like climbing."
+    if (!quiet && needMsgT <= 0) { addPop(s.x, s.y - 30, 'Hmph! Too grumpy to climb! 😾', '#b3c7ff'); addPop(s.x, s.y - 54, 'Cheer him up first!', '#fff59d'); needMsgT = 110; sfx.grump(); }
+    return false;
+  }
+  for (let n = 1; n <= max; n++) {
+    const tc = c + ddx * n, tr = r + ddy * n, ch = tileAt(tc, tr);
+    if (ch === kind) continue;
+    if (n >= 2 && !catSolid(ch)) {
+      const x1 = cx(tc), y1 = cx(tr);
+      if (s.box) { s.box = false; addPop(s.x, s.y - 30, 'The box fell off!', '#ffe0b2'); sfx.box(); }
+      s.act = { kind, x0: s.x, y0: s.y, x1, y1, t: 0, dur: kind === 'L' ? 34 + n * 6 : 22 + n * 6 };
+      s.a = Math.atan2(ddy, ddx); s.push = 0; s.napping = false; s.napT = 0;
+      if (kind === 'L') { sfx.climb(); addPop(s.x, s.y - 30, 'Climb!', '#b9f6ca'); } else { sfx.leap(); addPop(s.x, s.y - 30, 'LEAP!', '#80d8ff'); }
+      return true;
+    }
+    break;
+  }
+  if (!quiet && needMsgT <= 0) { addPop(s.x, s.y - 30, kind === 'L' ? 'Too tall here!' : 'Too far to leap!', '#ff8a80'); needMsgT = 80; sfx.huh(); }
+  return false;
+}
+function pounce() {
+  const s = jimmy;
+  if (s.act) return;
+  if (s.box) { s.box = false; s.boxCD = 60; sfx.box(); addPop(s.x, s.y - 30, 'Pop! Out of the box!', '#ffe0b2'); return; }
+  const [ddx, ddy] = cardinal(s.a);
+  if (tAt(s.x + ddx * 30, s.y + ddy * 30) === 'G') { tryCross('G', ddx, ddy); return; }      // LEAP!
+  if (s.pounceT > 0) return;
+  s.pounceT = 16; sfx.pounce(); s.napping = false; s.napT = 0;
+  const fx = s.x + Math.cos(s.a) * 20, fy = s.y + Math.sin(s.a) * 20;
+  let best = null, bd = 52;
+  for (const k of knocks) if (k.st === 'shelf') { const d = dist(k.x, k.y, fx, fy); if (d < bd) { bd = d; best = k; } }
+  if (best) knockOff(best);
+}
+function knockOff(k) {                                   // 😼 very cat: push it right off the shelf!
+  map[k.r][k.c] = 'T'; k.st = 'fall'; k.t = 0;
+  const [ddx, ddy] = cardinal(jimmy.a), opts = [[ddx, ddy], [0, 1], [0, -1], [1, 0], [-1, 0]];
+  for (const [dx, dy] of opts) { const ch = tileAt(k.c + dx, k.r + dy); if (!catSolid(ch) && ch !== 'B') { k.lx = cx(k.c + dx) + (Math.random() - 0.5) * 10; k.ly = cx(k.r + dy); break; } }
+  sfx.wobble(); addPop(k.x, k.y - 22, 'Boop!', '#ff80ab');
+}
+const canMelt = g => g.len && g.mode !== 'snooze' && g.mode !== 'melt' && g.type !== 'dog';
+// 😻 HAPPY JIMMY: the CUTE head-bump. Nobody can resist it!
+function cute() {
+  const s = jimmy;
+  if (s.act || s.box) return;
+  if (s.cuteCD > 0) { if (needMsgT <= 0) { addPop(s.x, s.y - 30, 'Cute needs a rest...', '#ffd1e8'); needMsgT = 50; } return; }
+  let best = null, bd = 86;
+  for (const g of guards) if (canMelt(g) || (g.type === 'vac2' && g.mode !== 'melt')) { const d = dist(g.x, g.y, s.x, s.y); if (d < bd) { bd = d; best = g; } }
+  s.cuteCD = 150; s.cuteT = 50; sfx.cute(); s.napping = false; s.napT = 0;
+  if (!best) { hearts(s.x, s.y - 10, 4); addPop(s.x, s.y - 34, 'So cute! (get closer to a guard)', '#ffd1e8'); return; }
+  s.a = Math.atan2(best.y - s.y, best.x - s.x); s.pounceT = 10;                 // *bump* with his head
+  best.mode = 'melt'; best.melt = 330; best.sus = 0; best.route = []; best.stopT = 0;
+  best.bub = (ROBOTS[best.type] ? ROBO_MELT : MELT_LINES)[Math.floor(Math.random() * 3)]; best.bubT = 150;
+  sfx.melt();
+  hearts(best.x, best.y - 20, 14); addPop(s.x, s.y - 34, 'Head-bump! 💕', '#ff80ab');
+}
+// 😾 GRUMPY JIMMY: a big HISS! Guards and robots jump back for a few seconds
+function hiss() {
+  const s = jimmy;
+  if (s.act) return;
+  if (s.hissCD > 0) { if (needMsgT <= 0) { addPop(s.x, s.y - 30, 'Hiss needs a rest...', '#b3c7ff'); needMsgT = 50; } return; }
+  s.hissCD = 200; s.hissT = 50; sfx.hiss(); shake = 6; s.napping = false; s.napT = 0;
+  if (!everHissed) { everHissed = true; sticker('jimmy-grumpy', 'Grumpy Jimmy'); }
+  rings.push({ x: s.x, y: s.y, r: 8, max: 180, col: '#ff5252', purr: true });
+  let n = 0;
+  for (const g of guards) if (g.type !== 'dog' && dist(g.x, g.y, s.x, s.y) < 180) {
+    g.mode = 'scared'; g.scared = 200; g.sus = 0; g.route = []; g.stopT = 0; n++;
+    g.bub = ROBOTS[g.type] ? 'EEK! BEEP!' : g.type === 'gloop' ? 'Eep! Gloop!' : 'Eek! A grumpy kitty!'; g.bubT = 90;
+  }
+  if (n) { sfx.scared(); addPop(s.x, s.y - 34, 'HISSSSS! 😾 Stay back!', '#ff8a80'); }
+  else addPop(s.x, s.y - 34, 'HISSS! (get closer to a guard)', '#ff8a80');
+}
+const SLEEPY = { robo: 1, vac2: 1, dad: 1, mom: 1, neighbor: 1, gnome: 1, drone: 1, walker: 1, clerk: 1, gloop: 1, sbot: 1 };
+function purr() {                                        // 😽 a purr so cozy it makes guards sleeeepy
+  const s = jimmy;
+  if (s.act) return;
+  if (grumpy()) { if (needMsgT <= 0) { addPop(s.x, s.y - 30, 'Too grumpy to purr! Try HISS (X)!', '#b3c7ff'); needMsgT = 70; sfx.grump(); } return; }
+  if (s.purrCD > 0) { if (needMsgT <= 0) { addPop(s.x, s.y - 30, 'Purr needs a rest...', '#e1bee7'); needMsgT = 60; } return; }
+  s.purrCD = 420; s.purrT = 70; sfx.purr();
+  rings.push({ x: s.x, y: s.y, r: 8, max: 175, col: '#f8bbd0', purr: true });
+  let n = 0;
+  for (const g of guards) if (SLEEPY[g.type] && dist(g.x, g.y, s.x, s.y) < 175) {
+    g.mode = 'snooze'; g.snooze = 360; g.sus = 0; g.route = []; g.bub = 'Zzz'; g.bubT = 360; n++;
+  }
+  if (n) { sfx.zzz(); addPop(s.x, s.y - 34, n > 1 ? 'Purrrr... everyone is sleepy!' : 'Purrrr... so sleepy!', '#f8bbd0'); }
+  else addPop(s.x, s.y - 34, 'Purrr... (get closer to a guard!)', '#e1bee7');
+}
+function makeNoise(x, y, r, what) {
+  rings.push({ x, y, r: 8, max: r, col: what === 'friend' ? '#ff80ab' : what === 'crash' ? '#ffd740' : what === 'critter' ? '#b9f6ca' : '#ffffff' });
+  if (jimmy.napping && what !== 'run' && dist(x, y, jimmy.x, jimmy.y) < 230) wokenUp();
+  for (const g of guards) {
+    const d = dist(g.x, g.y, x, y);
+    if (g.type === 'dog') { if (g.mode === 'sleep' && d < (what === 'run' ? 125 : what === 'crash' ? 120 : 0)) wakeDog(g); continue; }
+    if (g.type === 'vac2' || g.mode === 'snooze' || g.mode === 'melt' || g.mode === 'scared' || d > r) continue;
+    g.noise = { x, y }; g.bub = '?'; g.bubT = 90; sfx.huh();
+    if (g.mode === 'sit' || g.mode === 'sitlook') { g.wait = 170; g.a = Math.atan2(y - g.y, x - g.x); g.mode = 'sitlook'; }
+    else { g.mode = 'investigate'; g.route = findPath(Math.floor(g.x / T), Math.floor(g.y / T), Math.floor(x / T), Math.floor(y / T)); }
+  }
+}
+function wokenUp() {                                     // 😾 "HEY! I was NAPPING!"
+  const s = jimmy; s.napping = false; s.napT = -120; sfx.wakeup();
+  addMood(-20, 'HEY! I was napping! 😾');
+}
+function getWet(what) {                                  // 💦 nobody likes a wet kitty
+  const s = jimmy; if (s.wetCD > 0 || CHEAT) return;
+  s.wetT = 160; s.wetCD = 120; s.napping = false; s.napT = 0; sfx.splash(); shake = 5;
+  burst(s.x, s.y, ['#81d4fa', '#e1f5fe', '#fff'], 18, 3);
+  addMood(-30, what === 'tub' ? 'BATH?! NO WAY! 😾' : what === 'puddle' ? 'SPLASH! Wet paws! 😾' : 'SPLASH! Wet kitty! 😾');
+}
+function wakeDog(g) {
+  if (CHEAT) return;
+  g.mode = 'awake'; g.bub = '!'; g.bubT = 120; sfx.woof(); caught(g);
+}
+function hearts(x, y, n) { for (let i = 0; i < n; i++) parts.push({ x: x + (Math.random() - 0.5) * 30, y: y + (Math.random() - 0.5) * 16, vx: (Math.random() - 0.5) * 1.6, vy: -1 - Math.random() * 1.4, life: 50 + Math.random() * 30, col: ['#ff4081', '#ff80ab', '#f06292'][i % 3], r: 5 + Math.random() * 3, g: 0, heart: true }); }
+function updateJimmy() {
+  const s = jimmy;
+  if (s.cuteT > 0) s.cuteT--; if (s.cuteCD > 0) s.cuteCD--; if (s.hissT > 0) s.hissT--; if (s.hissCD > 0) s.hissCD--;
+  if (s.purrCD > 0) s.purrCD--; if (s.purrT > 0) s.purrT--; if (s.boxCD > 0) s.boxCD--; if (s.wetT > 0) s.wetT--; if (s.wetCD > 0) s.wetCD--; if (s.vacT > 0) s.vacT--;
+  if (needMsgT > 0) needMsgT--; if (moodTipT > 0) moodTipT--;
+  if (grumpy()) mood = Math.min(100, mood + 0.02);       // grumps slowly fade away by themselves... but treats + pets are MUCH faster
+  if (s.act) {                                           // in the middle of a climb or a leap
+    const A = s.act; A.t++;
+    const k = Math.min(1, A.t / A.dur), e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+    s.x = A.x0 + (A.x1 - A.x0) * e; s.y = A.y0 + (A.y1 - A.y0) * e; s.wag += 0.3; s.moving = true; s.run = false; s.hidden = false;
+    if (k >= 1) { s.act = null; sfx.land(); burst(s.x, s.y + 8, ['#fff', '#ffe0b2'], 8, 2); s.dryX = s.x; s.dryY = s.y; }
+    trail.push({ x: s.x, y: s.y }); if (trail.length > 60) trail.shift();
+    return;
+  }
+  let dx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0), dy = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
+  s.moving = !!(dx || dy); s.run = !!keys.run && s.moving && !s.box;
+  const slow = grumpy() ? 0.75 : 1;                      // grumpy Jimmy stomps along a bit slower
+  let sp = s.box ? BOXSPEED : (s.run ? RUN : SNEAK) * slow;
+  if (s.moving) { const n = Math.hypot(dx, dy); dx /= n; dy /= n; s.a += angDiff(Math.atan2(dy, dx), s.a) * 0.35; }
+  let vx = dx * sp, vy = dy * sp;
+  if (s.pounceT > 0) { s.pounceT--; const k = s.pounceT > 6 ? 5 : 0; vx += Math.cos(s.a) * k; vy += Math.sin(s.a) * k; }
+  const bx = catBlocked(s.x + vx, s.y), by = catBlocked(s.x, s.y + vy);
+  if (!bx) s.x += vx; if (!by) s.y += vy;
+  // walking into a fence = CLIMB it; walking into a gap = LEAP it
+  let pushed = false;
+  if (s.moving) {
+    const hz = Math.abs(dx) >= Math.abs(dy), ddx = hz ? Math.sign(dx) : 0, ddy = hz ? 0 : Math.sign(dy);
+    const ahead = tAt(s.x + ddx * 22, s.y + ddy * 22);
+    if ((ahead === 'L' || ahead === 'G') && (hz ? bx : by)) {
+      pushed = true;
+      if (++s.push >= (ahead === 'L' ? 9 : 12)) { tryCross(ahead, ddx, ddy); s.push = 0; return; }
+    }
+  }
+  if (!pushed) s.push = 0;
+  if (s.moving) { trail.push({ x: s.x, y: s.y }); if (trail.length > 60) trail.shift(); }
+  s.wag += s.moving ? (s.run ? 0.3 : 0.14) : 0.03;
+  if (s.run) { if (--s.ringT <= 0) { s.ringT = 18; makeNoise(s.x, s.y, 115, 'run'); sfx.step(); } } else s.ringT = 0;
+  const here = tAt(s.x, s.y), hc = Math.floor(s.x / T), hr = Math.floor(s.y / T);
+  // 💦 bath tubs + puddles: SPLASH! and Jimmy jumps right back out
+  if (here === 'W') { getWet(L.th.bath || 'tub'); s.x = s.dryX; s.y = s.dryY; s.pounceT = 0; }
+  else if (!s.moving || dist(s.x, s.y, s.dryX, s.dryY) > 6) { s.dryX = s.x; s.dryY = s.y; }
+  const wasHidden = s.hidden;
+  s.hidden = (hideTile(tAt(s.x, s.y)) && s.pounceT <= 6) || (s.box && !s.moving);
+  if (s.hidden && !wasHidden) { sfx.hide(); addPop(s.x, s.y - 26, s.box ? 'Just a box...' : tAt(s.x, s.y) === 'H' ? 'In the shadows!' : 'Hidden!', '#b9f6ca'); }
+  // ☀️ a sunbeam: stand still to NAP (so cozy = happy!)
+  if (here === 'u' && !s.moving && !s.box) {
+    if (++s.napT === 50) { s.napping = true; sfx.nap(); addPop(s.x, s.y - 34, 'Sunbeam nap... Zzz ☀️', '#fff59d'); }
+    if (s.napping) { const was = mood; addMood(0.3); if (mood > was && frame % 40 === 0) hearts(s.x, s.y - 16, 1); if (frame % 90 === 0) sfx.purr(); }
+  } else { if (s.napping && s.moving) addPop(s.x, s.y - 34, '*streeetch*', '#fff59d'); s.napping = false; if (s.napT > 0) s.napT = 0; else if (s.napT < 0) s.napT++; }
+  // pick things up
+  for (const t of treats) if (!t.got && dist(t.x, t.y, s.x, s.y) < 24) { t.got = true; sfx.fish(); burst(t.x, t.y, ['#ffab40', '#ffd740', '#fff'], 14); addPop(t.x, t.y - 20, '+1 fish treat! Yum!', '#ffd740'); addMood(25, 'Yummy! 😻'); }
+  if (mouse && !mouse.got && dist(mouse.x, mouse.y, s.x, s.y) < 24) { mouse.got = true; sfx.squeak(); sfx.snack(); burst(mouse.x, mouse.y, ['#bdbdbd', '#f8bbd0', '#fff'], 22); addPop(mouse.x, mouse.y - 24, '🐭 Secret toy mouse!', '#f8bbd0'); }
+  for (const t of toys) { if (t.cd > 0) t.cd--; if (t.cd <= 0 && dist(t.x, t.y, s.x, s.y) < 28) { t.cd = 420; t.spin = 60; sfx.toyLand(); burst(t.x, t.y, ['#ffeb3b', '#ff80ab', '#80deea'], 12, 3); addMood(25, 'Bat! Bat! Fun toy! 😸'); } if (t.spin > 0) t.spin--; }
+  for (const p of petters) {                             // 💕 a friendly person: stand next to them for pets
+    if (p.sayT > 0) p.sayT--;
+    if (dist(p.x, p.y, s.x, s.y) < 56 && !s.box) {
+      if (++p.petT % 24 === 0) { addMood(8); hearts(s.x, s.y - 14, 2); if (p.petT % 72 === 0) sfx.pet(); }
+      if (p.petT === 1) { p.sayT = 120; sfx.pet(); }
+    } else p.petT = 0;
+  }
+  if (here === 'X' && !s.box && s.boxCD <= 0) { s.box = true; sfx.box(); addPop(s.x, s.y - 30, 'DISGUISE BOX! Stand still = just a box!', '#ffe0b2'); }
+  if (here === 'C' && (check.x !== cx(hc) || check.y !== cx(hr))) { check = { x: cx(hc), y: cx(hr) }; sfx.check(); addPop(s.x, s.y - 30, 'Checkpoint! 🐾', '#b2ff59'); }
+  if (here === 'E') levelClear();
+}
+// 🐱 SAMMY (the brown tabby from Sammy's Big Escape!) helps in the Pet Shop: when a guard starts to spot Jimmy,
+// Sammy runs over there and meows so they look the other way.
+function friendDash(target) {
+  let best = target || null, bd = 430;
+  if (!best) for (const g of guards) if (g.len && g.mode !== 'snooze') { const d = dist(g.x, g.y, jimmy.x, jimmy.y); if (d < bd) { bd = d; best = g; } }
+  if (!best) return false;
+  bd = dist(best.x, best.y, jimmy.x, jimmy.y) || 1;
+  const ux = (best.x - jimmy.x) / bd, uy = (best.y - jimmy.y) / bd;
+  const [tc, tr] = nearestOpen(Math.floor((best.x + ux * 90) / T), Math.floor((best.y + uy * 90) / T));
+  const route = findPath(Math.floor(friend.x / T), Math.floor(friend.y / T), tc, tr);
+  if (!route.length) return false;
+  friend.mode = 'dash'; friend.route = route; friend.say = "I'll help! Sweet freedom!"; friend.sayT = 70; friend.cd = 420; sfx.whoosh();
+  return true;
+}
+function updateFriend() {
+  const f = friend; if (!f) return;
+  if (f.sayT > 0) f.sayT--; if (f.cd > 0) f.cd--;
+  if (f.mode === 'nap') {
+    if (dist(f.x, f.y, jimmy.x, jimmy.y) < 40) {
+      f.mode = 'follow'; sfx.meet(); meowSound(0.95, 0.1); trail = [];
+      f.say = "Hi Jimmy! I'm Sammy! I'll help you sneak. Sweet freedom!"; f.sayT = 260;
+      burst(f.x, f.y, ['#ff80ab', '#fff59d', '#fff'], 30); hearts(jimmy.x, jimmy.y - 10, 6); addPop(f.x, f.y - 50, 'Sammy joined you! 💕', '#ff80ab');
+      addMood(20, 'A friend! 😻');
+    }
+    return;
+  }
+  f.wag += 0.15;
+  if (f.mode === 'dash' || f.mode === 'back') {
+    if (!f.route.length) {
+      if (f.mode === 'dash') { f.mode = 'meow'; f.t = 50; meowSound(0.9); makeNoise(f.x, f.y, 240, 'friend'); f.say = 'Mrrow! Over here!'; f.sayT = 70; }
+      else { f.mode = 'follow'; trail = []; }
+      return;
+    }
+    const [tx, ty] = f.route[0], d = dist(f.x, f.y, tx, ty), sp = 4.6;
+    f.a += angDiff(Math.atan2(ty - f.y, tx - f.x), f.a) * 0.3;
+    if (d <= sp) { f.x = tx; f.y = ty; f.route.shift(); } else { f.x += (tx - f.x) / d * sp; f.y += (ty - f.y) / d * sp; }
+    return;
+  }
+  if (f.mode === 'meow') { if (--f.t <= 0) { f.mode = 'back'; f.route = findPath(Math.floor(f.x / T), Math.floor(f.y / T), Math.floor(jimmy.x / T), Math.floor(jimmy.y / T)); } return; }
+  // follow: walk along Jimmy's footsteps
+  const tp = trail.length > 16 ? trail[trail.length - 16] : null;
+  if (tp) { const d = dist(f.x, f.y, tp.x, tp.y); if (d > 1) { f.a += angDiff(Math.atan2(tp.y - f.y, tp.x - f.x), f.a) * 0.3; const sp = Math.min(d, 6); f.x += (tp.x - f.x) / d * sp; f.y += (tp.y - f.y) / d * sp; } }
+  else if (dist(f.x, f.y, jimmy.x, jimmy.y) > 40) { const d = dist(f.x, f.y, jimmy.x, jimmy.y); f.x += (jimmy.x - f.x) / d * 3; f.y += (jimmy.y - f.y) / d * 3; }
+}
+// ---------- Things in the world: falling stuff, sprinklers, squirrels + birds ----------
+function updateWorld() {
+  for (const k of knocks) if (k.st === 'fall') {
+    k.t++;
+    if (k.t >= 22) { k.st = 'down'; sfx.crash(); shake = 5; addPop(k.lx, k.ly - 20, 'CLATTER!', '#ffd740'); makeNoise(k.lx, k.ly, 300, 'crash'); burst(k.lx, k.ly, ['#fff', '#ffd740', '#90a4ae'], 12, 3); }
+  }
+  for (const s of sprinklers) {
+    s.t = (s.t + 1) % 420;
+    if (s.t > 270 && s.t < 330 && s.t % 14 === 0 && dist(s.x, s.y, jimmy.x, jimmy.y) < 260) sfx.drip();
+    if (s.t === 330 && dist(s.x, s.y, jimmy.x, jimmy.y) < 300) sfx.splash();
+    if (s.t >= 330 && !jimmy.hidden && !jimmy.act && dist(s.x, s.y, jimmy.x, jimmy.y) < 58) getWet('sprinkler');
+  }
+  for (const q of critters) {
+    if (q.cd > 0) q.cd--; if (q.chat > 0) q.chat--; if (q.away > 0) q.away--;
+    const d = dist(q.x, q.y, jimmy.x, jimmy.y);
+    if (q.cd <= 0 && q.away <= 0 && !jimmy.hidden && (d < 72 || (jimmy.run && d < 115))) {
+      q.cd = 260; q.chat = 70;
+      if (q.kind === 'q') { sfx.chitter(); addPop(q.x, q.y - 26, 'Chitter chatter!', '#ffcc80'); }
+      else { sfx.tweet(); addPop(q.x, q.y - 26, 'Tweet tweet!', '#b3e5fc'); q.away = 300; }
+      makeNoise(q.x, q.y, 270, 'critter');
+    }
+  }
+  if (frame % 6 === 0) for (const g of guards) if (g.mode === 'melt') hearts(g.x, g.y - 24, 1);
+  // moodShow slides toward the real mood so the meter moves smoothly
+  moodShow += (mood - moodShow) * 0.12;
+}
+
+// ---------- Guards ----------
+function walkRoute(g) {                                // returns true when the route is finished
+  if (!g.route.length) return true;
+  const [tx, ty] = g.route[0], d = dist(g.x, g.y, tx, ty), sp = g.speed * (g.mode === 'investigate' ? 1.35 : 1);
+  if (d <= sp) { g.x = tx; g.y = ty; g.route.shift(); return !g.route.length; }
+  const want = Math.atan2(ty - g.y, tx - g.x);
+  g.a += angDiff(want, g.a) * 0.15;
+  g.x += (tx - g.x) / d * sp; g.y += (ty - g.y) / d * sp; g.step += sp * 0.12;
+  return false;
+}
+function canSee(g) {
+  if (!g.len || jimmy.hidden || g.mode === 'snooze' || g.mode === 'melt' || g.mode === 'scared') return 0;
+  const d = dist(g.x, g.y, jimmy.x, jimmy.y);
+  if (d > g.len + 10) return 0;
+  const look = g.a + (g.sweep || 0);
+  if (d > 26 && Math.abs(angDiff(Math.atan2(jimmy.y - g.y, jimmy.x - g.x), look)) > g.half) return 0;
+  if (!lineClear(g.x, g.y, jimmy.x, jimmy.y)) return 0;
+  return 1 - d / (g.len + 10);                          // closer = spotted faster
+}
+function backToWork(g) { g.route = []; g.wait = 0; g.lt = 0; if (g.path) g.mode = 'patrol'; else { g.mode = 'goback'; g.route = findPath(Math.floor(g.x / T), Math.floor(g.y / T), Math.floor(g.home[0] / T), Math.floor(g.home[1] / T)); } }
+function updateGuards() {
+  for (const g of guards) {
+    if (g.bubT > 0) g.bubT--;
+    if (g.type === 'dog') {
+      if (g.mode === 'sleep' && dist(g.x, g.y, jimmy.x, jimmy.y) < 26 && !jimmy.act) wakeDog(g);
+      continue;
+    }
+    if (g.type === 'vac2' && g.mode !== 'snooze' && dist(g.x, g.y, jimmy.x, jimmy.y) < 150) {   // 😾 VRRRRM! Jimmy HATES the vacuum
+      addMood(-0.12);
+      if (jimmy.vacT <= 0) { jimmy.vacT = 240; addPop(jimmy.x, jimmy.y - 40, 'VRRRM! Jimmy HATES the vacuum! 😾', '#b3c7ff'); }
+    }
+    if (g.mode === 'snooze') {                         // 💤 purred to sleep
+      g.sweep = 0; g.sus = 0;
+      if (--g.snooze <= 0) { g.mode = g.path ? 'patrol' : 'sit'; g.route = []; g.wait = 0; g.lt = 0; g.bub = 'Huh?'; g.bubT = 50; }
+      continue;
+    }
+    if (g.mode === 'melt') {                           // 💕 melted by the cute head-bump: "Awww, Jimmy!"
+      g.sweep = 0; g.sus = 0; g.a += angDiff(Math.atan2(jimmy.y - g.y, jimmy.x - g.x), g.a) * 0.1;
+      if (--g.melt <= 0) { backToWork(g); g.bub = 'What a sweet kitty...'; g.bubT = 70; }
+      continue;
+    }
+    if (g.mode === 'scared') {                         // 😱 HISSSS! back away from the grumpy kitty
+      g.sweep = 0; g.sus = 0;
+      const d = dist(g.x, g.y, jimmy.x, jimmy.y) || 1, sp = 1.7;
+      if (g.scared > 120 && d < 200) {
+        const ux = (g.x - jimmy.x) / d, uy = (g.y - jimmy.y) / d;
+        if (!guardSolid(tAt(g.x + ux * (sp + 14), g.y))) g.x += ux * sp;
+        if (!guardSolid(tAt(g.x, g.y + uy * (sp + 14)))) g.y += uy * sp;
+        g.step += 0.3;
+      }
+      g.a = Math.atan2(jimmy.y - g.y, jimmy.x - g.x) + Math.sin(frame * 0.6) * 0.15;   // shaking!
+      if (--g.scared <= 0) { backToWork(g); g.bub = 'Phew...'; g.bubT = 60; }
+      continue;
+    }
+    if (g.type === 'walker') {                         // 🥱 the sleepy dog walker yawns... a lot
+      if (--g.yawn <= 0) g.yawn = 420;
+      const yawning = g.yawn < 120;
+      g.len = yawning ? 30 : g.len0;
+      if (g.yawn === 119) { g.bub = '*YAAAWN*'; g.bubT = 100; sfx.zzz(); }
+    }
+    // moving around
+    if (g.stopT > 0) g.stopT--;
+    else if (g.mode === 'patrol') {
+      if (walkRoute(g)) {
+        const [px, py] = g.path[g.pi];
+        if (dist(g.x, g.y, px, py) < 1) { g.pi = (g.pi + 1) % g.path.length; if (g.path.length === 2 || g.type !== 'vac2') g.wait = g.type === 'vac2' ? 10 : 50; }
+        if (g.wait > 0) g.wait--;
+        else { const [qx, qy] = g.path[g.pi]; g.route = findPath(Math.floor(g.x / T), Math.floor(g.y / T), Math.floor(qx / T), Math.floor(qy / T)); if (!g.route.length) g.route = [[qx, qy]]; }
+      }
+      g.sweep = g.type === 'robo' || g.type === 'sbot' || g.type === 'drone' ? Math.sin(frame * 0.04 + g.x * 0.01) * 0.3 : 0;
+    } else if (g.mode === 'investigate') {
+      g.sweep = 0;
+      if (walkRoute(g)) { g.mode = 'search'; g.wait = 110; }
+    } else if (g.mode === 'search') {                  // look left and right: "Hmm? Where did that sound come from?"
+      g.sweep = Math.sin(g.wait * 0.08) * 0.9;
+      if (--g.wait <= 0) { g.mode = 'patrol'; g.sweep = 0; g.route = []; g.wait = 0; g.bub = '...'; g.bubT = 60; }
+      if (!g.path) { g.mode = 'goback'; g.route = findPath(Math.floor(g.x / T), Math.floor(g.y / T), Math.floor(g.home[0] / T), Math.floor(g.home[1] / T)); }
+    } else if (g.mode === 'goback') {
+      if (walkRoute(g)) { g.mode = 'sit'; g.lt = 0; }
+    } else if (g.mode === 'sit') {
+      if (++g.lt > (g.type === 'gnome' ? 210 : 170)) { g.lt = 0; g.li = (g.li + 1) % g.looks.length; }
+      g.a += angDiff(g.looks[g.li], g.a) * (g.type === 'gnome' ? 0.025 : 0.05); g.sweep = Math.sin(frame * 0.03 + g.x) * 0.15;
+    } else if (g.mode === 'sitlook') {
+      if (--g.wait <= 0) { g.mode = 'sit'; g.lt = 0; }
+    }
+    // the vacuum bumps into you
+    if (g.type === 'vac2' && !jimmy.hidden && !jimmy.act && dist(g.x, g.y, jimmy.x, jimmy.y) < 30) { caught(g); return; }
+    // spotting Jimmy
+    const seen = canSee(g);
+    if (seen > 0 || (!jimmy.hidden && !jimmy.act && dist(g.x, g.y, jimmy.x, jimmy.y) < 24)) {
+      if (g.sus === 0) { sfx.alert(); g.bub = '!'; g.bubT = 40; if (jimmy.napping) wokenUp(); }
+      g.sus += (0.016 + seen * 0.03 + (jimmy.run ? 0.015 : 0)) * (jimmy.box ? 0.45 : 1);   // a little "Hmm?" first, so there's time to dash away
+      g.stopT = 3;                                     // stop walking and stare: "Hmm?"
+      g.a += angDiff(Math.atan2(jimmy.y - g.y, jimmy.x - g.x), g.a) * 0.08;
+      if (friend && friend.mode === 'follow' && friend.cd <= 0 && g.sus > 0.3) friendDash(g);   // Sammy to the rescue!
+      if (g.sus >= 1 || (!jimmy.box && dist(g.x, g.y, jimmy.x, jimmy.y) < 24)) { caught(g); return; }
+    } else g.sus = Math.max(0, g.sus - 0.012);
+  }
+}
+function caught(g) {
+  if (CHEAT || state !== 'play') return;
+  state = 'caught'; stateT = 0; caughtN++; caughtBy = g; shake = 10; sfx.caught();
+  const lines = CATCH_LINES[g.type] || CATCH_LINES.robo; caughtLine = lines[Math.floor(Math.random() * lines.length)];
+  g.bub = '!'; g.bubT = 120; jimmy.box = false; jimmy.napping = false;
+}
+function levelClear() {
+  if (state !== 'play') return;
+  const got = treats.filter(t => t.got).length, stars = 1 + (got === 3 ? 1 : 0) + (caughtN === 0 ? 1 : 0);
+  clearInfo = { got, stars, mouse: !!(mouse && mouse.got), best: stars > (save.stars[lvl] || 0), happy: !grumpy() };
+  const before = miceCount();
+  save.stars[lvl] = Math.max(save.stars[lvl] || 0, stars); save.fish[lvl] = Math.max(save.fish[lvl] || 0, got);
+  if (mouse && mouse.got) save.mice[lvl] = 1;
+  if (lvl === 0) sticker('jimmy-cat', 'Jimmy the Cat');
+  clearInfo.newCostume = COSTUMES.find(c => c.need > before && c.need <= miceCount()) || null;
+  save.unlocked = Math.max(save.unlocked, Math.min(NLEV, lvl + 2));
+  writeSave();
+  grumpyMusic = false;
+  if (lvl === LEVELS.length - 1) { startFinale(); return; }
+  state = 'clear'; stateT = 0; sfx.door(); meowSound(1.15, 0.4);
+  for (let i = 0; i < 60; i++) confettiPiece(W / 2, H / 2);
+}
+function nextAfterClear() { if (lvl + 1 < LEVELS.length) startLevel(lvl + 1); else { state = 'title'; menuSel = 0; } }
+const RANKS = ['', 'Sneaky Kitty', 'Super Sneaky!', 'NINJA KITTY!'];
+// ---------- Particles + pop-up words ----------
+function addPop(x, y, text, col) { pops.push({ x, y, text, col, t: 70 }); }
+function burst(x, y, cols, n, sp = 4) { for (let i = 0; i < n; i++) { const a = Math.random() * 7, v = Math.random() * sp + 1; parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 30 + Math.random() * 20, col: cols[i % cols.length], r: 2 + Math.random() * 3, g: 0.05 }); } }
+const CONF = ['#ff5252', '#ffd740', '#69f0ae', '#40c4ff', '#e040fb', '#ff9100', '#fff'];
+function confettiPiece(x, y, big) {
+  const a = -Math.PI / 2 + (Math.random() - 0.5) * 2.6, v = (big ? 8 : 5) + Math.random() * (big ? 9 : 6);
+  parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 90 + Math.random() * 80, col: CONF[Math.floor(Math.random() * CONF.length)], r: 3 + Math.random() * 4, g: 0.18, conf: true, spin: Math.random() * 7 });
+}
+function firework(x, y) {
+  const col = CONF[Math.floor(Math.random() * 6)], col2 = CONF[Math.floor(Math.random() * 7)];
+  for (let i = 0; i < 46; i++) { const a = i / 46 * Math.PI * 2, v = 3 + Math.random() * 3.5; parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 50 + Math.random() * 30, col: i % 3 ? col : col2, r: 2.5, g: 0.06, spark: true }); }
+  sfx.firework();
+}
+function updateParts() {
+  for (const p of parts) { p.x += p.vx; p.y += p.vy; p.vy += p.g; if (p.conf) { p.vx *= 0.98; p.vy = Math.min(p.vy, 3); p.spin += 0.2; } else { p.vx *= 0.97; } p.life--; }
+  parts = parts.filter(p => p.life > 0 && p.y < H + 30);
+  for (const p of pops) { p.y -= 0.6; p.t--; } pops = pops.filter(p => p.t > 0);
+  for (const r of rings) r.r += 5; rings = rings.filter(r => r.r < r.max);
+}
+
+// ---------- Drawing helpers ----------
+function roundRect(x, y, w, h, r, fill) {
+  ctx.fillStyle = fill; ctx.beginPath();
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); ctx.fill();
+}
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, 7); ctx.fill(); }
+function ellipse(x, y, rx, ry, fill, rot = 0) { ctx.fillStyle = fill; ctx.beginPath(); ctx.ellipse(x, y, Math.max(0, rx), Math.max(0, ry), rot, 0, 7); ctx.fill(); }
+function line(x0, y0, x1, y1, col, w) { ctx.strokeStyle = col; ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); }
+function text(s, x, y, size, col, align = 'center', outline = '#1a1033', ow = 0) {
+  ctx.font = `bold ${size}px "Trebuchet MS", "Arial Rounded MT Bold", sans-serif`; ctx.textAlign = align; ctx.textBaseline = 'middle';
+  if (ow || outline && size >= 20) { ctx.lineJoin = 'round'; ctx.strokeStyle = outline; ctx.lineWidth = ow || Math.max(3, size / 7); ctx.strokeText(s, x, y); }
+  ctx.fillStyle = col; ctx.fillText(s, x, y);
+}
+function drawStar(x, y, r, fill, rot = 0) {
+  ctx.fillStyle = fill; ctx.beginPath();
+  for (let i = 0; i < 10; i++) { const a = rot - Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r * 0.45 : r; ctx.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); }
+  ctx.closePath(); ctx.fill();
+}
+function heart(x, y, s, col) {
+  ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(x, y + s * 0.9);
+  ctx.bezierCurveTo(x - s * 1.4, y, x - s * 0.6, y - s * 1.1, x, y - s * 0.35);
+  ctx.bezierCurveTo(x + s * 0.6, y - s * 1.1, x + s * 1.4, y, x, y + s * 0.9); ctx.fill();
+}
+function button(x, y, w, h, label, col, act, sel, size = 26) {
+  const hover = sel ? Math.sin(frame * 0.15) * 3 : 0;
+  roundRect(x, y + 5, w, h, 16, 'rgba(0,0,0,.3)');
+  roundRect(x, y - hover, w, h, 16, col);
+  roundRect(x + 4, y + 4 - hover, w - 8, h * 0.4, 12, 'rgba(255,255,255,.25)');
+  if (sel) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x - 3, y - 3 - hover, w + 6, h + 6, 18) : ctx.rect(x - 3, y - 3 - hover, w + 6, h + 6); ctx.stroke(); }
+  text(label, x + w / 2, y + h / 2 - hover + 1, size, '#fff');
+  buttons.push({ x, y, w, h, act });
+}
+
+// ---------- JIMMY: an ORANGE TABBY seen from above (darker orange stripes, four WHITE paws like socks, GREEN eyes) ----------
+const PAL_JIMMY = { fur: '#f5922f', stripe: '#c4561a', tan: '#fff6ea', eye: '#4caf50', paw: '#ffffff', pupil: '#1b2a12' };
+const PAL_SAMMY = { fur: '#a8683a', stripe: '#5a3416', tan: '#e9cda3', eye: '#b8742a', paw: '#8a5530', pupil: '#2b1a0e' };   // Sammy: brown tabby, brown eyes
+function drawCat(x, y, a, o = {}) {
+  const P = o.pal || PAL_JIMMY, sc = o.scale || 1, run = o.run || 0, wag = o.wag !== undefined ? o.wag : jimmy ? jimmy.wag : frame * 0.1;
+  const cos = o.costume !== undefined ? o.costume : (P === PAL_JIMMY ? wearing() : 'none'), grr = !!o.grumpy;
+  ctx.save(); ctx.translate(x, y); ctx.rotate(a); ctx.scale(sc, sc);
+  ellipse(2, 3, 20, 12, 'rgba(0,0,0,.22)');
+  const tw = Math.sin(frame * (grr ? 0.3 : 0.12) + wag) * (o.alert ? 3 : grr ? 5 : 9);   // striped tail (it swishes! grumpy = puffy + flicky)
+  for (let i = 0; i < 9; i++) { const k = i / 8, tx = -14 - k * 22, ty = Math.sin(k * 2.2) * tw; circle(tx, ty, (grr ? 6 : 4.2) - k * 1.4, i % 2 ? P.stripe : P.fur); }
+  const ph = Math.sin(wag * 3) * 4 * run;                                  // four WHITE paws (socks!)
+  for (const [px, py, s] of [[9, -8, 1], [9, 8, -1], [-9, -8, -1], [-9, 8, 1]]) { ellipse(px + ph * s, py, 4.6, 3.6, P.paw); if (P === PAL_JIMMY) ellipse(px + ph * s + 1, py, 2.6, 2, '#ffe9ef'); }
+  ellipse(0, 0, 17, o.crouch ? 9.5 : 10.5, P.fur);                        // body + tiger stripes
+  ctx.strokeStyle = P.stripe; ctx.lineWidth = 2.8; ctx.lineCap = 'round';
+  for (let i = -2; i <= 1; i++) {
+    const sx = i * 6.5 + 2;
+    ctx.beginPath(); ctx.moveTo(sx - 1, -10); ctx.quadraticCurveTo(sx + 2, -6, sx + 1, -2.5); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(sx - 1, 10); ctx.quadraticCurveTo(sx + 2, 6, sx + 1, 2.5); ctx.stroke();
+  }
+  ctx.beginPath(); ctx.moveTo(-14, 0); ctx.lineTo(10, 0); ctx.stroke(); ctx.lineCap = 'butt';
+  ellipse(12, 0, 4, 6, P.tan);                                             // white chest
+  if (cos === 'bandana') { ctx.fillStyle = '#e53935'; ctx.beginPath(); ctx.moveTo(14, -8); ctx.lineTo(14, 8); ctx.lineTo(5, 0); ctx.closePath(); ctx.fill(); circle(10, -3, 1.2, '#fff'); circle(10, 3, 1.2, '#fff'); circle(8, 0, 1.2, '#fff'); }
+  ctx.fillStyle = P.fur;                                                   // ears (grumpy = flat, pointing back!)
+  for (const s of [-1, 1]) { ctx.beginPath(); if (grr) { ctx.moveTo(18, s * 5); ctx.lineTo(11, s * 13.5); ctx.lineTo(21, s * 9); } else { ctx.moveTo(14, s * 4); ctx.lineTo(17, s * (o.alert ? 14 : 12.5)); ctx.lineTo(22, s * 5); } ctx.fill(); }
+  ctx.fillStyle = '#f8bbd0';
+  if (!grr) for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(15.5, s * 5); ctx.lineTo(17.3, s * 10); ctx.lineTo(20, s * 5.5); ctx.fill(); }
+  circle(19, 0, 9.5, P.fur);
+  ctx.strokeStyle = P.stripe; ctx.lineWidth = 1.8;                        // the tabby "M" on his forehead
+  for (const s of [-3, 0, 3]) { ctx.beginPath(); ctx.moveTo(12, s); ctx.lineTo(17, s * 0.7); ctx.stroke(); }
+  ellipse(26, 0, 4.5, 5.5, P.tan); ellipse(29.5, 0, 1.6, 2, '#f48fb1');
+  if (o.sleep) { ctx.strokeStyle = P.pupil; ctx.lineWidth = 1.5; for (const s of [-1, 1]) { ctx.beginPath(); ctx.arc(22, s * 4.2, 2.2, 0.3 * Math.PI, 0.7 * Math.PI); ctx.stroke(); } }
+  else if (cos === 'shades') { roundRect(20, -8, 6, 6.5, 2, '#111'); roundRect(20, 1.5, 6, 6.5, 2, '#111'); line(23, -2, 23, 2, '#111', 1.5); line(21, -6, 22, -4, 'rgba(255,255,255,.6)', 1); }
+  else for (const s of [-1, 1]) {                                          // big GREEN eyes
+    circle(22.5, s * 4.2, 2.9, P.eye); ellipse(22.8, s * 4.2, 1.1, o.sneaky ? 1.2 : 1.8, P.pupil); circle(23.4, s * 4.2 - 0.9, 0.7, '#fff');
+    if (grr) { ctx.strokeStyle = '#7a2e0a'; ctx.lineWidth = 1.6; ctx.beginPath(); ctx.moveTo(19.5, s * 7.5); ctx.lineTo(24.5, s * 2.5); ctx.stroke(); }   // grumpy eyebrows
+    else if (o.sneaky) { ctx.strokeStyle = P.stripe; ctx.lineWidth = 1.3; ctx.beginPath(); ctx.moveTo(20, s * 7.5); ctx.lineTo(24.5, s * 6.3); ctx.stroke(); }
+  }
+  if (cos === 'crown') { ctx.fillStyle = '#ffc107'; ctx.beginPath(); ctx.moveTo(13, -7); ctx.lineTo(9, -9); ctx.lineTo(12, -3); ctx.lineTo(8, 0); ctx.lineTo(12, 3); ctx.lineTo(9, 9); ctx.lineTo(13, 7); ctx.closePath(); ctx.fill(); circle(10, 0, 1.5, '#e53935'); }
+  ctx.strokeStyle = 'rgba(255,255,255,.8)'; ctx.lineWidth = 0.8;
+  for (const s of [-1, 1]) for (const k of [-0.3, 0, 0.3]) { ctx.beginPath(); ctx.moveTo(27, s * 3); ctx.lineTo(33, s * (8 + k * 8)); ctx.stroke(); }
+  ctx.restore();
+}
+function drawCatCurled(x, y, sc, breathe, P = PAL_JIMMY) {            // 💤 curled up in a cozy donut (white paws tucked in)
+  ctx.save(); ctx.translate(x, y); ctx.scale(sc, sc * (1 + breathe * 0.03));
+  ellipse(2, 4, 24, 20, 'rgba(0,0,0,.2)');
+  circle(0, 0, 19, P.fur);
+  ctx.strokeStyle = P.stripe; ctx.lineWidth = 2.6; ctx.lineCap = 'round';
+  for (let i = 0; i < 6; i++) { const a = -0.6 + i * 0.55; ctx.beginPath(); ctx.arc(0, 0, 14, a, a + 0.25); ctx.stroke(); }
+  for (let i = 0; i < 9; i++) { const a = 0.5 + i * 0.32; circle(Math.cos(a) * 19, Math.sin(a) * 19, 4.5 - i * 0.2, i % 2 ? P.stripe : P.fur); }   // tail wrapped round
+  ctx.lineCap = 'butt';
+  ellipse(-1, 8, 4.5, 3.4, P.paw); ellipse(5, 6, 4.5, 3.4, P.paw);       // little paws peeking out
+  ctx.fillStyle = P.fur;
+  for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(-8 + s * 5, -8); ctx.lineTo(-8 + s * 9, -19); ctx.lineTo(-8 + s * 11, -6); ctx.fill(); }
+  circle(-8, -4, 10, P.fur); ellipse(-8, 1, 5, 4, P.tan); ellipse(-8, -1, 1.6, 1.3, '#f48fb1');
+  ctx.strokeStyle = P.pupil; ctx.lineWidth = 1.5;
+  for (const s of [-1, 1]) { ctx.beginPath(); ctx.arc(-8 + s * 4.5, -6, 2.4, 0.15 * Math.PI, 0.85 * Math.PI); ctx.stroke(); }
+  for (const s of [-3, 0, 3]) line(-8 + s, -13, -8 + s * 0.7, -10, P.stripe, 1.6);
+  ctx.restore();
+}
+function catEyes(x, y, a) {                             // just his GREEN eyes, peeking out of a hiding spot
+  const ex = Math.cos(a), ey = Math.sin(a), px = -ey, py = ex, blink = frame % 170 < 7;
+  for (const s of [-1, 1]) {
+    const qx = x + ex * 6 + px * s * 6, qy = y + ey * 6 + py * s * 6;
+    circle(qx, qy, 6, 'rgba(120,230,120,.25)');
+    if (blink) { line(qx - 3, qy, qx + 3, qy, PAL_JIMMY.pupil, 1.5); continue; }
+    circle(qx, qy, 3.4, PAL_JIMMY.eye); ellipse(qx, qy, 1.1, 2.3, PAL_JIMMY.pupil); circle(qx + 0.8, qy - 0.9, 0.7, '#fff');
+  }
+}
+function drawDisguiseBox(x, y, moving) {                // 📦 "I'm just a box. Nothing to see here."
+  const w = moving ? Math.sin(frame * 0.4) * 2 : 0;
+  ctx.save(); ctx.translate(x, y + w * 0.5); ctx.rotate(w * 0.02);
+  roundRect(-19, -15, 40, 36, 4, 'rgba(0,0,0,.25)');
+  roundRect(-21, -19, 42, 36, 4, '#c69c6d'); ctx.fillStyle = '#b0875a'; ctx.fillRect(-21, -19, 42, 7);
+  ctx.fillStyle = '#e0c097'; ctx.fillRect(-3, -19, 6, 36);
+  text('BOX', 0, 6, 11, '#8d6e63', 'center', null);
+  if (moving) for (const s of [-1, 1]) { ellipse(s * 12 + Math.sin(frame * 0.4) * 3 * s, 19, 4, 3, '#ffffff'); }   // white socks sticking out!
+  else { const pk = frame % 220 < 50; if (pk) { circle(-6, -8, 2.6, PAL_JIMMY.eye); circle(6, -8, 2.6, PAL_JIMMY.eye); circle(-6, -8, 1, PAL_JIMMY.pupil); circle(6, -8, 1, PAL_JIMMY.pupil); } }
+  ctx.restore();
+}
+function grumpCloud(x, y) {                             // ☁️ a tiny storm cloud over grumpy Jimmy
+  const b = Math.sin(frame * 0.08) * 2;
+  for (const [ox, oy, r] of [[-9, 2, 7], [0, -2, 9], [9, 2, 7], [0, 4, 7]]) circle(x + ox, y + oy + b, r, '#78909c');
+  for (const [ox, oy, r] of [[-6, -1, 4], [2, -4, 4]]) circle(x + ox, y + oy + b, r, '#90a4ae');
+  if (frame % 90 < 12) { ctx.fillStyle = '#ffeb3b'; ctx.beginPath(); ctx.moveTo(x + 1, y + 9 + b); ctx.lineTo(x - 4, y + 17 + b); ctx.lineTo(x, y + 17 + b); ctx.lineTo(x - 3, y + 24 + b); ctx.lineTo(x + 5, y + 14 + b); ctx.lineTo(x + 1, y + 14 + b); ctx.closePath(); ctx.fill(); }
+  else for (let k = 0; k < 3; k++) { const d = (frame * 0.7 + k * 8) % 18; line(x - 6 + k * 6, y + 9 + d + b, x - 7 + k * 6, y + 12 + d + b, 'rgba(129,212,250,.8)', 1.5); }
+}
+const PAL_ROBO = { head: '#ffffff', body: '#f5f7ff', visor: '#111827', eye: '#40c4ff', legs: '#3d5afe', pod: '#2979ff' };
+function drawRobo(cx0, cy0, a, sc = 1, o = {}) {
+  const pal = PAL_ROBO, w = 30 * sc, h = 40 * sc, face = Math.cos(a) >= 0 ? 1 : -1, bob = Math.abs(Math.sin((o.step || 0))) * 2 * sc;
+  const x = cx0 - w / 2, y = cy0 - h / 2 - 8 * sc - bob;
+  ellipse(cx0, cy0 + h / 2 - 6 * sc, w * 0.7, 6 * sc, 'rgba(0,0,0,.25)');
+  ctx.fillStyle = pal.legs;
+  ctx.fillRect(x + 4 * sc, y + h - 7 * sc + bob, 8 * sc, 7 * sc); ctx.fillRect(x + w - 12 * sc, y + h - 7 * sc + bob, 8 * sc, 7 * sc);
+  roundRect(x + 2 * sc, y + h * 0.5, w - 4 * sc, h * 0.4, 6 * sc, pal.body);
+  circle(x + w / 2, y + h * 0.7, 3 * sc, pal.pod);
+  roundRect(x - 5 * sc, y + h * 0.3 - 3 * sc, 6 * sc, 9 * sc, 3 * sc, pal.pod);
+  roundRect(x + w - 1 * sc, y + h * 0.3 - 3 * sc, 6 * sc, 9 * sc, 3 * sc, pal.pod);
+  roundRect(x - 2 * sc, y, w + 4 * sc, h * 0.55, 12 * sc, pal.head);
+  roundRect(x + 2 * sc, y + 4 * sc, w - 4 * sc, h * 0.55 - 9 * sc, 9 * sc, pal.visor);
+  const ex = x + w / 2 + face * 3 * sc, ey = y + h * 0.27, blink = frame % 180 < 6 ? 1 : 5 * sc;
+  ctx.fillStyle = pal.eye;
+  ctx.beginPath(); ctx.ellipse(ex - 6 * sc, ey, 3.5 * sc, Math.max(0.5, blink), 0, 0, 7); ctx.ellipse(ex + 6 * sc, ey, 3.5 * sc, Math.max(0.5, blink), 0, 0, 7); ctx.fill();
+  if (o.light !== false) {                              // 🔦 his flashlight
+    const hx = cx0 + Math.cos(a) * 16 * sc, hy = cy0 + Math.sin(a) * 10 * sc;
+    ctx.save(); ctx.translate(hx, hy); ctx.rotate(a); roundRect(-6 * sc, -3.5 * sc, 13 * sc, 7 * sc, 2 * sc, '#ffca28'); roundRect(5 * sc, -5 * sc, 4 * sc, 10 * sc, 2 * sc, '#fff59d'); ctx.restore();
+  }
+}
+// ---------- People (seen from above) ----------
+const PEOPLE = {
+  mom: { shirt: '#ab47bc', stripe: '#ce93d8', hair: '#4e342e', long: true },
+  dad: { shirt: '#43a047', stripe: '#81c784', hair: '#3e2723', long: false },
+  ben: { shirt: '#ff7043', stripe: '#ffab91', hair: '#6d4c41', long: false, small: true },
+  gran: { shirt: '#f06292', stripe: '#fce4ec', hair: '#eeeeee', long: true },           // Grandma: the BEST at pets
+  neighbor: { shirt: '#81d4fa', stripe: '#fff', hair: '#bdbdbd', long: true },          // the neighbor with a sun hat... er, fluffy hair
+  walker: { shirt: '#ffb300', stripe: '#ffe082', hair: '#8d6e63', long: false },          // sleepy dog walker in a yellow raincoat
+  clerk: { shirt: '#00897b', stripe: '#b2dfdb', hair: '#212121', long: false },          // pet shop helper in a green apron
+};
+function drawPerson(x, y, a, who, o = {}) {
+  const P = PEOPLE[who], sc = (o.scale || 1) * (P.small ? 0.85 : 1), step = Math.sin(o.step || 0) * (o.moving ? 5 : 0);
+  ctx.save(); ctx.translate(x, y); ctx.rotate(a); ctx.scale(sc, sc);
+  ellipse(2, 3, 16, 18, 'rgba(0,0,0,.25)');
+  ellipse(step, -7, 6, 4, '#37474f'); ellipse(-step, 7, 6, 4, '#37474f');
+  ellipse(0, 0, 10, 15, P.shirt); ctx.fillStyle = P.stripe; ctx.fillRect(-2, -14, 4, 28);
+  if (o.basket) { roundRect(8, -14, 18, 28, 5, '#d7a86e'); circle(15, -5, 5, '#90caf9'); circle(18, 5, 5, '#f48fb1'); }
+  circle(10, -11, 4.5, '#ffd1a8'); circle(10, 11, 4.5, '#ffd1a8');
+  circle(1, 0, 11.5, '#ffd1a8');
+  ctx.fillStyle = P.hair; ctx.beginPath(); ctx.arc(-1, 0, 11.5, Math.PI * 0.42, Math.PI * 1.58); ctx.fill();
+  ellipse(-2, 0, 9, 10.5, P.hair);
+  if (P.long) { ellipse(-10, 0, 7, 13, P.hair); }
+  else { ctx.fillStyle = P.hair; ctx.beginPath(); ctx.moveTo(6, -6); ctx.lineTo(10, -2); ctx.lineTo(5, 0); ctx.lineTo(10, 3); ctx.lineTo(5, 7); ctx.fill(); }
+  if (o.sleep) { line(8, -6, 10, -3, '#263238', 1.4); line(8, 3, 10, 6, '#263238', 1.4); } else { circle(9, -4.5, 1.6, '#263238'); circle(9, 4.5, 1.6, '#263238'); }
+  if (o.leash) { line(10, 11, 34, 22, '#d32f2f', 1.5); }
+  if (o.book) { roundRect(12, -9, 10, 18, 2, '#1565c0'); line(17, -9, 17, 9, '#fff', 1); }
+  if (o.cup) { circle(14, 12, 5, '#fff'); circle(14, 12, 3, '#795548'); }
+  ctx.strokeStyle = '#d84315'; ctx.lineWidth = 1.3; ctx.beginPath(); ctx.arc(9.5, 0, 3, -0.9, 0.9); ctx.stroke();
+  if (o.pet) { const w = Math.sin(frame * 0.3) * 4; line(10, 6, 20 + w, 2, '#ffd1a8', 5); circle(21 + w, 2, 4.5, '#ffd1a8'); }   // pat pat pat!
+  ctx.restore();
+}
+// ---------- The vacuum (VROOM!) ----------
+function drawVac2(x, y, a) {                               // ROBOT VACUUM 2.0: now with a sensor light and racing stripes!
+  ctx.save(); ctx.translate(x, y); ctx.rotate(a);
+  ellipse(2, 4, 19, 19, 'rgba(0,0,0,.25)');
+  circle(0, 0, 18, '#37474f'); circle(0, 0, 15, '#eceff1'); circle(0, 0, 9, '#b0bec5');
+  ctx.fillStyle = '#ff6d00'; ctx.fillRect(-15, -3, 30, 6);
+  text('2.0', -2, 0, 9, '#fff', 'center', null);
+  ctx.strokeStyle = '#00e5ff'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(0, 0, 17, -0.9, 0.9); ctx.stroke();
+  const spin = frame * 0.6;
+  for (const s of [-1, 1]) { ctx.save(); ctx.translate(12, s * 13); ctx.rotate(spin * s); for (let k = 0; k < 3; k++) { ctx.rotate(2.1); line(0, 0, 7, 0, '#455a64', 1.5); } ctx.restore(); }
+  circle(8, -5, 3, '#fff'); circle(8, 5, 3, '#fff'); circle(9, -5, 1.6, '#263238'); circle(9, 5, 1.6, '#263238');   // googly eyes
+  circle(-8, 0, 2.5, frame % 30 < 15 ? '#00e5ff' : '#0091ea');
+  ctx.restore();
+}
+function drawPup(x, y, awake) {                          // 🐶 a sleepy little pup in the park
+  ctx.save(); ctx.translate(x, y);
+  ellipse(2, 4, 22, 16, 'rgba(0,0,0,.22)');
+  if (!awake) {
+    ctx.strokeStyle = 'rgba(255,255,255,.4)'; ctx.lineWidth = 2; ctx.setLineDash && ctx.setLineDash([8, 8]);
+    ctx.beginPath(); ctx.arc(0, 0, 125, frame * 0.004, frame * 0.004 + 7); ctx.stroke(); ctx.setLineDash && ctx.setLineDash([]);
+  }
+  const br = awake ? 0 : Math.sin(frame * 0.05) * 1.2;
+  ellipse(0, 0, 18 + br, 13 + br, '#eeeeee'); circle(-5, -3, 6, '#5d4037'); circle(6, 5, 4, '#5d4037');
+  ellipse(-14, 7, 7, 4, '#eeeeee', 0.5);
+  circle(14, -5, 10, '#eeeeee'); ellipse(8, -13, 4, 8, '#5d4037', -0.6); ellipse(20, -13, 4, 8, '#5d4037', 0.6);
+  circle(22, -3, 2.3, '#263238');
+  if (awake) { circle(11, -8, 2.4, '#263238'); circle(17, -8, 2.4, '#263238'); }
+  else { ctx.strokeStyle = '#263238'; ctx.lineWidth = 1.5; for (const ex of [11, 17]) { ctx.beginPath(); ctx.arc(ex, -8, 2.2, 0.2, Math.PI - 0.2); ctx.stroke(); } }
+  ctx.restore();
+  if (!awake) for (let k = 0; k < 3; k++) { const t = (frame * 0.6 + k * 40) % 120; ctx.globalAlpha = 1 - t / 120; text('z', x + 20 + t * 0.3, y - 22 - t * 0.4, 14 + k * 4, '#e3f2fd', 'center', '#1a237e', 3); } ctx.globalAlpha = 1;
+}
+function drawGnome(x, y, a, sleepy) {                    // 🧙 the garden gnome statue... its eyes FOLLOW you
+  ellipse(x + 2, y + 16, 18, 7, 'rgba(0,0,0,.3)');
+  roundRect(x - 14, y - 2, 28, 20, 8, '#1e88e5');                                  // coat
+  ellipse(x, y + 4, 11, 12, '#fff');                                                 // big white beard
+  circle(x, y - 8, 9, '#ffccbc'); circle(x, y - 5, 3, '#ef9a9a');                     // face + nose
+  ctx.fillStyle = '#e53935'; ctx.beginPath(); ctx.moveTo(x - 12, y - 12); ctx.lineTo(x + 12, y - 12); ctx.lineTo(x + 2, y - 40); ctx.closePath(); ctx.fill();   // pointy red hat
+  const ex = Math.cos(a) * 2, ey = Math.sin(a) * 1.5;
+  if (sleepy) { line(x - 6, y - 10, x - 2, y - 10, '#263238', 1.5); line(x + 2, y - 10, x + 6, y - 10, '#263238', 1.5); }
+  else for (const s of [-1, 1]) { circle(x + s * 4, y - 10, 3, '#fff'); circle(x + s * 4 + ex, y - 10 + ey, 1.7, '#263238'); }
+}
+function drawOwl(x, y, a, sleepy) {                      // 🦉 a round, fluffy owl on a branch
+  ellipse(x + 2, y + 14, 16, 6, 'rgba(0,0,0,.3)');
+  ellipse(x, y, 15, 17, '#8d6e63'); ellipse(x, y + 4, 9, 11, '#d7ccc8');
+  ctx.fillStyle = '#8d6e63'; for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(x + s * 5, y - 12); ctx.lineTo(x + s * 13, y - 22); ctx.lineTo(x + s * 13, y - 9); ctx.fill(); }
+  const ex = Math.cos(a) * 2, ey = Math.sin(a) * 2;
+  for (const s of [-1, 1]) {
+    circle(x + s * 6, y - 6, 6, '#fff8e1');
+    if (sleepy) line(x + s * 6 - 4, y - 6, x + s * 6 + 4, y - 6, '#3e2723', 2);
+    else { circle(x + s * 6 + ex, y - 6 + ey, 3.4, '#ffb300'); circle(x + s * 6 + ex, y - 6 + ey, 1.7, '#212121'); }
+  }
+  ctx.fillStyle = '#ffa000'; ctx.beginPath(); ctx.moveTo(x - 3, y - 1); ctx.lineTo(x + 3, y - 1); ctx.lineTo(x, y + 4); ctx.fill();
+  ellipse(x - 5, y + 16, 3, 2, '#ffa000'); ellipse(x + 5, y + 16, 3, 2, '#ffa000');
+}
+function drawDrone(x, y, a) {                            // 🚁 Robo's Sky-Drone: a little white flyer with a blue eye
+  const hov = Math.sin(frame * 0.1 + x) * 3;
+  ellipse(x + 4, y + 18, 16, 6, 'rgba(0,0,0,.3)');
+  for (const [ox, oy] of [[-14, -10], [14, -10], [-14, 10], [14, 10]]) {
+    line(x, y - hov, x + ox, y + oy - hov, '#90a4ae', 3);
+    ctx.globalAlpha = 0.5; ellipse(x + ox, y + oy - hov, 10, 3, '#cfd8dc', frame * 0.8 + ox); ctx.globalAlpha = 1;
+  }
+  circle(x, y - hov, 10, '#fff'); circle(x + Math.cos(a) * 4, y - hov + Math.sin(a) * 3, 4.5, '#111827'); circle(x + Math.cos(a) * 5, y - hov + Math.sin(a) * 3, 2.3, '#40c4ff');
+  circle(x, y - hov - 9, 2, frame % 40 < 20 ? '#ff5252' : '#b71c1c');
+}
+function drawGloop(x, y, a, sleepy, s = 0.42) {          // 🟣 a Gloop: purple goo blob with a yellow spiky top (from Robo Jump)
+  ctx.save(); ctx.translate(x - 50 * s, y - 60 * s); ctx.scale(s, s);
+  const wob = Math.sin(frame * 0.15 + x) * 3, body = '#7c4dff';
+  ellipse(50, 92, 50, 12, 'rgba(0,0,0,.25)');
+  roundRect(-wob / 2, wob, 100 + wob, 90 - wob, 40, body);
+  ellipse(25, 22 + wob, 12, 7, 'rgba(255,255,255,.35)', -0.5);
+  ctx.fillStyle = '#ffd740'; ctx.beginPath(); ctx.moveTo(25, 6 + wob);
+  for (let i = 0; i <= 4; i++) ctx.lineTo(25 + i * 12.5, wob - (i % 2 ? 4 : 22));
+  ctx.lineTo(75, 6 + wob); ctx.fill();
+  const lx = Math.cos(a) * 4, ly = Math.sin(a) * 3;
+  for (const ex of [32, 68]) {
+    if (sleepy) { line(ex - 9, 34 + wob, ex + 9, 34 + wob, '#000', 3); continue; }
+    circle(ex, 34 + wob, 11, '#fff'); circle(ex + 2 + lx, 35 + wob + ly, 5, '#000'); circle(ex + 4 + lx, 33 + wob + ly, 2, '#fff');
+  }
+  ctx.fillStyle = '#311b92'; ctx.beginPath(); ctx.arc(50, 54 + wob, 16, 0.1, Math.PI - 0.1); ctx.fill();
+  circle(22, 54 + wob, 6, 'rgba(255,128,171,.6)'); circle(78, 54 + wob, 6, 'rgba(255,128,171,.6)');
+  ctx.restore();
+}
+function drawSecBot(x, y, a, step, sleepy) {             // 🤖 Robo's Security Bot: a little robot with a red siren hat
+  const bob = Math.abs(Math.sin(step || 0)) * 2;
+  ellipse(x, y + 14, 14, 5, 'rgba(0,0,0,.25)');
+  roundRect(x - 12, y - 6 - bob, 24, 20, 6, '#eceff1');
+  roundRect(x - 13, y - 22 - bob, 26, 18, 8, '#fff');
+  roundRect(x - 10, y - 19 - bob, 20, 11, 5, '#111827');
+  const ex = Math.cos(a) * 2;
+  if (sleepy) { line(x - 7, y - 13 - bob, x - 2, y - 13 - bob, '#ff5252', 2); line(x + 2, y - 13 - bob, x + 7, y - 13 - bob, '#ff5252', 2); }
+  else { circle(x - 4 + ex, y - 14 - bob, 2.4, '#ff5252'); circle(x + 4 + ex, y - 14 - bob, 2.4, '#ff5252'); }
+  roundRect(x - 4, y - 28 - bob, 8, 7, 3, sleepy ? '#b71c1c' : frame % 30 < 15 ? '#ff1744' : '#ff8a80');
+  text('SECURITY', x, y + 4 - bob, 6, '#3949ab', 'center', null);
+}
+function drawCritter(q) {
+  const chat = q.chat > 0, j = chat ? Math.sin(frame * 1.2) * 2 : 0;
+  if (q.kind === 'q') {                                   // 🐿️ squirrel
+    ellipse(q.x + 2, q.y + 8, 10, 4, 'rgba(0,0,0,.25)');
+    ctx.fillStyle = '#d2691e'; ctx.beginPath(); ctx.ellipse(q.x - 9, q.y - 6 + j, 7, 13, -0.4, 0, 7); ctx.fill();   // big fluffy tail
+    ellipse(q.x, q.y + j, 7, 9, '#e07b39'); circle(q.x + 2, q.y - 9 + j, 6, '#e07b39'); circle(q.x + 4, q.y - 10 + j, 1.5, '#212121');
+    ellipse(q.x + 1, q.y + 2 + j, 3.5, 5, '#ffe0b2');
+    return;
+  }
+  if (q.away > 0) { const k = 300 - q.away; for (let i = 0; i < 3; i++) text('🐦', q.x + k * (1 + i * 0.4), q.y - k * (0.8 + i * 0.3), 18, '#fff', 'center', null); return; }
+  for (let i = 0; i < 3; i++) {                           // 🐦 three little birds pecking
+    const bx = q.x - 12 + i * 12, by = q.y + (i % 2) * 6 + (frame % 50 < 6 && i === 1 ? 3 : 0);
+    ellipse(bx, by, 6, 5, ['#42a5f5', '#ef5350', '#ffca28'][i]); circle(bx + 4, by - 3, 3.5, ['#42a5f5', '#ef5350', '#ffca28'][i]);
+    circle(bx + 5, by - 4, 1, '#212121'); ctx.fillStyle = '#ff9800'; ctx.beginPath(); ctx.moveTo(bx + 7, by - 4); ctx.lineTo(bx + 11, by - 3); ctx.lineTo(bx + 7, by - 2); ctx.fill();
+  }
+}
+function drawSprinkler(s) {
+  const on = s.t >= 330, warn = s.t > 270 && !on;
+  circle(s.x, s.y, 7, '#78909c'); circle(s.x, s.y, 3.5, warn || on ? '#4fc3f7' : '#455a64');
+  if (warn) { for (let k = 0; k < 3; k++) { const d = (frame * 0.8 + k * 9) % 26; circle(s.x + (k - 1) * 6, s.y - 6 - d * 0.4, 2, 'rgba(129,212,250,.9)'); } text('drip...', s.x, s.y - 22, 12, '#b3e5fc', 'center', '#01579b', 3); }
+  if (on) {
+    circle(s.x, s.y, 58, 'rgba(129,212,250,.28)');
+    for (let k = 0; k < 14; k++) { const a = k / 14 * 7 + frame * 0.15, r = 18 + ((frame * 2 + k * 13) % 40); circle(s.x + Math.cos(a) * r, s.y + Math.sin(a) * r, 2.5, 'rgba(225,245,254,.9)'); }
+  }
+}
+// 🛋️ JIMMY'S FLUFFY CUSHION (his favorite sunny napping spot)
+function drawCushion(x, y, s, glow = 0) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  if (glow) { circle(0, 0, 70, `rgba(255,236,120,${0.22 * glow})`); circle(0, 0, 52, `rgba(255,236,120,${0.25 * glow})`); }
+  ellipse(3, 8, 50, 30, 'rgba(0,0,0,.2)');
+  for (let i = 0; i < 14; i++) { const a = i / 14 * Math.PI * 2; circle(Math.cos(a) * 40, Math.sin(a) * 24, 10, '#7986cb'); }   // fluffy edge
+  ellipse(0, 0, 44, 27, '#9fa8da'); ellipse(0, -3, 34, 19, '#c5cae9');
+  ctx.strokeStyle = '#7986cb'; ctx.lineWidth = 2; for (const a of [0.5, 1.6, 2.7, 3.7, 4.8, 5.8]) line(Math.cos(a) * 9, Math.sin(a) * 5, Math.cos(a) * 30, Math.sin(a) * 17, '#8c9eff', 2);
+  circle(0, 0, 5, '#5c6bc0'); circle(-1, -1, 2, '#9fa8da');
+  for (const sx of [-1, 1]) { ctx.fillStyle = '#5c6bc0'; ctx.beginPath(); ctx.moveTo(sx * 46, -2); ctx.lineTo(sx * 56, -10); ctx.lineTo(sx * 56, 6); ctx.closePath(); ctx.fill(); }   // corner tassels
+  if (glow) for (let i = 0; i < 5; i++) { const a = frame * 0.04 + i * 1.26; drawStar(Math.cos(a) * 58, Math.sin(a) * 36, 4 + Math.sin(frame * 0.2 + i) * 2, '#fffde7', a); }
+  ctx.restore();
+}
+function drawKnockItem(kind, x, y, down) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(down ? Math.PI / 2 : 0);
+  if (kind === 'pot') { circle(0, 0, 11, '#90a4ae'); circle(0, 0, 8, '#cfd8dc'); roundRect(8, -2, 10, 4, 2, '#424242'); }
+  else if (kind === 'soap') { roundRect(-8, -12, 16, 24, 4, '#4dd0e1'); roundRect(-4, -16, 8, 6, 2, '#fff'); circle(0, 2, 4, '#e0f7fa'); }
+  else if (kind === 'toy') { circle(0, 0, 9, '#ff7043'); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0, 0, 6, 0, 4); ctx.stroke(); }
+  else if (kind === 'lost') { circle(0, 2, 9, '#a1887f'); circle(0, -8, 7, '#a1887f'); circle(-5, -13, 3, '#8d6e63'); circle(5, -13, 3, '#8d6e63'); circle(-2, -8, 1.2, '#3e2723'); circle(2, -8, 1.2, '#3e2723'); }   // a lost teddy bear
+  else { roundRect(-9, -11, 18, 22, 4, '#90a4ae'); roundRect(-9, -4, 18, 10, 2, '#29b6f6'); line(-6, -13, 6, -13, '#455a64', 2); }
+  ctx.restore();
+  if (down && (kind === 'paint' || kind === 'soap')) circle(x + 10, y + 6, 6, kind === 'soap' ? 'rgba(178,235,242,.8)' : 'rgba(41,182,246,.6)');
+}
+function drawToy(t) {                                   // 🪶 a feather wand or a jingly ball: play = happy!
+  const b = t.spin > 0 ? Math.sin(t.spin * 0.5) * 6 : Math.sin(frame * 0.06 + t.x) * 2, ready = t.cd <= 0;
+  if (ready) circle(t.x, t.y, 17 + Math.sin(frame * 0.12) * 2, 'rgba(255,128,171,.22)');
+  if (t.kind === 'ball') { circle(t.x + b, t.y, 9, '#ec407a'); line(t.x + b - 7, t.y - 3, t.x + b + 7, t.y + 3, '#ffeb3b', 2); circle(t.x + b, t.y - 9, 2.5, '#ffd740'); }
+  else { line(t.x - 14, t.y + 10, t.x + 4 + b, t.y - 8, '#8d6e63', 2.5); ellipse(t.x + 8 + b, t.y - 12, 8, 3.5, '#4fc3f7', -0.8); ellipse(t.x + 10 + b, t.y - 8, 7, 3, '#ab47bc', -0.3); ellipse(t.x + 4 + b, t.y - 15, 6, 3, '#ffeb3b', -1.3); }
+  if (ready && jimmy && dist(t.x, t.y, jimmy.x, jimmy.y) < 90) text('PLAY!', t.x, t.y + 24, 12, '#fff', 'center', '#ad1457', 3);
+}
+function drawPetter(p) {                                // 💕 a friendly person (or Robo!) who loves giving pets
+  const near = jimmy && dist(p.x, p.y, jimmy.x, jimmy.y) < 56, a = jimmy ? Math.atan2(jimmy.y - p.y, jimmy.x - p.x) : Math.PI / 2;
+  circle(p.x, p.y, 24 + Math.sin(frame * 0.1) * 2, near ? 'rgba(255,128,171,.35)' : 'rgba(255,128,171,.18)');
+  if (p.who === 'robo') drawRobo(p.x, p.y + 6, a, 0.8, { light: false, step: near ? frame * 0.3 : 0 });
+  else drawPerson(p.x, p.y, a, p.who, { step: 0, moving: false, pet: near });
+  heart(p.x + 18, p.y - 22 + Math.sin(frame * 0.1) * 3, 6, '#ff4081');
+  if (near) bubble(p.x, p.y - 42, p.who === 'robo' ? 'BEEP! Pat pat pat! 💕' : ["Who's a good kitty? 💕", 'Aww, Jimmy! Pets! 💕', 'Nice white socks! 💕'][Math.floor(p.petT / 120) % 3], '#fce4ec', '#ad1457');
+  else if (jimmy && dist(p.x, p.y, jimmy.x, jimmy.y) < 140) bubble(p.x, p.y - 42, 'Here, kitty kitty!', '#fff', '#ad1457');
+}
+
+// ---------- Drawing a level ----------
+function regionOf(ch) {
+  let c0 = 99, r0 = 99, c1 = -1, r1 = -1;
+  map.forEach((row, r) => row.forEach((h, c) => { if (h === ch) { c0 = Math.min(c0, c); r0 = Math.min(r0, r); c1 = Math.max(c1, c); r1 = Math.max(r1, r); } }));
+  return c1 < 0 ? null : { x: c0 * T, y: r0 * T, w: (c1 - c0 + 1) * T, h: (r1 - r0 + 1) * T };
+}
+function drawFloor() {
+  const th = L.th;
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    const x = c * T, y = r * T;
+    ctx.fillStyle = (r + c) % 2 ? th.floor : th.floor2; ctx.fillRect(x, y, T, T);
+    if (th.tiles && (r + c) % 2) { ctx.fillStyle = 'rgba(255,255,255,.25)'; ctx.fillRect(x + 3, y + 3, T - 6, T - 6); }
+    if (th.roof) { ctx.fillStyle = 'rgba(0,0,0,.12)'; for (let k = 0; k < 4; k++) { ctx.beginPath(); ctx.arc(x + 10 + (r % 2) * 10, y + k * 10 + 10, 10, 0, Math.PI); ctx.fill(); } }
+    if (th.factory && (r + c) % 4 === 0) { circle(x + 6, y + 6, 2, 'rgba(0,0,0,.15)'); circle(x + 34, y + 34, 2, 'rgba(0,0,0,.15)'); }
+    if (th.alley && (r * 7 + c * 5) % 9 === 0) { ctx.fillStyle = 'rgba(0,0,0,.12)'; ctx.fillRect(x + 8, y + 20, 18, 3); }
+    if (th.lost && (r + c) % 5 === 0) drawStar(x + 20, y + 20, 4, 'rgba(255,152,0,.2)', 0);
+    if (th.grass && (r * 7 + c * 3) % 5 === 0) for (let k = 0; k < 3; k++) line(x + 10 + k * 7, y + 30, x + 8 + k * 8, y + 20, '#388e3c', 2);
+    if (th.grass && (r * 5 + c * 11) % 13 === 0) { circle(x + 12, y + 14, 4, '#fff176'); circle(x + 28, y + 26, 4, '#f48fb1'); }
+  }
+}
+function drawSunbeam(x, y) {                            // ☀️ a warm sunbeam on the floor: stand still in it for a NAP
+  ctx.fillStyle = `rgba(255,236,120,${0.45 + Math.sin(frame * 0.05 + x) * 0.08})`;
+  ctx.beginPath(); ctx.moveTo(x + 6, y - 2); ctx.lineTo(x + T + 4, y - 2); ctx.lineTo(x + T - 6, y + T + 2); ctx.lineTo(x - 4, y + T + 2); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.fillRect(x + 8, y + 6, 3, T - 12); ctx.fillRect(x + 22, y + 6, 3, T - 12);
+  for (let k = 0; k < 3; k++) { const t = (frame * 0.5 + k * 30 + x) % 90; circle(x + 8 + k * 11, y + T - t * 0.4, 1.5, `rgba(255,255,255,${0.8 - t / 120})`); }   // dust sparkles
+  if (jimmy && !jimmy.napping && dist(cx(Math.floor(x / T)), cx(Math.floor(y / T)), jimmy.x, jimmy.y) < 80 && frame % 60 < 44) text('NAP SPOT', x + T / 2, y - 8, 12, '#fff', 'center', '#e65100', 3);
+}
+function drawBath(x, y, kind) {                         // 🛁 bubble bath (or a rainy puddle): SPLASH = grumpy!
+  if (kind === 'puddle') {
+    ellipse(x + T / 2, y + T / 2, T * 0.48, T * 0.36, 'rgba(79,195,247,.55)'); ellipse(x + T / 2 - 4, y + T / 2 - 3, 8, 3, 'rgba(255,255,255,.5)');
+    const k = (frame * 0.6 + x) % 30; ctx.strokeStyle = `rgba(255,255,255,${0.6 - k / 50})`; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.ellipse(x + 26, y + 22, k * 0.4, k * 0.25, 0, 0, 7); ctx.stroke();
+    return;
+  }
+  const c = Math.floor(x / T), r = Math.floor(y / T), W2 = (dc, dr) => tileAt(c + dc, r + dr) === 'W';
+  const x0 = x + (W2(-1, 0) ? 0 : 1), y0 = y + (W2(0, -1) ? 0 : 1), x1 = x + T - (W2(1, 0) ? 0 : 1), y1 = y + T - (W2(0, 1) ? 0 : 1);
+  ctx.fillStyle = '#eceff1'; ctx.fillRect(x0, y0, x1 - x0, y1 - y0);                                  // the white tub
+  const i0 = x + (W2(-1, 0) ? 0 : 6), j0 = y + (W2(0, -1) ? 0 : 6), i1 = x + T - (W2(1, 0) ? 0 : 6), j1 = y + T - (W2(0, 1) ? 0 : 6);
+  ctx.fillStyle = '#4fc3f7'; ctx.fillRect(i0, j0, i1 - i0, j1 - j0);                                  // warm bath water
+  for (let k = 0; k < 4; k++) circle(x + 10 + (k * 7 + Math.sin(frame * 0.05 + k + c) * 2), y + 12 + (k % 2) * 14, 6, 'rgba(255,255,255,.85)');   // bubbles!
+  if (!W2(-1, 0) && !W2(0, -1)) { const b = Math.sin(frame * 0.08) * 1.5; circle(x + 30, y + 30 + b, 5, '#ffeb3b'); circle(x + 33, y + 26 + b, 3, '#ffeb3b'); circle(x + 35.5, y + 26.5 + b, 1, '#ff6f00'); }   // rubber duck
+}
+function drawTiles() {
+  const th = L.th;
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    const ch = map[r][c], x = c * T, y = r * T;
+    if (ch === '#') {
+      ctx.fillStyle = th.wall; ctx.fillRect(x, y, T, T);
+      if (th.exit === 'gate' && !th.alley) { ctx.fillStyle = 'rgba(255,255,255,.12)'; ctx.fillRect(x + 4, y, 10, T); ctx.fillRect(x + 22, y, 10, T); }
+      else if (th.alley) { ctx.fillStyle = 'rgba(0,0,0,.18)'; for (let k = 0; k < 4; k++) ctx.fillRect(x, y + k * 10 + 9, T, 2); ctx.fillRect(x + ((r % 2) ? 10 : 30), y, 2, T); }
+      else if (tileAt(c, r + 1) !== '#') { ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.fillRect(x, y + T - 8, T, 8); }
+      else { ctx.fillStyle = 'rgba(255,255,255,.06)'; ctx.fillRect(x, y, T, 3); }
+      if (r === 0 && (c === 6 || c === 17) && !th.grass && !th.alley && !th.roof) { roundRect(x + 4, y + 6, T - 8, T - 14, 3, '#b3e5fc'); ctx.fillStyle = 'rgba(255,255,255,.6)'; ctx.fillRect(x + 8, y + 9, 4, T - 20); }   // little windows
+    } else if (ch === 'T' || ch === 'k') {
+      const up = 'Tk'.includes(tileAt(c, r - 1)), dn = 'Tk'.includes(tileAt(c, r + 1)), lf = 'Tk'.includes(tileAt(c - 1, r)), rt = 'Tk'.includes(tileAt(c + 1, r));
+      if (th.grass) { circle(x + T / 2, y + T / 2 + 4, 20, 'rgba(0,0,0,.25)'); circle(x + T / 2, y + T / 2, 19, '#2e7d32'); circle(x + T / 2 - 5, y + T / 2 - 5, 11, '#43a047'); circle(x + T / 2 + 6, y + T / 2 - 2, 8, '#66bb6a'); continue; }   // 🌳 trees
+      if (th.roof) { roundRect(x + 6, y + 4, T - 12, T - 6, 4, 'rgba(0,0,0,.3)'); roundRect(x + 6, y, T - 12, T - 8, 4, th.furn); roundRect(x + 10, y + 3, T - 20, 8, 2, '#3e2723'); continue; }   // chimney
+      const x0 = x + (lf ? 0 : 3), y0 = y + (up ? 0 : 3), x1 = x + T - (rt ? 0 : 3), y1 = y + T - (dn ? 0 : 5);
+      ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.fillRect(x0, y0 + 4, x1 - x0, y1 - y0);
+      ctx.fillStyle = th.furn; ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+      if (!up) { ctx.fillStyle = 'rgba(255,255,255,.3)'; ctx.fillRect(x0, y0, x1 - x0, 5); }
+      if (th.washers && ch === 'T') { circle(x + T / 2, y + T / 2 + 2, 13, '#90a4ae'); circle(x + T / 2, y + T / 2 + 2, 10, '#b3e5fc'); circle(x + T / 2 - 3 + Math.sin(frame * 0.2 + c) * 3, y + T / 2 + 4, 4, ['#ef5350', '#ffee58', '#66bb6a'][(r + c) % 3]); }   // spinning washing machines
+      if (th.tanks && ch === 'T') { ctx.fillStyle = 'rgba(79,195,247,.75)'; ctx.fillRect(x0 + 2, y0 + 3, x1 - x0 - 4, y1 - y0 - 6); if ((r + c) % 2) { const fx = x + 20 + Math.sin(frame * 0.03 + c * 2) * 10; ellipse(fx, y + 20, 6, 4, ['#ff7043', '#ffd740', '#ec407a'][(r + c) % 3]); ctx.fillStyle = ['#ff7043', '#ffd740', '#ec407a'][(r + c) % 3]; ctx.beginPath(); ctx.moveTo(fx - 5, y + 20); ctx.lineTo(fx - 10, y + 16); ctx.lineTo(fx - 10, y + 24); ctx.fill(); } else circle(x + 14, y + 28 - (frame * 0.4 + c * 9) % 18, 2, 'rgba(255,255,255,.7)'); }
+      if (th.tiles && !up) { ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.fillRect(x0 + 4, y0 + 10, x1 - x0 - 8, 3); }
+      if (th.factory && r > 6 && r < 8) { ctx.fillStyle = 'rgba(0,0,0,.2)'; for (let k = 0; k < 4; k++) ctx.fillRect(x + ((k * 10 + frame * 0.5) % 40), y0 + 4, 3, y1 - y0 - 8); }   // conveyor belt
+      if (th.lost && ch === 'T') { roundRect(x + 6, y + 8, 12, 12, 2, ['#ef9a9a', '#90caf9', '#fff59d', '#a5d6a7'][(r * 3 + c) % 4]); roundRect(x + 21, y + 14, 13, 16, 2, ['#ce93d8', '#ffcc80', '#80cbc4'][(r + c) % 3]); }   // lost things on the shelves
+      if (ch === 'k') { const k = knocks.find(k => k.c === c && k.r === r); if (k && k.st === 'shelf') { drawKnockItem(k.kind, x + T / 2, y + T / 2, false); if (dist(k.x, k.y, jimmy.x, jimmy.y) < 70) text('POUNCE!', x + T / 2, y + T + 6, 13, '#fff', 'center', '#ad1457', 3); } }
+    } else if (ch === 'B') drawHideBox(x, y, th.box);
+    else if (ch === 'H') { ctx.fillStyle = 'rgba(20,10,50,.42)'; ctx.beginPath(); ctx.ellipse(x + T / 2, y + T / 2, T * 0.62, T * 0.55, 0, 0, 7); ctx.fill(); }
+    else if (ch === 'L') drawClimb(x, y, c, r, th.climb || 'fence');
+    else if (ch === 'G') drawGap(x, y, c, r, th.gap || 'pit');
+    else if (ch === 'u') drawSunbeam(x, y);
+    else if (ch === 'W') drawBath(x, y, th.bath || 'tub');
+    else if (ch === 'X') { for (const [ox, oy, s] of [[4, 10, 18], [18, 4, 18], [10, 20, 16]]) { roundRect(x + ox, y + oy, s, s, 2, '#c69c6d'); ctx.fillStyle = '#e0c097'; ctx.fillRect(x + ox + s / 2 - 2, y + oy, 4, s); } if (!jimmy.box && dist(cx(c), cx(r), jimmy.x, jimmy.y) < 80) text('DISGUISE!', x + T / 2, y - 6, 12, '#fff', 'center', '#6d4c41', 3); }
+    else if (ch === 'C') { roundRect(x + 4, y + 6, T - 8, T - 12, 8, check && check.x === cx(c) && check.y === cx(r) ? '#c6ff00' : '#9ccc65'); text('🐾', x + T / 2, y + T / 2 + 1, 20, '#fff', 'center', null); }
+  }
+}
+function drawClimb(x, y, c, r, kind) {
+  if (kind === 'tires') { for (const [ox, oy] of [[20, 20]]) { circle(x + ox, y + oy + 3, 18, 'rgba(0,0,0,.3)'); circle(x + ox, y + oy, 18, '#263238'); circle(x + ox, y + oy, 9, '#546e7a'); circle(x + ox, y + oy, 5, '#263238'); } return; }
+  if (kind === 'ladder') {
+    ctx.fillStyle = '#8d6e63'; const vert = tileAt(c - 1, r) === 'L' || tileAt(c + 1, r) === 'L';
+    if (vert) { ctx.fillRect(x, y + 6, T, 5); ctx.fillRect(x, y + 29, T, 5); ctx.fillStyle = '#d7a86e'; for (let k = 0; k < 3; k++) ctx.fillRect(x + 6 + k * 13, y + 6, 4, 28); }
+    else { ctx.fillRect(x + 6, y, 5, T); ctx.fillRect(x + 29, y, 5, T); ctx.fillStyle = '#d7a86e'; for (let k = 0; k < 3; k++) ctx.fillRect(x + 6, y + 6 + k * 13, 28, 4); }
+    return;
+  }
+  // a wooden fence
+  ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.fillRect(x, y + 6, T, T - 4);
+  ctx.fillStyle = '#a1887f'; for (let k = 0; k < 4; k++) roundRect(x + 2 + k * 10, y + 2, 8, T - 6, 3, '#bcaaa4');
+  ctx.fillStyle = '#8d6e63'; ctx.fillRect(x, y + 10, T, 5); ctx.fillRect(x, y + 26, T, 5);
+}
+function drawGap(x, y, c, r, kind) {
+  const col = { leaves: ['#1b5e20', '#2e7d32'], alley: ['#0d1026', '#151a3a'], pond: ['#29b6f6', '#4fc3f7'], pit: ['#212121', '#37474f'] }[kind] || ['#212121', '#333'];
+  ctx.fillStyle = col[0]; ctx.fillRect(x, y, T, T);
+  if (kind === 'leaves') { circle(x + 10, y + 12, 10, col[1]); circle(x + 30, y + 28, 12, col[1]); circle(x + 28, y + 8, 6, '#388e3c'); }
+  else if (kind === 'pond') { const w = Math.sin(frame * 0.05 + c + r) * 4; line(x + 6 + w, y + 14, x + 18 + w, y + 14, 'rgba(255,255,255,.5)', 2); if ((c + r) % 3 === 0) { circle(x + 26, y + 26, 7, '#66bb6a'); } }
+  else if (kind === 'alley') { if ((c * 3 + r) % 5 === 0) circle(x + 20, y + 20, 2, 'rgba(255,241,118,.6)'); }
+  else { ctx.fillStyle = 'rgba(255,193,7,.6)'; for (let k = 0; k < 4; k++) if ((k + c) % 2) ctx.fillRect(x + k * 10, y, 10, 4); }
+  // a little "LEAP!" hint when Jimmy is next to a gap
+  if (jimmy && !jimmy.act && dist(cx(c), cx(r), jimmy.x, jimmy.y) < 48 && frame % 40 < 28) text('LEAP!', x + T / 2, y + T / 2, 13, '#fff', 'center', '#01579b', 3);
+}
+function drawHideBox(x, y, kind) {
+  if (kind === 'bush') { circle(x + T / 2, y + T / 2 + 3, 21, 'rgba(0,0,0,.2)'); for (const [ox, oy, r, col] of [[-8, 4, 12, '#2e7d32'], [9, 4, 12, '#388e3c'], [0, -6, 14, '#43a047'], [-4, -2, 7, '#66bb6a']]) circle(x + T / 2 + ox, y + T / 2 + oy, r, col); circle(x + 10, y + 12, 3, '#f06292'); circle(x + 30, y + 26, 3, '#fff176'); return; }
+  if (kind === 'chair') { roundRect(x + 2, y + 6, T - 4, T - 6, 10, 'rgba(0,0,0,.25)'); roundRect(x + 2, y + 2, T - 4, T - 6, 10, '#e57373'); roundRect(x + 7, y + 10, T - 14, T - 18, 6, '#ef9a9a'); return; }
+  if (kind === 'crate') { roundRect(x + 3, y + 7, T - 6, T - 8, 3, 'rgba(0,0,0,.25)'); roundRect(x + 3, y + 3, T - 6, T - 8, 3, '#bf8f55'); ctx.strokeStyle = '#8d6e63'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x + 5, y + 5); ctx.lineTo(x + T - 5, y + T - 7); ctx.moveTo(x + T - 5, y + 5); ctx.lineTo(x + 5, y + T - 7); ctx.stroke(); return; }
+  if (kind === 'basket') {                              // 🧺 a laundry basket full of fluffy towels
+    roundRect(x + 2, y + 6, T - 4, T - 6, 8, 'rgba(0,0,0,.25)'); roundRect(x + 2, y + 2, T - 4, T - 6, 8, '#d7a86e');
+    ctx.strokeStyle = '#b07c45'; ctx.lineWidth = 2; for (let k = 1; k < 4; k++) line(x + 2 + k * 9, y + 4, x + 2 + k * 9, y + T - 6, '#b07c45', 2);
+    circle(x + 13, y + 14, 8, '#f8bbd0'); circle(x + 26, y + 16, 8, '#b3e5fc'); circle(x + 19, y + 24, 7, '#fff9c4'); return;
+  }
+  if (kind === 'can') {                                 // 🗑️ a trash can with a lid
+    circle(x + T / 2, y + T / 2 + 3, 18, 'rgba(0,0,0,.3)'); circle(x + T / 2, y + T / 2, 18, '#78909c'); circle(x + T / 2, y + T / 2, 14, '#90a4ae');
+    roundRect(x + T / 2 - 6, y + T / 2 - 2, 12, 4, 2, '#546e7a'); return;
+  }
+  roundRect(x + 3, y + 7, T - 6, T - 8, 4, 'rgba(0,0,0,.25)');
+  roundRect(x + 3, y + 3, T - 6, T - 8, 4, '#c69c6d');
+  ctx.fillStyle = '#b0875a'; ctx.fillRect(x + 3, y + 3, T - 6, 7);
+  ctx.fillStyle = '#e0c097'; ctx.fillRect(x + T / 2 - 3, y + 3, 6, T - 8);
+}
+function drawExit() {
+  const e = regionOf('E'); if (!e) return;
+  const x = e.x, y = e.y, glow = 0.5 + Math.sin(frame * 0.1) * 0.25, kind = L.th.exit;
+  circle(x + T / 2, y + T / 2, 30, `rgba(255,241,118,${glow * 0.6})`);
+  if (kind === 'cushion') { drawCushion(x + T / 2, y + T / 2, 0.5, 1); return; }
+  if (kind === 'flap') { roundRect(x + 6, y + 4, T - 12, T - 8, 10, '#ffb300'); roundRect(x + 10, y + 10, T - 20, T - 18, 6, '#5d4037'); text('🐾', x + T / 2, y + T / 2, 14, '#fff', 'center', null); }
+  else if (kind === 'gate') { roundRect(x + 4, y + 2, T - 8, T - 4, 6, '#8bc34a'); text('🚪', x + T / 2, y + T / 2, 22, '#fff', 'center', null); }
+  else if (kind === 'window') { roundRect(x + 4, y + 2, T - 8, T - 4, 4, '#ffe082'); ctx.fillStyle = '#5d4037'; ctx.fillRect(x + 18, y + 2, 4, T - 4); ctx.fillRect(x + 4, y + 18, T - 8, 4); }
+  else { roundRect(x + 4, y + 2, T - 8, T - 4, 6, '#ffb300'); circle(x + T - 12, y + T / 2, 3, '#5d4037'); }
+  const b = Math.sin(frame * 0.12) * 4; text('➜', x + T / 2 - 34 - b, y + T / 2, 26, '#fff59d', 'center', '#5d4037', 4);
+}
+function drawFish(x, y) {
+  circle(x, y, 14, 'rgba(255,215,64,.3)');
+  ellipse(x, y, 10, 6, '#ffa726'); ctx.fillStyle = '#ffa726'; ctx.beginPath(); ctx.moveTo(x - 8, y); ctx.lineTo(x - 15, y - 6); ctx.lineTo(x - 15, y + 6); ctx.fill();
+  circle(x + 5, y - 1, 1.6, '#3e2723'); if (frame % 60 < 10) drawStar(x + 9, y - 9, 4, '#fff');
+}
+function drawToyMouse(x, y, s = 1, wig = 0) {           // 🐭 the secret toy mouse (grey felt, pink ears, a stringy tail)
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s); ctx.rotate(wig);
+  ctx.strokeStyle = '#f48fb1'; ctx.lineWidth = 1.8; ctx.beginPath(); ctx.moveTo(-9, 0); ctx.quadraticCurveTo(-16, -8, -20, 2); ctx.stroke();
+  ellipse(0, 0, 11, 7, '#9e9e9e'); circle(9, 0, 5, '#9e9e9e'); circle(6, -6, 3.6, '#f48fb1'); circle(6, 6, 3.6, '#f48fb1');
+  circle(14, 0, 1.6, '#e91e63'); circle(10, -2, 1, '#212121'); circle(10, 2, 1, '#212121');
+  ctx.restore();
+}
+function drawTreats() {
+  for (const t of treats) if (!t.got) drawFish(t.x, t.y + Math.sin(frame * 0.1 + t.x) * 3);
+  if (mouse && !mouse.got) { ctx.globalAlpha = 0.85; drawToyMouse(mouse.x, mouse.y + Math.sin(frame * 0.08) * 2, 0.95, Math.sin(frame * 0.05) * 0.3); ctx.globalAlpha = 1; }
+  for (const t of toys) drawToy(t);
+  for (const k of knocks) {
+    if (k.st === 'fall') { const p = k.t / 22, x = k.x + (k.lx - k.x) * p, y = k.y + (k.ly - k.y) * p - Math.sin(p * Math.PI) * 26; drawKnockItem(k.kind, x, y, false); }
+    else if (k.st === 'down') drawKnockItem(k.kind, k.lx, k.ly, true);
+  }
+  for (const s of sprinklers) drawSprinkler(s);
+}
+// 🔦 a flashlight / "looking" cone that stops at walls
+function conePoints(g) {
+  const look = g.a + (g.sweep || 0), pts = [[g.x, g.y]], n = 14;
+  for (let i = 0; i <= n; i++) {
+    const a = look - g.half + (2 * g.half) * i / n, ca = Math.cos(a), sa = Math.sin(a);
+    let d = 12; while (d < g.len && !sightBlock(tAt(g.x + ca * d, g.y + sa * d))) d += 8;
+    pts.push([g.x + ca * Math.min(d, g.len), g.y + sa * Math.min(d, g.len)]);
+  }
+  return pts;
+}
+function fillPoly(c, pts) { c.beginPath(); c.moveTo(pts[0][0], pts[0][1]); for (let i = 1; i < pts.length; i++) c.lineTo(pts[i][0], pts[i][1]); c.closePath(); c.fill(); }
+const CONE_COL = { robo: 'rgba(255,241,118,.38)', sbot: 'rgba(255,82,82,.3)', gnome: 'rgba(206,147,216,.35)', drone: 'rgba(128,216,255,.35)', gloop: 'rgba(179,136,255,.35)', vac2: 'rgba(0,229,255,.25)' };
+const looking = g => g.len && g.mode !== 'snooze' && g.mode !== 'melt' && g.mode !== 'scared';
+function drawCones() {
+  for (const g of guards) {
+    if (!looking(g)) continue;
+    const pts = conePoints(g), hot = g.sus > 0;
+    ctx.fillStyle = hot ? `rgba(255,${Math.floor(200 - Math.min(1, g.sus) * 150)},80,.45)` : CONE_COL[g.type] || 'rgba(179,229,252,.33)';
+    fillPoly(ctx, pts);
+  }
+}
+function drawJimmyNow() {
+  const s = jimmy, gr = grumpy();
+  if (s.box) { drawDisguiseBox(s.x, s.y, s.moving); return; }
+  if (s.hidden) { catEyes(s.x, s.y + 4, s.a); if (gr) grumpCloud(s.x, s.y - 30); return; }
+  if (s.napping) { drawCatCurled(s.x, s.y, 0.9, Math.sin(frame * 0.06)); for (let k = 0; k < 3; k++) { const t = (frame * 0.6 + k * 40) % 120; ctx.globalAlpha = 1 - t / 120; text('z', s.x + 14 + t * 0.3, s.y - 18 - t * 0.4, 12 + k * 4, '#fff59d', 'center', '#e65100', 3); } ctx.globalAlpha = 1; return; }
+  let hop = s.pounceT > 0 ? Math.sin((16 - s.pounceT) / 16 * Math.PI) * 0.25 : 0;
+  if (s.act) { const k = Math.min(1, s.act.t / s.act.dur); hop = Math.sin(k * Math.PI) * (s.act.kind === 'G' ? 0.45 : 0.3); ellipse(s.x, s.y + 14 + hop * 30, 16 * (1 - hop), 6, 'rgba(0,0,0,.25)'); }
+  const jy = s.y - (s.act ? hop * 30 : 0), shiver = s.wetT > 0 ? Math.sin(frame * 1.3) * 1.5 : 0;
+  drawCat(s.x + shiver, jy, s.a, { run: s.moving ? (s.run ? 1.4 : 0.6) : 0, sneaky: !s.run, crouch: !s.run && s.moving, scale: 1 + hop + (s.hissT > 0 ? 0.12 : 0), grumpy: gr });
+  if (s.wetT > 0) for (let k = 0; k < 3; k++) { const d = (frame * 0.8 + k * 11) % 26; circle(s.x - 10 + k * 10, jy + 8 + d * 0.5, 2, 'rgba(129,212,250,.9)'); }   // drip drip
+  if (gr) grumpCloud(s.x, jy - 34);
+  else if (frame % 50 === 0 && mood >= 75) hearts(s.x, s.y - 20, 1);
+  if (s.hissT > 0) bubble(s.x, jy - 52, 'HSSSSS!', '#ffebee', '#c62828');
+  else if (s.cuteT > 0) bubble(s.x, jy - 40, 'Mew? 💕', '#fce4ec', '#ad1457');
+  else if (s.purrT > 0) bubble(s.x, jy - 40, 'Purrrr...', '#f3e5f5', '#8e24aa');
+}
+function drawActors() {
+  const list = guards.map(g => ({ y: g.y, g })); list.push({ y: jimmy.y, s: true });
+  if (friend) list.push({ y: friend.y, f: true });
+  for (const q of critters) list.push({ y: q.y, q });
+  for (const p of petters) list.push({ y: p.y, p });
+  list.sort((a, b) => a.y - b.y);
+  for (const it of list) {
+    if (it.q) { drawCritter(it.q); continue; }
+    if (it.p) { drawPetter(it.p); continue; }
+    if (it.f) {
+      const f = friend;
+      if (f.mode === 'nap') { roundRect(f.x - 26, f.y - 22, 52, 44, 14, '#ce93d8'); drawCatCurled(f.x, f.y, 0.95, Math.sin(frame * 0.05), PAL_SAMMY); if (dist(f.x, f.y, jimmy.x, jimmy.y) < 140) bubble(f.x, f.y - 40, 'Zzz... is that Jimmy?', '#fff', '#6a1b9a'); }
+      else drawCat(f.x, f.y, f.a, { pal: PAL_SAMMY, scale: 0.9, run: f.mode === 'follow' ? 0.6 : 1.4, wag: f.wag, costume: 'none' });
+      if (f.sayT > 0) bubble(f.x, f.y - 36, f.say, '#fff3e0', '#5d4037');
+      continue;
+    }
+    if (it.s) { drawJimmyNow(); continue; }
+    const g = it.g, moving = g.mode === 'patrol' || g.mode === 'investigate' || g.mode === 'goback' || g.mode === 'scared', zz = g.mode === 'snooze';
+    const look = g.a + (g.sweep || 0);
+    if (g.mode === 'melt') circle(g.x, g.y, 30 + Math.sin(frame * 0.2) * 3, 'rgba(255,128,171,.3)');
+    if (g.mode === 'scared') { ctx.globalAlpha = 0.7; text('!!', g.x - 18, g.y - 26, 18, '#ff5252', 'center', '#fff', 3); ctx.globalAlpha = 1; }
+    if (g.type === 'robo') drawRobo(g.x, g.y, look, 0.85, { step: g.step, light: looking(g) });
+    else if (g.type === 'vac2') drawVac2(g.x, g.y, g.a);
+    else if (g.type === 'dog') drawPup(g.x, g.y, g.mode === 'awake');
+    else if (g.type === 'gnome') drawGnome(g.x, g.y, look, zz);
+    else if (g.type === 'drone') drawDrone(g.x, g.y, look);
+    else if (g.type === 'gloop') drawGloop(g.x, g.y, look, zz);
+    else if (g.type === 'sbot') drawSecBot(g.x, g.y, look, g.step, zz);
+    else drawPerson(g.x, g.y, look, g.type, { step: g.step, moving: moving && (g.route.length > 0 || g.mode === 'scared') && !zz, sleep: zz || (g.type === 'walker' && g.yawn < 120), leash: g.type === 'walker', pet: g.mode === 'melt' });
+    if (zz) for (let k = 0; k < 3; k++) { const t = (frame * 0.6 + k * 40) % 120; ctx.globalAlpha = 1 - t / 120; text('z', g.x + 16 + t * 0.3, g.y - 20 - t * 0.4, 13 + k * 4, '#f8bbd0', 'center', '#4a148c', 3); } ctx.globalAlpha = 1;
+  }
+}
+function bubble(x, y, s, bg, fg) {
+  ctx.font = 'bold 15px "Trebuchet MS", sans-serif'; const w = Math.max(26, ctx.measureText(s).width + 16);
+  x = Math.max(w / 2 + 4, Math.min(W - w / 2 - 4, x));
+  roundRect(x - w / 2, y - 13, w, 26, 12, bg); ctx.fillStyle = bg; ctx.beginPath(); ctx.moveTo(x - 5, y + 12); ctx.lineTo(x + 3, y + 20); ctx.lineTo(x + 6, y + 12); ctx.fill();
+  text(s, x, y, 15, fg, 'center', null);
+}
+function drawGuardHUD() {
+  for (const g of guards) {
+    if (g.sus > 0 && state === 'play') { roundRect(g.x - 20, g.y - 46, 40, 8, 4, 'rgba(0,0,0,.4)'); roundRect(g.x - 19, g.y - 45, 38 * Math.min(1, g.sus), 6, 3, g.sus > 0.6 ? '#ff5252' : '#ffd740'); }
+    if (g.bubT > 0 && g.mode !== 'snooze') bubble(g.x, g.y - 60, g.bub, g.bub === '!' ? '#ffeb3b' : g.mode === 'melt' ? '#fce4ec' : '#fff', g.bub === '!' ? '#d50000' : g.mode === 'melt' ? '#ad1457' : '#3949ab');
+  }
+}
+let nightC = null, nctx = null;
+function drawNight() {
+  if (!L.night) return;
+  if (!nightC) { nightC = document.createElement('canvas'); nightC.width = W; nightC.height = H; nctx = nightC.getContext('2d'); }
+  nctx.globalCompositeOperation = 'source-over'; nctx.clearRect(0, 0, W, H);
+  nctx.fillStyle = L.rain ? `rgba(30,40,70,${L.night})` : `rgba(8,12,40,${L.night})`; nctx.fillRect(0, 0, W, H);
+  nctx.globalCompositeOperation = 'destination-out';
+  const hole = (x, y, r, k = 1) => { const g = nctx.createRadialGradient(x, y, 0, x, y, Math.max(1, r)); g.addColorStop(0, `rgba(0,0,0,${k})`); g.addColorStop(1, 'rgba(0,0,0,0)'); nctx.fillStyle = g; nctx.beginPath(); nctx.arc(x, y, Math.max(1, r), 0, 7); nctx.fill(); };
+  hole(jimmy.x, jimmy.y, 85, 0.8);
+  const e = regionOf('E'); if (e) hole(e.x + T / 2, e.y + T / 2, 70, 0.8);
+  for (const t of treats) if (!t.got) hole(t.x, t.y, 30, 0.6);
+  for (const p of petters) hole(p.x, p.y, 60, 0.7);
+  map.forEach((row, r) => row.forEach((ch, c) => { if (ch === 'u') hole(cx(c), cx(r), 46, 0.8); }));
+  for (const g of guards) if (looking(g)) { nctx.fillStyle = 'rgba(0,0,0,.8)'; fillPoly(nctx, conePoints(g)); hole(g.x, g.y, 40, 0.6); }
+  nctx.globalCompositeOperation = 'source-over';
+  ctx.drawImage(nightC, 0, 0);
+  if (L.fireflies) for (let k = 0; k < 12; k++) { const x = (k * 97 + Math.sin(frame * 0.01 + k) * 60 + 960) % W, y = 60 + (k * 53) % 420 + Math.cos(frame * 0.013 + k * 2) * 30; circle(x, y, 2.5, `rgba(220,255,120,${0.4 + 0.4 * Math.sin(frame * 0.08 + k)})`); }
+  if (L.rain) for (let k = 0; k < 70; k++) { const x = (k * 137 + frame * 3) % (W + 60) - 30, y = (k * 71 + frame * 11) % (H + 40) - 20; line(x, y, x - 4, y + 14, 'rgba(179,229,252,.55)', 1.5); }   // pitter patter
+}
+function drawHints() {                                   // little helper words over Jimmy's head
+  const s = jimmy; if (s.act || s.box || s.hidden || s.napping || state !== 'play') return;
+  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    if (tAt(s.x + dx * 24, s.y + dy * 24) === 'L') { if (frame % 50 < 34) text(grumpy() ? 'too grumpy to climb... cheer up!' : 'walk into it to CLIMB!', s.x, s.y - 30, 12, '#fff', 'center', grumpy() ? '#3949ab' : '#2e7d32', 3); return; }
+  }
+  if (!grumpy() && s.cuteCD <= 0) for (const g of guards) if (canMelt(g) && dist(g.x, g.y, s.x, s.y) < 86) { if (frame % 50 < 34) text('X = CUTE head-bump!', s.x, s.y - 30, 12, '#fff', 'center', '#ad1457', 3); return; }
+  if (grumpy() && s.hissCD <= 0) for (const g of guards) if (g.type !== 'dog' && dist(g.x, g.y, s.x, s.y) < 180) { if (frame % 50 < 34) text('X = HISS!', s.x, s.y - 30, 12, '#fff', 'center', '#c62828', 3); return; }
+}
+function drawMoodMeter(x, y, w) {                        // 😾 ----------|---------- 😻
+  const k = Math.max(0, Math.min(1, moodShow / 100)), gr = grumpy();
+  text('😾', x, y, 20, '#fff', 'center', null);
+  roundRect(x + 14, y - 8, w, 16, 8, 'rgba(255,255,255,.18)');
+  const g = ctx.createLinearGradient(x + 14, 0, x + 14 + w, 0); g.addColorStop(0, '#5c6bc0'); g.addColorStop(GRUMPY_AT / 100, '#9575cd'); g.addColorStop(0.6, '#ffb74d'); g.addColorStop(1, '#ff4081');
+  ctx.fillStyle = g; roundRect(x + 15, y - 7, Math.max(4, (w - 2) * k), 14, 7, g);
+  line(x + 14 + w * GRUMPY_AT / 100, y - 10, x + 14 + w * GRUMPY_AT / 100, y + 10, 'rgba(255,255,255,.7)', 2);
+  text(moodFace(moodShow), x + 14 + w * k, y + (gr ? Math.sin(frame * 0.4) : 0), 22, '#fff', 'center', null);
+  text('😻', x + w + 30, y, 20, '#fff', 'center', null);
+}
+function drawHUD() {
+  roundRect(8, 4, W - 16, 38, 12, 'rgba(20,10,50,.74)');
+  ctx.font = 'bold 17px "Trebuchet MS", sans-serif'; const nm = `${lvl + 1}. ${L.name}`;
+  text(nm, 22, 23, ctx.measureText(nm).width > 205 ? 14 : 17, '#fff', 'left', null);
+  for (let i = 0; i < 3; i++) { ctx.globalAlpha = treats[i] && treats[i].got ? 1 : 0.3; text('🐟', 250 + i * 25, 24, 18, '#fff', 'center', null); }
+  ctx.globalAlpha = mouse && mouse.got ? 1 : 0.3; text('🐭', 330, 24, 18, '#fff', 'center', null); ctx.globalAlpha = 1;
+  drawMoodMeter(366, 23, 200);
+  const j = jimmy, gr = grumpy();
+  const st = j.box ? (j.moving ? '📦 box (shh!)' : '📦 JUST A BOX') : j.napping ? '☀️ napping' : j.hidden ? '🙈 HIDDEN' : j.run ? '💨 RUNNING' : j.act ? (j.act.kind === 'L' ? '🧗 climbing' : '🦘 LEAP!') : gr ? '😾 GRUMPY' : '😻 HAPPY';
+  text(st, 670, 23, 13, j.hidden ? '#b9f6ca' : gr ? '#b3c7ff' : j.run ? '#ff8a80' : '#ffd1e8', 'center', null);
+  const cd = gr ? j.hissCD / 200 : j.cuteCD / 150, pk = 1 - cd;          // X move meter (CUTE or HISS)
+  roundRect(728, 16, 72, 14, 7, 'rgba(255,255,255,.2)'); roundRect(729, 17, 70 * pk, 12, 6, pk >= 1 ? (gr ? '#ff5252' : '#ff80ab') : '#9575cd');
+  text(pk >= 1 ? (gr ? 'HISS!' : 'CUTE!') : (gr ? 'hiss' : 'cute'), 764, 24, 11, '#fff', 'center', null);
+  button(W - 112, 8, 46, 30, musicOn ? '🎵' : '🔇', '#7e57c2', toggleMusic, false, 16);
+  button(W - 60, 8, 46, 30, '⏸', '#ef5350', () => { state = 'paused'; menuSel = 0; }, false, 16);
+  if (moodTipT > 0) {                                    // big friendly mood tip when he flips
+    ctx.globalAlpha = Math.min(1, moodTipT / 30);
+    roundRect(170, 50, W - 340, 34, 14, gr ? 'rgba(57,73,171,.88)' : 'rgba(216,27,96,.85)');
+    text(gr ? '😾 Grumpy! X = HISS. Fish, pets, toys + sunbeams cheer him up!' : '😻 Happy Jimmy! X = CUTE head-bump, C = purr, and he can CLIMB!', W / 2, 67, 15, '#fff', 'center', null);
+    ctx.globalAlpha = 1;
+  }
+  if (tipT > 0) {
+    tipT--; ctx.globalAlpha = Math.min(1, tipT / 40);
+    roundRect(30, H - 44, W - 60, 36, 14, 'rgba(20,10,50,.78)'); text(L.tip, W / 2, H - 26, 14, '#fff59d', 'center', null); ctx.globalAlpha = 1;
+  } else { ctx.globalAlpha = 0.85; text('arrows = sneak • SPACE = pounce / leap • X = cute (happy) or HISS (grumpy) • Z = run • C = purr', W / 2, H - 12, 13, '#fff', 'center', '#1a1033', 3); ctx.globalAlpha = 1; }
+}
+function drawPlayScene() {
+  drawFloor(); drawExit(); drawTiles(); drawTreats(); drawCones();
+  for (const r of rings) { ctx.globalAlpha = Math.max(0, 1 - r.r / r.max); ctx.strokeStyle = r.col; ctx.lineWidth = r.purr ? 5 : 3; ctx.beginPath(); ctx.arc(r.x, r.y, Math.max(0, r.r), 0, 7); ctx.stroke(); } ctx.globalAlpha = 1;
+  drawActors(); drawNight(); drawGuardHUD(); drawHints(); drawParts();
+}
+function drawParts() {
+  for (const p of parts) {
+    ctx.globalAlpha = Math.max(0, Math.min(1, p.life / 30));
+    if (p.conf) { ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.spin); ctx.fillStyle = p.col; ctx.fillRect(-p.r, -p.r / 2, p.r * 2, p.r); ctx.restore(); }
+    else if (p.heart) heart(p.x, p.y, p.r, p.col);
+    else circle(p.x, p.y, p.r, p.col);
+  }
+  ctx.globalAlpha = 1;
+  for (const p of pops) { ctx.globalAlpha = Math.min(1, p.t / 20); text(p.text, Math.max(80, Math.min(W - 80, p.x)), p.y, 18, p.col, 'center', '#1a1033', 4); } ctx.globalAlpha = 1;
+}
+// ---------- Jimmy sitting, seen from the front (title, story + ending) ----------
+function drawJimmyFront(x, y, sc, o = {}) {
+  const P = PAL_JIMMY, FUR = P.fur, STRIPE = P.stripe, grr = !!o.grumpy;
+  ctx.save(); ctx.translate(x, y); ctx.scale(sc, sc);
+  const tw = Math.sin(frame * (grr ? 0.2 : 0.07)) * 8;
+  ellipse(0, 46, 40, 8, 'rgba(0,0,0,.25)');
+  const cos = o.costume !== undefined ? o.costume : wearing();
+  ctx.strokeStyle = FUR; ctx.lineWidth = grr ? 15 : 10; ctx.lineCap = 'round';      // tail curling up (grumpy = POOFY)
+  ctx.beginPath(); ctx.moveTo(22, 38); ctx.quadraticCurveTo(58, 34, 52 + tw * 0.3, 0 + tw); ctx.stroke();
+  ctx.strokeStyle = STRIPE; ctx.setLineDash && ctx.setLineDash([5, 7]);
+  ctx.beginPath(); ctx.moveTo(22, 38); ctx.quadraticCurveTo(58, 34, 52 + tw * 0.3, 0 + tw); ctx.stroke(); ctx.setLineDash && ctx.setLineDash([]);
+  ellipse(0, 18, 28, 30, FUR);                                                         // body
+  ellipse(0, 22, 16, 24, P.tan);                                                        // white chest + tummy
+  ctx.lineWidth = 4;
+  for (const s of [-1, 1]) for (let k = 0; k < 3; k++) { ctx.strokeStyle = STRIPE; ctx.beginPath(); ctx.moveTo(s * 27, 4 + k * 12); ctx.quadraticCurveTo(s * 20, 8 + k * 12, s * 17, 6 + k * 12); ctx.stroke(); }
+  for (const s of [-1, 1]) { ellipse(s * 12, 45, 10, 7, '#ffffff'); for (const t of [-3.5, 0, 3.5]) line(s * 12 + t, 48, s * 12 + t, 51, '#e0e0e0', 1.2); }   // WHITE paws (socks!)
+  ctx.fillStyle = FUR;                                                                  // ears (grumpy = flat airplane ears!)
+  for (const s of [-1, 1]) { ctx.beginPath(); if (grr) { ctx.moveTo(s * 14, -38); ctx.lineTo(s * 40, -40); ctx.lineTo(s * 28, -24); } else { ctx.moveTo(s * 10, -34); ctx.lineTo(s * 25, -56 - (o.perk || 0)); ctx.lineTo(s * 28, -24); } ctx.fill(); }
+  ctx.fillStyle = '#f8bbd0';
+  for (const s of [-1, 1]) { ctx.beginPath(); if (grr) { ctx.moveTo(s * 18, -36); ctx.lineTo(s * 35, -38); ctx.lineTo(s * 27, -29); } else { ctx.moveTo(s * 14, -32); ctx.lineTo(s * 24, -50 - (o.perk || 0)); ctx.lineTo(s * 25, -28); } ctx.fill(); }
+  ellipse(0, -22, 30, 25, FUR);                                                         // head
+  ctx.strokeStyle = STRIPE; ctx.lineWidth = 3.5;                                        // the tabby "M"
+  ctx.beginPath(); ctx.moveTo(-10, -32); ctx.lineTo(-6, -42); ctx.lineTo(0, -34); ctx.lineTo(6, -42); ctx.lineTo(10, -32); ctx.stroke();
+  for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(s * 29, -24); ctx.lineTo(s * 21, -22); ctx.stroke(); ctx.beginPath(); ctx.moveTo(s * 29, -15); ctx.lineTo(s * 22, -15); ctx.stroke(); }
+  ellipse(0, -9, 14, 11, P.tan);                                                        // white muzzle
+  const blink = frame % 200 < 7;
+  for (const s of [-1, 1]) {                                                            // big GREEN eyes
+    if (blink || o.sleep) { ctx.strokeStyle = P.pupil; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(s * 12, -24, 6, 0.15 * Math.PI, 0.85 * Math.PI); ctx.stroke(); continue; }
+    ellipse(s * 12, -24, 8, 8.5, '#f1f8e9'); circle(s * 12, -24, 7, P.eye);
+    ellipse(s * 12 + 1, -24, 2.8, grr ? 4 : 6, P.pupil); circle(s * 12 + 3, -27, 2, '#fff');
+    if (grr) { ctx.strokeStyle = '#7a2e0a'; ctx.lineWidth = 3.5; ctx.beginPath(); ctx.moveTo(s * 4, -30); ctx.lineTo(s * 20, -36); ctx.stroke(); ctx.fillStyle = FUR; ctx.beginPath(); ctx.moveTo(s * 3, -31); ctx.lineTo(s * 21, -37); ctx.lineTo(s * 21, -40); ctx.lineTo(s * 3, -40); ctx.fill(); }   // grumpy eyebrows
+  }
+  ctx.fillStyle = '#f48fb1'; ctx.beginPath(); ctx.moveTo(-4, -15); ctx.lineTo(4, -15); ctx.lineTo(0, -10); ctx.fill();
+  ctx.strokeStyle = P.pupil; ctx.lineWidth = 2; ctx.beginPath();
+  if (grr) { ctx.moveTo(0, -10); ctx.lineTo(0, -7); ctx.moveTo(-9, -2); ctx.quadraticCurveTo(0, -9, 9, -2); }          // a big grumpy frown
+  else { ctx.moveTo(0, -10); ctx.quadraticCurveTo(-5, -4, -9, -7); ctx.moveTo(0, -10); ctx.quadraticCurveTo(5, -4, 9, -7); }   // a sweet little smile
+  ctx.stroke();
+  if (!grr && !o.sleep) { circle(-20, -12, 4, 'rgba(255,128,171,.45)'); circle(20, -12, 4, 'rgba(255,128,171,.45)'); }   // rosy cheeks
+  ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.lineWidth = 1.3;
+  for (const s of [-1, 1]) for (const k of [-4, 0, 4]) { ctx.beginPath(); ctx.moveTo(s * 10, -11 + k * 0.4); ctx.lineTo(s * 36, -15 + k * 1.6); ctx.stroke(); }
+  if (cos === 'bandana') { ctx.fillStyle = '#e53935'; ctx.beginPath(); ctx.moveTo(-22, -2); ctx.quadraticCurveTo(0, 6, 22, -2); ctx.lineTo(0, 22); ctx.closePath(); ctx.fill(); for (const [dx, dy] of [[-8, 3], [6, 4], [0, 12]]) circle(dx, dy, 1.8, '#fff'); }
+  if (cos === 'shades' && !o.sleep) { roundRect(-22, -31, 19, 13, 5, '#111'); roundRect(3, -31, 19, 13, 5, '#111'); line(-3, -26, 3, -26, '#111', 3); line(-18, -28, -12, -22, 'rgba(255,255,255,.5)', 2); line(7, -28, 13, -22, 'rgba(255,255,255,.5)', 2); }
+  if (cos === 'crown') { ctx.fillStyle = '#ffc107'; ctx.beginPath(); ctx.moveTo(-20, -44); ctx.lineTo(-22, -66); ctx.lineTo(-10, -54); ctx.lineTo(0, -70); ctx.lineTo(10, -54); ctx.lineTo(22, -66); ctx.lineTo(20, -44); ctx.closePath(); ctx.fill(); circle(0, -52, 3.5, '#e53935'); circle(-12, -50, 2.5, '#42a5f5'); circle(12, -50, 2.5, '#66bb6a'); }
+  ctx.lineCap = 'butt'; ctx.restore();
+}
+function drawSky(night) {                              // a bright sunny sky (or a starry one)
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  if (night) { g.addColorStop(0, '#0d1b4a'); g.addColorStop(0.7, '#283593'); g.addColorStop(1, '#5c6bc0'); }
+  else { g.addColorStop(0, '#4fc3f7'); g.addColorStop(0.6, '#b3e5fc'); g.addColorStop(1, '#fff3e0'); }
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  if (night) { for (let i = 0; i < 50; i++) circle((i * 157) % W, (i * 89) % 280, 1 + (i % 3) * 0.6, `rgba(255,255,255,${0.4 + 0.4 * Math.sin(frame * 0.05 + i)})`); return; }
+  ctx.save(); ctx.translate(110, 90); ctx.rotate(frame * 0.004);                         // ☀️ the sun
+  for (let i = 0; i < 12; i++) { ctx.rotate(Math.PI / 6); ctx.fillStyle = 'rgba(255,235,59,.5)'; ctx.beginPath(); ctx.moveTo(44, -7); ctx.lineTo(66, 0); ctx.lineTo(44, 7); ctx.fill(); }
+  ctx.restore(); circle(110, 90, 40, '#ffeb3b'); circle(110, 90, 32, '#fff176');
+  for (const [cx0, cy0, s] of [[330, 70, 1], [620, 110, 0.8], [840, 60, 1.1]]) { const x = (cx0 + frame * 0.15 * s) % (W + 160) - 80; for (const [ox, oy, r] of [[0, 0, 22], [24, -8, 26], [50, 0, 20]]) circle(x + ox * s, cy0 + oy * s, r * s, 'rgba(255,255,255,.92)'); }
+}
+function drawNeighborhood(night) {                     // houses... and far away, the GAME FACTORY with the Lost & Found
+  const houses = [[20, 330, 150, '#ef9a9a'], [190, 300, 170, '#ffcc80'], [380, 340, 140, '#a5d6a7'], [740, 335, 200, '#90caf9']];
+  for (const [x, y, w, col] of houses) {
+    ctx.fillStyle = night ? '#3949ab' : col; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + w / 2, y - 60); ctx.lineTo(x + w, y); ctx.lineTo(x + w, 430); ctx.lineTo(x, 430); ctx.fill();
+    for (let k = 0; k < 2; k++) roundRect(x + 25 + k * (w - 80), y + 25, 30, 28, 3, night ? '#ffd54f' : '#e3f2fd');
+  }
+  const fx = 560, fy = 250;                                                                  // 🏭 the Game Factory
+  roundRect(fx, fy, 160, 180, 6, night ? '#4527a0' : '#7e57c2'); roundRect(fx + 110, fy - 60, 26, 70, 4, night ? '#4527a0' : '#7e57c2');
+  for (let k = 0; k < 3; k++) circle(fx + 123 + Math.sin(frame * 0.02 + k) * 8, fy - 70 - ((frame * 0.5 + k * 30) % 90), 9 + k * 2, 'rgba(255,255,255,.6)');   // puffy smoke
+  ctx.save(); ctx.translate(fx + 50, fy + 50); ctx.rotate(frame * 0.02); for (let k = 0; k < 8; k++) { ctx.rotate(Math.PI / 4); ctx.fillStyle = '#ffd740'; ctx.fillRect(16, -5, 10, 10); } ctx.restore(); circle(fx + 50, fy + 50, 18, '#ffd740'); circle(fx + 50, fy + 50, 8, night ? '#4527a0' : '#7e57c2');
+  roundRect(fx + 20, fy + 110, 120, 30, 8, '#fff59d'); text('LOST & FOUND', fx + 80, fy + 125, 15, '#6a1b9a', 'center', null);
+  ctx.fillStyle = night ? '#1a237e' : '#9ccc65'; ctx.fillRect(0, 430, W, 90);
+  ctx.fillStyle = night ? '#0d1440' : '#fff8e1'; for (let x = 0; x < W; x += 24) ctx.fillRect(x, 420, 14, 14);   // a little white fence
+  const dx = (frame * 1.4) % (W + 300) - 150;                                                 // Robo's Sky-Drone flies by
+  drawDrone(dx, 150 + Math.sin(frame * 0.03) * 20, 0.5);
+}
+function drawTitleText(n, y0) {                         // "JIMMY'S BIG ESCAPE" bouncing in letter by letter
+  const lines = ["JIMMY'S BIG ESCAPE", 'Where is my cushion?!'], cols = ['#ff9800', '#ffb74d', '#ff7043', '#ffd54f', '#f48fb1', '#81c784', '#4fc3f7'];
+  let k = 0;
+  lines.forEach((ln, li) => {
+    const size = li ? 30 : 58, y = y0 + li * 54; ctx.font = `bold ${size}px "Trebuchet MS", sans-serif`;
+    const tw = ctx.measureText(ln).width; let x = W / 2 - tw / 2;
+    for (const ch of ln) {
+      const w = ctx.measureText(ch).width, age = n - k * 3;
+      if (age > 0) { const drop = Math.max(0, 1 - age / 14), wob = Math.sin(frame * 0.08 + k * 0.6) * 3; text(ch, x + w / 2, y - drop * 200 + wob, size, li ? '#fff' : cols[k % cols.length], 'center', '#5d2a0c', li ? 7 : 9); }
+      x += w; k++;
+    }
+  });
+  return k;
+}
