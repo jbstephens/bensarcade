@@ -1,0 +1,1684 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Lock Robo's Puzzle Vault</title>
+<script>TOUCHPAD = { dpad: true, south: [' ', 'TAP'], east: ['x', 'HINT'], west: ['z', 'UNDO'] };</script>
+<script src="touchpad.js?v=3"></script>
+<style>
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: #0b1020; display: flex;
+    align-items: center; justify-content: center; overflow: hidden;
+  }
+  canvas {
+    width: min(100vw, calc(100vh * 960 / 520));
+    height: auto; display: block; border-radius: 12px;
+    box-shadow: 0 10px 40px rgba(0,0,0,.5);
+  }
+</style>
+<canvas id="game" width="960" height="520"></canvas>
+<script>
+// 🔐 LOCK ROBO'S PUZZLE VAULT
+// After Robo Jump 8, LOCK ROBO is NICE now! He was lonely, so he built a cozy PUZZLE VAULT to share.
+// 48 little vault puzzles of 6 kinds (Slide the Key, Gear Turner, Pipe Lock, Code Dial, Light Switch, Key Match),
+// 5 vaults (Silver, Gold, Glitch, Time, MASTER). Every vault you open = a GOLDEN KEY + a treasure.
+// Tap / drag, or arrows + SPACE.  Z = undo, X = hint, R = reset, ESC = back to the map.
+const C = document.getElementById('game');
+const ctx = C.getContext('2d');
+const W = 960, H = 520;
+
+// ---------- Saves, coins, trophies, stickers ----------
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }
+let stickerNew = 0;
+function sticker(id) { try { const s = JSON.parse(localStorage.getItem('gfStickers') || '{}'); if (!s[id]) { s[id] = 1; localStorage.setItem('gfStickers', JSON.stringify(s)); stickerNew = 150; } } catch (_) {} }   // for the Sticker Book in the Game Factory book
+function bankCoin(n = 1) { try { const c = JSON.parse(localStorage.getItem('gfCoins') || '{}'); c.lockvault = (c.lockvault || 0) + n; localStorage.setItem('gfCoins', JSON.stringify(c)); } catch (_) {} }   // coins for the Bundle Room in the Game Factory book
+
+let save = { done: {}, items: [], seen: {}, music: true, coins: 0 };
+function loadSave() {
+  try { const s = JSON.parse(localStorage.getItem('lockVault') || 'null'); if (s && typeof s === 'object') save = Object.assign(save, s); } catch (_) {}
+  save.done = save.done || {}; save.items = Array.isArray(save.items) ? save.items : []; save.seen = save.seen || {};
+}
+function writeSave() { try { localStorage.setItem('lockVault', JSON.stringify(save)); } catch (_) {} }
+loadSave();
+
+// ---------- Sound effects ----------
+let actx = null, master = null, musicBus = null, sfxBus = null, delayIn = null, delayNode = null, noiseBuf = null;
+let musicOn = save.music !== false;
+function note(freq, start, dur, wave = 'square', vol = 0.12, slideTo = null) {
+  if (!actx) return;
+  const t = actx.currentTime + start;
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type = wave; o.frequency.setValueAtTime(freq, t);
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+  g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.006);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g); g.connect(sfxBus || actx.destination);
+  o.start(t); o.stop(t + dur + 0.02);
+}
+const sfx = {
+  click:  () => note(900, 0, 0.05, 'square', 0.05),
+  move:   () => { note(520, 0, 0.07, 'triangle', 0.09, 700); },
+  slide:  () => { note(240, 0, 0.12, 'triangle', 0.1, 330); note(1200, 0.02, 0.04, 'square', 0.02); },
+  turn:   () => { note(1400, 0, 0.03, 'square', 0.04); note(700, 0.03, 0.06, 'triangle', 0.07); },   // tick-tick
+  gear:   () => { for (let i = 0; i < 3; i++) note(1500 - i * 200, i * 0.03, 0.03, 'square', 0.04); note(300, 0, 0.1, 'triangle', 0.08); },
+  ungear: () => { note(500, 0, 0.08, 'triangle', 0.08, 250); },
+  jam:    () => { note(120, 0, 0.3, 'sawtooth', 0.1, 70); note(160, 0.12, 0.25, 'square', 0.06, 90); },
+  toggle: () => { note(660, 0, 0.06, 'sine', 0.1); note(990, 0.05, 0.08, 'sine', 0.07); },
+  untoggle: () => note(440, 0, 0.08, 'sine', 0.08, 300),
+  dial:   () => { note(2000, 0, 0.02, 'square', 0.04); note(1000, 0.01, 0.04, 'triangle', 0.05); },
+  nope:   () => { note(220, 0, 0.12, 'square', 0.08); note(185, 0.13, 0.2, 'square', 0.08); },
+  yes:    () => { [784, 988, 1175].forEach((f, i) => note(f, i * 0.05, 0.12, 'sine', 0.09)); },
+  flip:   () => { note(500, 0, 0.08, 'triangle', 0.08, 900); },
+  hint:   () => { [1319, 1568, 2093].forEach((f, i) => note(f, i * 0.06, 0.15, 'sine', 0.06)); },
+  undo:   () => { note(800, 0, 0.1, 'triangle', 0.07, 400); },
+  key:    () => { [1568, 2093, 2637].forEach((f, i) => note(f, i * 0.05, 0.12, 'sine', 0.08)); note(3136, 0.12, 0.2, 'triangle', 0.04); },   // jingle!
+  locked: () => { note(160, 0, 0.12, 'square', 0.09); note(140, 0.13, 0.18, 'square', 0.09); },
+  coin:   () => { note(988, 0, 0.08); note(1319, 0.07, 0.2); },
+  // 🔓 CLICK ... CLACK ... CLUNK!
+  unlock: () => {
+    note(2400, 0, 0.03, 'square', 0.07); note(1200, 0.01, 0.05, 'triangle', 0.08);                    // click
+    note(1800, 0.3, 0.04, 'square', 0.08); note(700, 0.31, 0.08, 'triangle', 0.1);                     // clack
+    note(110, 0.62, 0.45, 'sawtooth', 0.16, 45); note(70, 0.64, 0.5, 'square', 0.1, 35); note(300, 0.62, 0.1, 'square', 0.08, 120);   // CLUNK!
+  },
+  creak:  () => { note(180, 0, 0.6, 'sawtooth', 0.04, 260); note(240, 0.2, 0.5, 'triangle', 0.04, 160); },
+};
+function fanfare(d = 0) {                              // 🎺 the solve fanfare
+  [[72, 0], [76, 0.12], [79, 0.24], [84, 0.36], [79, 0.6], [84, 0.72], [88, 0.84]].forEach(([m, t], i) => {
+    note(midi(m), d + t, i === 6 ? 0.7 : 0.16, 'square', 0.07); note(midi(m - 12), d + t, i === 6 ? 0.7 : 0.16, 'triangle', 0.08);
+  });
+  note(midi(48), d, 1.6, 'sawtooth', 0.04);
+  [2093, 2637, 3136].forEach((f, i) => note(f, d + 0.84 + i * 0.05, 0.3, 'sine', 0.04));   // key sparkle on top
+}
+function bigFanfare() {                                // 🏆 the MASTER VAULT fanfare
+  fanfare(0);
+  [[67, 1.4], [72, 1.55], [76, 1.7], [79, 1.85], [84, 2.0], [88, 2.3], [91, 2.6]].forEach(([m, t], i) => { note(midi(m), t, i === 6 ? 1.2 : 0.2, 'square', 0.07); note(midi(m - 12), t, i === 6 ? 1.2 : 0.2, 'sawtooth', 0.04); });
+}
+
+
+
+// ---------- MUSIC ENGINE ----------
+// Every song has 5 tracks: LEAD (fat detuned synth + vibrato + echo), HARMONY / COUNTER-MELODY, CHORD PADS,
+// a punchy BASS (filter envelope) and DRUMS (kick, snare, hats, claps, toms made from oscillators + noise).
+// Songs are written in scale degrees, so the harmony can follow the melody and the final chorus can KEY CHANGE up.
+// Form: intro, verse, chorus, verse, chorus, bridge, chorus, KEY CHANGE chorus, tag = 64 bars, then it loops to the verse.
+let MUSIC_LOG = null;                                  // tests set this to an array to see every scheduled note
+const midi = n => 440 * Math.pow(2, (n - 69) / 12);
+function setupAudio() {
+  master = actx.createGain(); master.gain.value = 0.9;
+  if (actx.createDynamicsCompressor) {
+    const comp = actx.createDynamicsCompressor();
+    comp.threshold.value = -14; comp.ratio.value = 4; comp.attack.value = 0.005; comp.release.value = 0.2;
+    master.connect(comp); comp.connect(actx.destination);
+  } else master.connect(actx.destination);
+  musicBus = actx.createGain(); musicBus.gain.value = musicOn ? 0.6 : 0; musicBus.connect(master);
+  sfxBus = actx.createGain(); sfxBus.gain.value = 0.85; sfxBus.connect(master);
+  // feedback-delay echo for the lead (time is set per song)
+  delayIn = actx.createGain(); delayIn.gain.value = 0.28;
+  delayNode = actx.createDelay(2); delayNode.delayTime.value = 0.32;
+  const fb = actx.createGain(); fb.gain.value = 0.34;
+  const dlp = actx.createBiquadFilter(); dlp.type = 'lowpass'; dlp.frequency.value = 2400;
+  delayIn.connect(delayNode); delayNode.connect(dlp); dlp.connect(fb); fb.connect(delayNode); dlp.connect(musicBus);
+  noiseBuf = actx.createBuffer(1, actx.sampleRate, actx.sampleRate);
+  const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+}
+function toggleMusic() {
+  musicOn = !musicOn; save.music = musicOn; writeSave();
+  if (actx && musicBus) { const t = actx.currentTime; musicBus.gain.cancelScheduledValues(t); musicBus.gain.setValueAtTime(musicBus.gain.value, t); musicBus.gain.linearRampToValueAtTime(musicOn ? 0.6 : 0, t + 0.25); }
+  if (musicOn) { nextT = 0; }
+}
+// a smooth gain envelope: 0 -> peak (attack) -> sustain level -> 0 (release). No clicks!
+function envGain(t, a, peak, sus, dur, rel, out) {
+  const g = actx.createGain(), hold = t + Math.max(a + 0.002, dur);
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(peak, t + a);
+  if (sus < 1) g.gain.setTargetAtTime(peak * sus, t + a, Math.max(0.03, dur * 0.35));
+  g.gain.setTargetAtTime(0, hold, rel / 4);           // smooth exponential release, never a jump
+  g.connect(out);
+  return g;
+}
+function osc(type, f, t, end, detune = 0) {
+  const o = actx.createOscillator(); o.type = type; o.frequency.setValueAtTime(f, t);
+  if (detune) o.detune.setValueAtTime(detune, t);
+  o.start(t); o.stop(end + 0.05); return o;
+}
+function lowpass(f, q, t) { const b = actx.createBiquadFilter(); b.type = 'lowpass'; b.frequency.setValueAtTime(f, t); b.Q.value = q; return b; }
+// 🎺 LEAD: detuned oscillators, filter, delayed vibrato on long notes, and an echo send
+function leadVoice(m, t, dur, vol, kind, out, echo = true) {
+  const f = midi(m), end = t + dur + 0.25;
+  let g;
+  if (kind === 'steel' || kind === 'bell') {           // hit-and-ring voices (steel drum, crystal bell)
+    g = envGain(t, 0.004, vol, 0.25, Math.min(dur, 0.6), 0.25, out);
+    const parts = kind === 'steel' ? [[1, 1], [2, 0.35], [3.01, 0.12]] : [[1, 1], [2.01, 0.25], [4.02, 0.12], [5.4, 0.05]];
+    for (const [k, v] of parts) { const pg = actx.createGain(); pg.gain.value = v; osc('sine', f * k, t, end).connect(pg); pg.connect(g); }
+  } else {
+    g = envGain(t, kind === 'flute' || kind === 'glass' ? 0.035 : 0.012, vol, 0.8, dur, 0.12, out);
+    const types = { saw: ['sawtooth', 'sawtooth'], square: ['square', 'square'], brass: ['sawtooth', 'sawtooth'],
+                    flute: ['sine', 'triangle'], glass: ['triangle', 'sine'], reed: ['square', 'sawtooth'] }[kind] || ['sawtooth', 'square'];
+    const cut = { saw: 3000, square: 2600, brass: 1400, flute: 4000, glass: 3500, reed: 1900 }[kind] || 2800;
+    const lp = lowpass(cut, kind === 'brass' ? 3 : 1.5, t);
+    if (kind === 'brass') { lp.frequency.linearRampToValueAtTime(3600, t + 0.06); lp.frequency.setTargetAtTime(1700, t + 0.08, 0.2); }
+    lp.connect(g);
+    const o1 = osc(types[0], f, t, end, -7), o2 = osc(types[1], kind === 'glass' ? f * 2 : f, t, end, 7);
+    const mix = actx.createGain(); mix.gain.value = kind === 'glass' ? 0.6 : 0.5;
+    o1.connect(mix); o2.connect(mix); mix.connect(lp);
+    if (dur > 0.28) {                                  // vibrato fades in on held notes
+      const lfo = osc('sine', 5.6, t, end), lg = actx.createGain();
+      lg.gain.setValueAtTime(0, t); lg.gain.linearRampToValueAtTime(0, t + 0.12); lg.gain.linearRampToValueAtTime(f * 0.009, t + 0.4);
+      lfo.connect(lg); lg.connect(o1.frequency); lg.connect(o2.frequency);
+    }
+  }
+  if (echo && delayIn) g.connect(delayIn);
+}
+// 🎹 PAD: soft detuned saws (strings), a vowel-filtered "choir", or an organ
+function padVoice(notes, t, dur, vol, kind, out) {
+  for (const m of notes) {
+    const f = midi(m), end = t + dur + 0.6;
+    const g = envGain(t, kind === 'choir' ? 0.35 : 0.22, vol, 0.85, dur, 0.5, out);
+    if (kind === 'organ') {
+      osc('sine', f, t, end).connect(g);
+      const g2 = actx.createGain(); g2.gain.value = 0.4; osc('sine', f * 2, t, end).connect(g2); g2.connect(g);
+    } else if (kind === 'choir') {                     // "aah": two formant filters + slow vibrato
+      const src = actx.createGain(); src.gain.value = 0.5;
+      const o1 = osc('sawtooth', f, t, end, -9), o2 = osc('sawtooth', f, t, end, 9);
+      o1.connect(src); o2.connect(src);
+      for (const [ff, q, v] of [[730, 6, 1], [1090, 7, 0.6], [2440, 8, 0.25]]) {
+        const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = ff; bp.Q.value = q;
+        const bg = actx.createGain(); bg.gain.value = v * 2.2; src.connect(bp); bp.connect(bg); bg.connect(g);
+      }
+      const lfo = osc('sine', 4.8, t, end), lg = actx.createGain(); lg.gain.value = f * 0.006; lfo.connect(lg); lg.connect(o1.frequency); lg.connect(o2.frequency);
+    } else {
+      const lp = lowpass(kind === 'saw' ? 1500 : 1100, 0.7, t); lp.connect(g);
+      osc('sawtooth', f, t, end, -11).connect(lp); osc('sawtooth', f, t, end, 11).connect(lp);
+    }
+  }
+}
+// 🎸 BASS: punchy filter envelope
+function bassVoice(m, t, dur, vol, kind, out) {
+  const f = midi(m), end = t + dur + 0.1;
+  const g = envGain(t, 0.006, vol, 0.7, dur, 0.06, out);
+  const lp = lowpass(kind === 'slap' ? 3200 : 1600, kind === 'slap' ? 8 : 5, t);
+  lp.frequency.setTargetAtTime(kind === 'slap' ? 380 : 260, t + 0.01, kind === 'slap' ? 0.05 : 0.09);
+  lp.connect(g);
+  osc(kind === 'square' ? 'square' : 'sawtooth', f, t, end).connect(lp);
+  const sg = actx.createGain(); sg.gain.value = 0.6; osc(kind === 'sub' ? 'triangle' : 'sine', f, t, end).connect(sg); sg.connect(g);
+}
+// 🎨 COUNTER-MELODY / arpeggio pluck
+function pluckVoice(m, t, dur, vol, kind, out) {
+  const f = midi(m), end = t + dur + 0.2;
+  const g = envGain(t, 0.004, vol, 0.35, dur, 0.12, out);
+  if (kind === 'bell') { osc('sine', f, t, end).connect(g); const g2 = actx.createGain(); g2.gain.value = 0.3; osc('sine', f * 3.01, t, end).connect(g2); g2.connect(g); }
+  else { const lp = lowpass(2600, 1, t); lp.frequency.setTargetAtTime(900, t, 0.08); lp.connect(g); osc(kind === 'square' ? 'square' : 'triangle', f, t, end).connect(lp); osc('sawtooth', f, t, end, 5).connect(lp); }
+}
+function noiseHit(t, type, freq, q, vol, decay, out) {
+  const s = actx.createBufferSource(); s.buffer = noiseBuf;
+  const fl = actx.createBiquadFilter(); fl.type = type; fl.frequency.value = freq; fl.Q.value = q;
+  const g = actx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.002); g.gain.exponentialRampToValueAtTime(0.001, t + decay);
+  s.connect(fl); fl.connect(g); g.connect(out); s.start(t); s.stop(t + decay + 0.05);
+}
+// 🥁 DRUMS
+function drumHit(kind, t, vol, out) {
+  if (kind === 'k') {                                  // kick: a sine that drops in pitch fast
+    const o = osc('sine', 150, t, t + 0.35); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    const g = actx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.003); g.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
+    o.connect(g); g.connect(out);
+  } else if (kind === 's') {                           // snare: noise + a little tone
+    noiseHit(t, 'highpass', 1400, 0.7, vol * 0.8, 0.16, out);
+    const o = osc('triangle', 190, t, t + 0.1), g = actx.createGain();
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol * 0.5, t + 0.002); g.gain.exponentialRampToValueAtTime(0.001, t + 0.09); o.connect(g); g.connect(out);
+  } else if (kind === 'h') noiseHit(t, 'highpass', 7500, 1, vol, 0.04, out);
+  else if (kind === 'o') noiseHit(t, 'highpass', 6500, 1, vol, 0.22, out);
+  else if (kind === 'c') { for (let i = 0; i < 3; i++) noiseHit(t + i * 0.011, 'bandpass', 1500, 2, vol, 0.03 + (i === 2 ? 0.1 : 0), out); }
+  else if (kind === 'x') noiseHit(t, 'highpass', 4000, 0.5, vol, 1.2, out);          // crash cymbal
+  else if (kind === 'r') { const o = osc('sine', 2400, t, t + 0.06), g = actx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.002); g.gain.exponentialRampToValueAtTime(0.001, t + 0.04); o.connect(g); g.connect(out); }
+  else if (kind === 't') {                             // tom
+    const o = osc('sine', 140, t, t + 0.3); o.frequency.exponentialRampToValueAtTime(75, t + 0.25);
+    const g = actx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.003); g.gain.exponentialRampToValueAtTime(0.001, t + 0.28); o.connect(g); g.connect(out);
+  } else if (kind === 'g') {                           // 👾 glitch blip: a tiny jumpy square-wave chirp
+    const f0 = 700 + (Math.floor(t * 1000) % 7) * 260, o = osc('square', f0, t, t + 0.06), g = actx.createGain();
+    o.frequency.setValueAtTime(f0 * 1.5, t + 0.02); o.frequency.setValueAtTime(f0 * 0.75, t + 0.04);
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.002); g.gain.setValueAtTime(vol, t + 0.045); g.gain.linearRampToValueAtTime(0, t + 0.055);
+    o.connect(g); g.connect(out);
+  }
+}
+// ⏰ NEW drums for Robo Jump 7: w = clock TICK, q = clock TOCK (wood blocks), j = finger cymbals (Pyramid Moon)
+function drumX0(kind, t, vol, out) {
+  if (kind === 'w' || kind === 'q') {
+    const f0 = kind === 'w' ? 2100 : 1250, o = osc('triangle', f0, t, t + 0.06), g = actx.createGain();
+    o.frequency.exponentialRampToValueAtTime(f0 * 0.8, t + 0.04);
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.001); g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+    o.connect(g); g.connect(out);
+    noiseHit(t, 'bandpass', f0 * 1.5, 6, vol * 0.4, 0.02, out);
+  } else if (kind === 'j') {
+    for (const [f, v] of [[2637, 1], [3951, 0.5], [5274, 0.25]]) {
+      const o = osc('sine', f, t, t + 0.5), g = actx.createGain();
+      g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol * v, t + 0.002); g.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
+      o.connect(g); g.connect(out);
+    }
+  } else drumHit(kind, t, vol, out);
+}
+// ---- song compiler: scale degrees -> notes ----
+// Melody tokens (one per 8th note): 1-7 = scale degree, ' = octave up, , = octave down, b/# = flat/sharp, - = hold, . = rest. | = bar line.
+// Chords (one per bar, "4/5" = two per bar): degree number, M = make it major, m = minor, b = flat root (bVII), 7 = add the 7th.
+// 🔒 NEW drums for Robo Jump 8: n = CHAIN RATTLE (clanky metal links), y = KEY JINGLE (a ring of little keys)
+function drumX(kind, t, vol, out) {
+  if (kind === 'n') {                                  // ⛓️ a quick shake of metal links: 4 tiny clinks + a low clank
+    for (let i = 0; i < 4; i++) noiseHit(t + i * 0.018, 'bandpass', 3200 + ((i * 977) % 1700), 9, vol * (1 - i * 0.18), 0.035, out);
+    const o = osc('square', 410, t, t + 0.08), g = actx.createGain();
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol * 0.25, t + 0.002); g.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
+    o.connect(g); g.connect(out);
+  } else if (kind === 'y') {                           // 🔑 jingle jingle: little bell pings that land a hair apart
+    for (let i = 0; i < 5; i++) {
+      const f = [4186, 5274, 4699, 5920, 4435][i], tt = t + i * 0.012, o = osc('sine', f, tt, tt + 0.25), g = actx.createGain();
+      g.gain.setValueAtTime(0, tt); g.gain.linearRampToValueAtTime(vol * (1 - i * 0.12), tt + 0.002); g.gain.exponentialRampToValueAtTime(0.001, tt + 0.22);
+      o.connect(g); g.connect(out);
+    }
+  } else drumX0(kind, t, vol, out);
+}
+const SCALES = { major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10], dorian: [0, 2, 3, 5, 7, 9, 10], hijaz: [0, 1, 4, 5, 7, 8, 10] };   // hijaz = the Egyptian-sounding scale
+const degS = (sc, k) => sc[((k - 1) % 7 + 7) % 7] + 12 * Math.floor((k - 1) / 7);
+function parseMel(str, sc) {
+  return str.replace(/\|/g, ' ').trim().split(/\s+/).filter(Boolean).map(tk => {
+    if (tk === '.') return null;
+    if (tk === '-') return 'h';
+    const m = tk.match(/^([b#]?)([1-7])([',]*)$/);
+    if (!m) return null;
+    const acc = m[1] === 'b' ? -1 : m[1] === '#' ? 1 : 0, d = +m[2];
+    const oct = (m[3].match(/'/g) || []).length - (m[3].match(/,/g) || []).length;
+    let hd = d - 2, ho = oct; if (hd < 1) { hd += 7; ho--; }            // a third below, inside the scale
+    return { s: sc[d - 1] + acc + 12 * oct, hs: sc[hd - 1] + 12 * ho };
+  });
+}
+function melEvents(arr) {                              // onset -> length in 8ths (holds tie notes together)
+  const ev = new Array(arr.length).fill(null);
+  for (let i = 0; i < arr.length; i++) if (arr[i] && arr[i] !== 'h') { let n = 1; while (arr[i + n] === 'h') n++; ev[i] = Object.assign({ len: n }, arr[i]); }
+  return ev;
+}
+function mirrorMel(arr) {                              // 🪞 play a melody backwards (for Mirror City's bridge)
+  const runs = []; let i = 0;
+  while (i < arr.length) { let n = 1; while (arr[i + n] === 'h') n++; runs.push(arr.slice(i, i + n)); i += n; }
+  return runs.reverse().flat();
+}
+function parseChord(tk, sc) {
+  let flat = false; if (tk[0] === 'b') { flat = true; tk = tk.slice(1); }
+  const r = +tk[0], q = tk.slice(1), root = sc[r - 1] - (flat ? 1 : 0);
+  let third = flat ? root + 4 : root + ((degS(sc, r + 2) - sc[r - 1]) % 12 + 12) % 12;
+  if (q.includes('M')) third = root + 4;
+  if (q.includes('m')) third = root + 3;
+  const ch = [root, third, root + 7];
+  if (q.includes('7')) ch.push(root + ((degS(sc, r + 6) - sc[r - 1]) % 12 + 12) % 12);
+  return ch;
+}
+// ---- drum / bass / arpeggio styles. 16 steps per bar (12 for a waltz). Bass: R root, O octave, 5 fifth, - hold. Arp: chord tone 0-3.
+const STYLES = {
+  pop: {
+    I: { k: 'x.......x.......', h: '..x...x...x...x.', bass: 'R-------R---R-O-', arp: '0.1.2.1.0.1.2.1.' },
+    V: { k: 'x.....x.x.......', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', bass: 'R..R..R.R..R..O.', arp: '0.1.2.1.0.1.2.1.' },
+    V2: { k: 'x.....x.x.....x.', s: '....x.......x...', h: 'x.xxx.x.x.xxx.x.', bass: 'R..R..R.R..R.5O.', arp: '0121312101213121' },
+    C: { k: 'x...x...x...x...', s: '....x.......x...', h: 'x.xxx.x.x.xxx.x.', o: '..............x.', bass: 'R.RO.RR.R.RO.R5.', arp: '0121312101213121' },
+    B: { k: 'x.......x.......', s: '........x.......', h: 'x...x...x...x...', bass: 'R-------5-------', arp: '0...1...2...3...' } },
+  waltz: {
+    I: { k: 'x...........', h: '....x...x...', bass: 'R-----------', arp: '0...1...2...' },
+    V: { k: 'x...........', s: '....x...x...', h: 'x.x.x.x.x.x.', bass: 'R-..5-..5-..', arp: '0.1.2.3.2.1.' },
+    C: { k: 'x.....x.....', s: '....x...x...', h: 'xxx.x.x.xxx.', o: '..........x.', bass: 'R-..O-..5-..', arp: '012321012321' },
+    B: { k: 'x...........', s: '........x...', h: 'x...x...x...', bass: 'R-----------', arp: '0...2...3...' } },
+  calypso: {
+    I: { k: 'x...x...x...x...', r: 'x..x..x...x.x...', bass: 'R..5..R.R..5..O.', arp: '..0...1...0...2.' },
+    V: { k: 'x...x...x...x...', h: '..x...x...x...x.', r: 'x..x..x...x.x...', bass: 'R..5..R.R..5..O.', arp: '..0.1...0.2...1.' },
+    C: { k: 'x...x...x...x...', s: '....x.......x...', o: '..x...x...x...x.', r: 'x..x..x...x.x...', bass: 'R..5..R.R..O.5.R', arp: '..0.1.2...0.1.2.' },
+    B: { k: 'x.......x.......', r: 'x..x..x...x.x...', h: '..x...x...x...x.', bass: 'R-....5-R-....O-', arp: '0...1...2...1...' } },
+  funk: {
+    I: { k: 'x.....x...x.....', h: 'x.x.x.x.x.x.x.x.', bass: 'R..R.O..R.R..5O.' },
+    V: { k: 'x.....x...x..x..', s: '....x.......x...', c: '....x.......x...', h: 'xxxxxxxxxxxxxxxx', bass: 'R..R.O.RR..5.O.R', arp: '..0...1...0...2.' },
+    C: { k: 'x.....x...x..x..', s: '....x..x.x..x...', c: '....x.......x...', h: 'x.xxx.xxx.xxx.xx', o: '......x.......x.', bass: 'R.RO..R.R..O5.R.', arp: '0.0.1.1.2.2.1.1.' },
+    B: { k: 'x.........x.....', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', bass: 'R-..R-..5-..O-..', arp: '0...........1...' } },
+  sparkle: {
+    I: { h: '..x...x...x...x.', bass: 'R-------R-------', arp: '0123012301230123' },
+    V: { k: 'x.......x.......', s: '....x.......x...', h: '..x...x...x...x.', bass: 'R...R...R...O...', arp: '0123212301232123' },
+    C: { k: 'x...x...x...x...', s: '....x.......x...', h: 'xxxxxxxxxxxxxxxx', bass: 'R.R.O.R.R.R.O.5.', arp: '0123321001233210' },
+    B: { k: 'x...............', h: 'x...x...x...x...', bass: 'R-------5-------', arp: '3210321032103210' } },
+  mystery: {
+    I: { k: 'x...............', t: '..........x.....', bass: 'R---------------', arp: '0...2...1...3...' },
+    V: { k: 'x.......x.......', r: '......x.......x.', h: '..x...x...x...x.', bass: 'R.....R.R.......', arp: '0.2.1.2.0.2.1.2.' },
+    C: { k: 'x.....x.x.......', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', bass: 'R.....R.R...5...', arp: '0213021302130213' },
+    B: { k: 'x...............', r: '....x.......x...', h: '..x...x...x...x.', bass: 'R-------R-------', arp: '3...2...1...0...' } },
+  epic: {
+    I: { k: 'x.......x.......', t: '............x.x.', bass: 'R-------R-------' },
+    V: { k: 'x.....x.x.......', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', t: '..............xx', bass: 'R.R.R.R.R.R.R.R.', arp: '0...1...2...1...' },
+    C: { k: 'x...x.x.x...x.x.', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', o: '..x...x...x...x.', bass: 'R.R.O.R.R.R.O.R.', arp: '0.1.2.1.0.1.2.1.' },
+    B: { k: 'x.......x.......', t: 'x...x...x...xxxx', h: '..x...x...x...x.', bass: 'R-------5-------', arp: '0...........2...' } },
+  boss: {
+    I: { k: 'x...x...x...x...', h: 'xxxxxxxxxxxxxxxx', bass: 'R.R.R.R.R.R.R.R.' },
+    V: { k: 'x...x...x...x...', s: '....x.......x...', h: 'xxxxxxxxxxxxxxxx', bass: 'R.R.O.R.R.R.O.R.', arp: '0.1.2.1.0.1.2.1.' },
+    C: { k: 'x.x.x...x.x.x...', s: '....x.......x.x.', h: 'xxxxxxxxxxxxxxxx', o: '..x...x...x...x.', bass: 'R.R.O.R.R.R.O.R.', arp: '0121012101210121' },
+    B: { k: 'x.......x.......', s: '....x.......x...', t: '........x.x.xxxx', bass: 'R-------R-------', arp: '0...1...2...3...' } },
+  march: {
+    I: { k: 'x.......x.......', s: 'x..x..x.x.x.x.xx', bass: 'R-------5-------' },
+    V: { k: 'x...x...x...x...', s: '....x..x....x.xx', h: 'x.x.x.x.x.x.x.x.', bass: 'R...5...R...5...', arp: '0.1.2.1.0.1.2.1.' },
+    C: { k: 'x...x...x...x...', s: '....x..x....x.xx', h: 'x.x.x.x.x.x.x.x.', o: '..............x.', bass: 'R.R.5.5.R.R.O.5.', arp: '0121312101213121' },
+    B: { k: 'x.......x.......', s: 'x.x.x.x.x.x.xxxx', bass: 'R-------5-------', arp: '0...1...2...3...' } },
+};
+const DRUM_VOL = { k: 0.55, s: 0.3, h: 0.07, o: 0.06, c: 0.22, r: 0.09, t: 0.32, x: 0.1, g: 0.05, w: 0.06, q: 0.07, j: 0.035, n: 0.09, y: 0.03 };
+function compileSong(name, def) {
+  const sc = SCALES[def.scale || 'major'], spb = def.beats === 3 ? 12 : 16, per = spb / 2;
+  const secs = {};
+  for (const k in def.sec) {
+    const S = def.sec[k];
+    if (S.mirror) continue;
+    const ch = S.ch.trim().split(/\s+/).map(b => b.split('/').map(c => parseChord(c, sc)));
+    const mel = S.mel ? parseMel(S.mel, sc) : new Array(ch.length * per).fill(null);
+    secs[k] = { ch, mel, ev: melEvents(mel), bars: ch.length };
+  }
+  for (const k in def.sec) if (def.sec[k].mirror) {                    // mirrored section = another section backwards
+    const src = secs[def.sec[k].mirror], mel = mirrorMel(src.mel);
+    secs[k] = { ch: src.ch.slice().reverse(), mel, ev: melEvents(mel), bars: src.bars };
+  }
+  const form = def.form || ['I', 'V', 'C', 'V', 'C', 'B', 'C', 'K', 'T'], bars = [], reps = {};
+  for (const f of form) {
+    const key = f === 'K' ? 'C' : f === 'T' ? 'I' : f, S = secs[key], tr = (f === 'K' || f === 'T') ? (def.kc || 2) : 0;
+    reps[f] = (reps[f] || 0) + 1;
+    for (let i = 0; i < S.bars; i++) bars.push({ key, f, i, tr, rep: reps[f], last: i === S.bars - 1 });
+  }
+  const loopBar = Math.max(0, bars.findIndex(b => b.f === 'V'));
+  return Object.assign({}, def, { name, sc, spb, per, secs, bars, loopStep: loopBar * spb, total: bars.length * spb, style: STYLES[def.style] });
+}
+// ---- the scheduler: looks ahead and books notes a little early, so the timing is rock steady ----
+// ⏰ NEW styles: every era gets its own beat
+STYLES.clock = {                                       // 🕰️ tick... tock... (the main theme and the Clockwork Tower)
+  I: { k: 'x.......x.......', w: 'x...x...x...x...', q: '..x...x...x...x.', bass: 'R-------R-------', arp: '0...1...2...1...' },
+  V: { k: 'x.....x.x.......', s: '....x.......x...', w: 'x...x...x...x...', q: '..x...x...x...x.', h: 'x.x.x.x.x.x.x.x.', bass: 'R..R..R.R..R..O.', arp: '0.1.2.1.0.1.2.1.' },
+  C: { k: 'x...x...x...x...', s: '....x.......x...', w: 'x.x.x.x.x.x.x.x.', q: '.x.x.x.x.x.x.x.x', o: '..............x.', bass: 'R.RO.RR.R.RO.R5.', arp: '0121312101213121' },
+  B: { k: 'x.......x.......', t: '............x.x.', w: 'x...x...x...x...', q: '..x...x...x...x.', bass: 'R-------5-------', arp: '0...1...2...3...' } };
+STYLES.tribal = {                                      // 🦕 prehistoric drums: big toms + wooden clicks
+  I: { k: 'x.....x.x.......', t: '....x.......x.x.', bass: 'R-------R-------' },
+  V: { k: 'x.....x.x.....x.', t: '....x..x....x.xx', r: 'x..x..x.x..x..x.', bass: 'R..R..R.R...5...', arp: '0.1.2...0.1.2...' },
+  C: { k: 'x...x.x.x...x.x.', t: '..x.x..x..x.x.xx', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', bass: 'R.R.5.R.R.R.O.5.', arp: '0121012101210121' },
+  B: { k: 'x.......x.......', t: 'x..x..x.x..x..x.', bass: 'R-------5-------', arp: '0...1...2...1...' } };
+STYLES.desert = {                                      // 🐫 Pyramid Moon: a "doum-tek" drum groove + finger cymbals
+  I: { t: 'x.....x.x.......', j: '........x.......', bass: 'R---------------', arp: '0...1...2...1...' },
+  V: { k: 'x.....x.x.......', t: '...x..x...x.x...', r: '..x...x...x...x.', j: '....x.......x...', bass: 'R..R..R.R..R....', arp: '0...1...2...1...' },
+  C: { k: 'x.....x.x...x...', s: '....x.......x...', t: '...x..x...x.xxx.', r: 'x.x.x.x.x.x.x.x.', j: '....x.......x...', bass: 'R..R.OR.R..R.5..', arp: '0.1.2.1.0.1.2.1.' },
+  B: { k: 'x.......x.......', t: 'x..x..x.x.x.x...', j: 'x.......x.......', bass: 'R-------R-------', arp: '0...2...1...3...' } };
+STYLES.synth = {                                       // 🌃 Future Moon: four-on-the-floor + fast arpeggios
+  I: { k: 'x...x...x...x...', h: '..x...x...x...x.', bass: 'R.R.R.R.R.R.R.R.', arp: '0123012301230123' },
+  V: { k: 'x...x...x...x...', c: '....x.......x...', h: '..x...x...x...x.', bass: 'R.RO.RR.R.RO.RR.', arp: '0123012301230123' },
+  C: { k: 'x...x...x...x...', s: '....x.......x...', c: '....x.......x...', h: 'xxxxxxxxxxxxxxxx', o: '..x...x...x...x.', bass: 'R.RO.RRORR.O.RRO', arp: '0123321001233210' },
+  B: { k: 'x.......x.......', h: '..x...x...x...x.', bass: 'R-------R-------', arp: '3210321032103210' } };
+STYLES.tickboss = {                                    // ⏰ TIME ROBO: epic drums with a clock ticking on EVERY 8th note
+  I: { k: 'x.......x.......', w: 'x.x.x.x.x.x.x.x.', bass: 'R-------R-------' },
+  V: { k: 'x.....x.x.......', s: '....x.......x...', w: 'x.x.x.x.x.x.x.x.', q: 'x.......x.......', t: '..............xx', bass: 'R.R.R.R.R.R.R.R.', arp: '0...1...2...1...' },
+  C: { k: 'x...x.x.x...x.x.', s: '....x.......x...', w: 'x.x.x.x.x.x.x.x.', q: '.x.x.x.x.x.x.x.x', o: '..x...x...x...x.', bass: 'R.R.O.R.R.R.O.R.', arp: '0.1.2.1.0.1.2.1.' },
+  B: { k: 'x.......x.......', t: 'x...x...x...xxxx', w: 'x.x.x.x.x.x.x.x.', bass: 'R-------5-------', arp: '0...........2...' } };
+let song = 'title', songPos = 0, nextT = 0, songOut = null, SONGS = {};
+function setSong(name) {
+  if (song === name) return;
+  song = name; songPos = 0; nextT = 0;
+  if (songOut && actx) {                               // fade the old song out (no pops)
+    const g = songOut, t = actx.currentTime;
+    g.gain.cancelScheduledValues(t); g.gain.setValueAtTime(g.gain.value, t); g.gain.linearRampToValueAtTime(0, t + 0.4);
+    setTimeout(() => { try { g.disconnect(); } catch (_) {} }, 1200);
+  }
+  songOut = null;
+}
+const stepDur = S => 60 / S.bpm / 4;
+function logNote(track, m, b) { if (MUSIC_LOG) MUSIC_LOG.push({ song: song, track, m, f: b.f, tr: b.tr }); }
+function chordAt(S, b, st) { const c = S.secs[b.key].ch[b.i]; return c[st < S.spb / 2 || c.length < 2 ? 0 : 1]; }
+function scheduleStep(S, pos, t) {
+  const b = S.bars[Math.floor(pos / S.spb)], st = pos % S.spb, sd = stepDur(S), sec = S.secs[b.key], key = S.base + b.tr;
+  const out = songOut, inst = S.inst, sty = (b.f === 'V' && b.rep > 1 && S.style.V2) ? S.style.V2 : S.style[b.key] || S.style.V;
+  const swing = st % 2 ? (S.swing || 0) * sd : 0, tt = t + swing;
+  const ch = chordAt(S, b, st);
+  // 🥁 drums
+  for (const d of ['k', 's', 'h', 'o', 'c', 'r', 't', 'g', 'w', 'q', 'j', 'n', 'y']) {
+    let pat = sty[d];
+    if (b.last && st >= S.spb - 4 && (d === 's' || d === 't') && b.f !== 'T') pat = 'xxxxxxxxxxxxxxxx';   // drum fill at the end of each part
+    if (b.f === 'V' && b.rep === 1 && b.i < 2 && d === 's') continue;                                    // verse 1 starts gently
+    if (pat && pat[st] === 'x') { drumX(d, tt, DRUM_VOL[d] * (d === 's' && b.last && st >= S.spb - 4 ? 0.6 + (st - S.spb + 4) * 0.12 : 1), out); logNote('drum' + d, 0, b); }
+  }
+  if (st === 0 && b.i === 0 && (b.key === 'C' || b.f === 'B')) { drumHit('x', t, DRUM_VOL.x, out); logNote('drumx', 0, b); }
+  // 🎸 bass
+  const bp = sty.bass;
+  if (bp && bp[st] !== '.' && bp[st] !== '-') {
+    let n = 1; while (bp[st + n] === '-') n++;
+    const r = ((key + ch[0]) % 12 + 12) % 12 + 33, off = { R: 0, O: 12, 5: 7, 3: ch[1] - ch[0] }[bp[st]] || 0;
+    bassVoice(r + off, tt, n * sd * 0.92, 0.17 * (inst.bassVol || 1), inst.bass, out); logNote('bass', r + off, b);
+  }
+  // 🎹 pads (on each chord change)
+  if (st === 0 || (st === S.spb / 2 && sec.ch[b.i].length > 1)) {
+    const len = sec.ch[b.i].length > 1 ? S.spb / 2 : S.spb, base = S.base - 12;
+    const notes = ch.map(s => { let m = key + s; while (m < base - 9) m += 12; while (m > base + 4) m -= 12; return m; });
+    padVoice(notes, t, len * sd * 0.98, 0.034 * (inst.padVol || 1) * (b.f === 'I' ? 0.8 : 1), inst.pad, out); logNote('pad', notes[0], b);
+  }
+  // 🎨 counter-melody arpeggio
+  const ap = sty.arp;
+  if (ap && ap[st] !== '.' && ap[st] !== '-' && ap[st] !== undefined) {
+    const k = +ap[st], tones = ch.slice(0, 3).map(s => { let m = key + s; while (m < S.base - 7) m += 12; while (m >= S.base + 5) m -= 12; return m; }).sort((a, c) => a - c);
+    const m = k === 3 ? tones[0] + 12 : tones[k];
+    pluckVoice(m + (inst.arpOct || 0) * 12, tt, sd * (inst.arpLen || 1.6), 0.045 * (inst.arpVol || 1), inst.arp, out); logNote('arp', m, b);
+  }
+  // 🎺 lead melody (+ harmony a third below in choruses and the 2nd verse, + octave doubling after the KEY CHANGE)
+  // 💿 STUTTER: at the end of every 4th bar the lead SKIPS like a scratched record (the factory is glitching!)
+  const stut = S.stutter && b.f !== 'I' && b.f !== 'T' && b.i % 4 === 3 && st >= S.spb - 4;
+  if (stut) {
+    let j = b.i * S.per + S.per - 2; while (j > b.i * S.per && !sec.ev[j]) j--;
+    const e = sec.ev[j];
+    if (e) { const m = S.base + b.tr + e.s + (st === S.spb - 1 ? 12 : 0); leadVoice(m, tt, sd * 0.7, 0.1 * (inst.leadVol || 1), inst.lead, out, false); logNote('stutter', m, b); }
+    if (st === S.spb - 4) { drumHit('g', tt, DRUM_VOL.g * 1.4, out); logNote('drumg', 0, b); }
+  }
+  if (st % 2 === 0 && !stut) {
+    const e = sec.ev[b.i * S.per + st / 2];
+    if (e) {
+      const m = S.base + b.tr + e.s, dur = e.len * sd * 2 * 0.94, lv = 0.12 * (inst.leadVol || 1) * (b.f === 'I' || b.f === 'T' ? 0.85 : 1);
+      leadVoice(m, tt, dur, lv, inst.lead, out); logNote('lead', m, b);
+      if (b.key === 'C' || (b.f === 'V' && b.rep > 1) || b.f === 'B') { leadVoice(S.base + b.tr + e.hs, tt, dur, lv * 0.42, inst.harm || inst.lead, out, false); logNote('harm', S.base + b.tr + e.hs, b); }
+      if (b.f === 'K') { leadVoice(m + 12, tt, dur, lv * 0.28, inst.lead, out, false); logNote('lead8', m + 12, b); }
+    }
+  }
+}
+function playMusic() {
+  if (!actx || !musicBus || !musicOn) return;
+  const S = SONGS[song] || SONGS.title;
+  if (!songOut) {
+    songOut = actx.createGain(); songOut.gain.value = 1; songOut.connect(musicBus);
+    if (delayNode) delayNode.delayTime.setValueAtTime(stepDur(S) * 3, actx.currentTime);     // dotted-8th echo
+    nextT = 0;
+  }
+  if (nextT < actx.currentTime) nextT = actx.currentTime + 0.05;                               // first note or we fell behind
+  while (nextT < actx.currentTime + 0.16) {
+    scheduleStep(S, songPos, nextT);
+    nextT += stepDur(S); songPos++;
+    if (songPos >= S.total) songPos = S.loopStep;                                              // loop back to the first verse
+  }
+}
+DRUM_VOL.s = 0.22; DRUM_VOL.k = 0.45;                  // softer, cozier drums for a puzzle game
+// ☕ COZY: soft kick, rim clicks, brushy hats and the key ring jingling now and then
+STYLES.cozy = {
+  I: { k: 'x.......x.......', r: '....x.......x...', y: '........x.......', bass: 'R-------5-------', arp: '0.1.2.1.0.1.2.1.' },
+  V: { k: 'x.......x.......', r: '....x.......x...', h: '..x...x...x...x.', bass: 'R---5---R---5---', arp: '0.1.2.3.2.1.2.1.' },
+  C: { k: 'x.....x.x.......', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', y: '..............x.', bass: 'R--R5-..R--R5-O.', arp: '0121312101213121' },
+  B: { k: 'x...............', r: '....x.......x...', y: 'x.......x.......', bass: 'R-------5-------', arp: '3...2...1...0...' } };
+// 🎠 COZY WALTZ: a music-box waltz for thinking
+STYLES.cozywaltz = {
+  I: { k: 'x...........', y: '........x...', bass: 'R-----------', arp: '0...1...2...' },
+  V: { k: 'x...........', r: '....x...x...', bass: 'R-..5-..5-..', arp: '0.1.2.3.2.1.' },
+  C: { k: 'x.....x.....', r: '....x...x...', h: '..x...x...x.', bass: 'R-..O-..5-..', arp: '012321012321' },
+  B: { k: 'x...........', y: 'x...........', bass: 'R-----------', arp: '0...2...3...' } };
+// ⏰ TICK-TOCK WALTZ (the Time Vault): clock wood blocks in 3/4
+STYLES.clockwaltz = {
+  I: { w: 'x...x...x...', bass: 'R-----------', arp: '0...1...2...' },
+  V: { k: 'x...........', w: 'x...x...x...', q: '..x...x...x.', bass: 'R-..5-..5-..', arp: '0.1.2.3.2.1.' },
+  C: { k: 'x.....x.....', w: 'x.x.x.x.x.x.', q: '.x.x.x.x.x.x', y: '..........x.', bass: 'R-..O-..5-..', arp: '012321012321' },
+  B: { k: 'x...........', w: 'x...x...x...', bass: 'R-----------', arp: '0...2...3...' } };
+// ---------- THE SONGS (all original!) ----------
+// 🔐 "THE PUZZLE VAULT" (main theme): a cozy F major tune, like a warm room full of shiny locks
+const VAULT_SEC = {
+  I: { ch: '1 6 4 5', mel: "1' . 5 . 3 . 5 . | 6 . 3 . 1 . 3 . | 4 . 6 . 1' . 6 . | 5 - - - 7 - . ." },
+  V: { ch: '1 5 6 3 4 1 2 5',
+       mel: "5 . 1' . 3' - 2' 1' | 2' - - - 7 - . . | 6 . 1' . 3' - 2' 1' | 5 - - - . . 5 . | 4 . 6 . 1' - 7 6 | 5 - 3 - 1 - 3 . | 2 . 4 . 6 - 5 4 | 5 - - - . . . ." },
+  C: { ch: '4 5 3 6 2 5 1 1',
+       mel: "4' . 4' . 6' - 4' . | 5' - - - 2' - . . | 3' . 3' . 5' - 3' . | 1'' - - - 6' - . . | 6' . 5' . 4' - 2' . | 5' . 4' . 2' - 7 . | 1' - 3' - 5' - 3' - | 1' - - - . 5 6 7" },
+  B: { ch: '6 3 4 1 2 5 4 5',
+       mel: "6 - 1' - 3' - - 2' | 3' - - - 7 - . . | 4 - 6 - 1' - - 7 | 1' - - - 5 - . . | 2' . 4' . 6' . 4' . | 5' - - - 2' - . . | 4' . 3' . 2' . 1' . | 7 - - - 2' - 7 -" } };
+// 🎠 "TURN THE LITTLE KEY" (puzzle music): a gentle D major music-box waltz
+const THINK_SEC = {
+  I: { ch: '1 4 1 5', mel: "3 - 5 - 1' - | 6 - - - 4 - | 5 - 3 - 1 - | 2 - - - - -" },
+  V: { ch: '1 1 4 1 2 5 1 5',
+       mel: "3 - - 4 5 - | 1' - - - 5 - | 6 - - 5 4 - | 3 - - - - - | 2 - 3 4 - 6 | 5 - - 4 - 2 | 3 - 1 - 3 - | 5 - - - - -" },
+  C: { ch: '4 5 3 6 4 5 1 1',
+       mel: "6 - 1' - 4' - | 5' - - - 2' - | 3' - 5' - 3' - | 1' - - - 6 - | 4' - 3' - 1' - | 2' - - 7 - 5 | 1' - 3' - 5' - | 1' - - - - -" },
+  B: { ch: '6 2 5 1 4 2 5 5',
+       mel: "6 - - 5 6 - | 4 - - - 2 - | 7 - - 6 7 - | 1' - - - 5 - | 4 - 6 - 1' - | 2' - - 1' 6 - | 5 - 7 - 2' - | 5' - - - 4' 2'" } };
+const SONG_DEFS = {
+  title:  { bpm: 100, base: 65, style: 'cozy', kc: 2, swing: 0.06, inst: { lead: 'flute', harm: 'bell', pad: 'saw', padVol: 0.8, bass: 'sub', bassVol: 1.1, arp: 'bell', arpOct: 1, arpLen: 1.6, leadVol: 1.15 }, sec: VAULT_SEC },
+  think:  { bpm: 132, base: 62, style: 'cozywaltz', beats: 3, kc: 2, inst: { lead: 'bell', harm: 'glass', pad: 'organ', padVol: 0.8, bass: 'sub', arp: 'bell', arpOct: 1, arpLen: 1.4, leadVol: 1.25 }, sec: THINK_SEC },
+  gold:   { bpm: 104, base: 67, style: 'cozy', kc: 1, swing: 0.1, inst: { lead: 'steel', harm: 'bell', pad: 'organ', padVol: 0.9, bass: 'slap', bassVol: 1, arp: 'pluck', arpLen: 1, leadVol: 1.2 }, sec: VAULT_SEC },
+  glitch: { bpm: 136, base: 64, style: 'cozywaltz', beats: 3, kc: 2, stutter: true, inst: { lead: 'square', harm: 'glass', pad: 'saw', padVol: 0.8, bass: 'square', bassVol: 0.8, arp: 'square', arpOct: 1, arpLen: 0.8 }, sec: THINK_SEC },
+  time:   { bpm: 126, base: 60, style: 'clockwaltz', beats: 3, kc: 2, inst: { lead: 'glass', harm: 'bell', pad: 'choir', padVol: 1, bass: 'sub', arp: 'bell', arpOct: 1, arpLen: 1.2, leadVol: 1.15 }, sec: THINK_SEC },
+  master: { bpm: 108, base: 65, style: 'cozy', kc: 2, inst: { lead: 'brass', harm: 'saw', pad: 'choir', padVol: 1.3, bass: 'saw', arp: 'bell', arpLen: 1 }, sec: VAULT_SEC },
+  victory:{ bpm: 140, base: 65, style: 'march', kc: 2, form: ['I', 'C', 'V', 'C', 'B', 'C', 'K', 'K', 'T'], inst: { lead: 'brass', harm: 'brass', pad: 'choir', padVol: 1.2, bass: 'saw', arp: 'pluck' }, sec: VAULT_SEC },
+};
+for (const k in SONG_DEFS) SONGS[k] = compileSong(k, SONG_DEFS[k]);
+
+// ---------- Drawing helpers ----------
+let frame = 0;
+function roundRect(x, y, w, h, r, fill) {
+  ctx.fillStyle = fill; ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, Math.max(0, w), Math.max(0, h), r); else ctx.rect(x, y, Math.max(0, w), Math.max(0, h));
+  ctx.fill();
+}
+function strokeRR(x, y, w, h, r, col, lw) {
+  ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, Math.max(0, w), Math.max(0, h), r); else ctx.rect(x, y, Math.max(0, w), Math.max(0, h));
+  ctx.stroke();
+}
+function text(str, x, y, size, color = '#fff', align = 'center') {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`;
+  ctx.textAlign = align; ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = Math.max(3, size / 6);
+  ctx.strokeText(str, x, y); ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function plain(str, x, y, size, color = '#222', align = 'center') {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; ctx.textAlign = align; ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function wrap(str, maxW, size) {                       // split text into lines that fit
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`;
+  const out = [];
+  for (const para of String(str).split('\n')) {
+    let line = '';
+    for (const w of para.split(' ')) { const t = line ? line + ' ' + w : w; if (ctx.measureText(t).width > maxW && line) { out.push(line); line = w; } else line = t; }
+    out.push(line);
+  }
+  return out;
+}
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, 7); ctx.fill(); }
+function ellipse(x, y, rx, ry, fill, rot = 0) { ctx.fillStyle = fill; ctx.beginPath(); ctx.ellipse(x, y, Math.max(0, rx), Math.max(0, ry), rot, 0, 7); ctx.fill(); }
+function drawStar(x, y, r, fill, rot = 0) {
+  ctx.fillStyle = fill; ctx.beginPath();
+  for (let i = 0; i < 10; i++) { const a = rot + i * Math.PI / 5 - Math.PI / 2, rr = i % 2 ? r * 0.45 : r; ctx.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); }
+  ctx.fill();
+}
+function drawGear(x, y, r, a, fill, teeth = 10) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(a); ctx.fillStyle = fill; ctx.beginPath();
+  for (let i = 0; i < teeth * 2; i++) { const ang = i / (teeth * 2) * Math.PI * 2, rr = i % 2 ? r * 0.8 : r; ctx.lineTo(Math.cos(ang - 0.12) * rr, Math.sin(ang - 0.12) * rr); ctx.lineTo(Math.cos(ang + 0.12) * rr, Math.sin(ang + 0.12) * rr); }
+  ctx.fill(); circle(0, 0, r * 0.5, 'rgba(255,255,255,.18)'); circle(0, 0, r * 0.22, 'rgba(0,0,0,.4)'); ctx.restore();
+}
+function drawPadlock(x, y, s = 1, body = '#ffb300', open = 0) {   // (x, y) = middle of the lock body; open 0..1 lifts the shackle
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  ctx.strokeStyle = '#cfd8dc'; ctx.lineWidth = 5; ctx.beginPath();
+  const up = open * 8; ctx.arc(0, -10 - up, 9, Math.PI, 0); ctx.lineTo(9, -4 - up * (1 - open)); ctx.moveTo(-9, -10 - up); ctx.lineTo(-9, -4); ctx.stroke();
+  roundRect(-14, -6, 28, 22, 5, body); ctx.fillStyle = 'rgba(255,255,255,.3)'; ctx.fillRect(-11, -3, 22, 3);
+  circle(0, 3, 3.5, '#3e2723'); ctx.fillStyle = '#3e2723'; ctx.beginPath(); ctx.moveTo(-2, 4); ctx.lineTo(2, 4); ctx.lineTo(1.5, 11); ctx.lineTo(-1.5, 11); ctx.fill();
+  ctx.restore();
+}
+function drawChain(x1, y1, x2, y2, col = '#b0bec5', size = 1) {   // ⛓️ a chain of links
+  const len = Math.hypot(x2 - x1, y2 - y1), n = Math.max(1, Math.floor(len / (11 * size))), ang = Math.atan2(y2 - y1, x2 - x1);
+  ctx.save(); ctx.lineWidth = 3 * size;
+  for (let i = 0; i < n; i++) {
+    const u = (i + 0.5) / n, cx = x1 + (x2 - x1) * u, cy = y1 + (y2 - y1) * u;
+    ctx.strokeStyle = col; ctx.beginPath(); ctx.ellipse(cx, cy, 7 * size, i % 2 ? 4 * size : 1.8 * size, ang, 0, 7); ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawKey(x, y, s = 1, col = '#ffd740', rot = 0) {         // 🔑 a little key (x, y = middle)
+  ctx.save(); ctx.translate(x, y); ctx.rotate(rot); ctx.scale(s, s);
+  ctx.strokeStyle = col; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(-8, 0, 6, 0, 7); ctx.stroke();
+  ctx.fillStyle = col; ctx.fillRect(-2, -2, 16, 4); ctx.fillRect(9, 2, 3, 5); ctx.fillRect(4, 2, 3, 4);
+  ctx.restore();
+}
+// ---------- 🤖 Robo and 🔒 LOCK ROBO (built on Robo's own body) ----------
+const PAL_ROBO = { head: '#ffffff', body: '#f5f7ff', visor: '#111827', eye: '#40c4ff', legs: '#3d5afe', pod: '#2979ff' };
+const PAL_LOCK_NICE = { head: '#cfd8dc', body: '#eceff1', visor: '#1a237e', eye: '#ffd740', legs: '#90a4ae', pod: '#ffd740' };
+function drawRoboBase(x, y, w, h, face, pal) {         // Robo's exact look: round white body, dark visor, blue eyes, blue ear pods
+  ctx.fillStyle = pal.legs;
+  ctx.fillRect(x + 4, y + h - 7 * (h / 40), 8 * (w / 30), 7 * (h / 40)); ctx.fillRect(x + w - 4 - 8 * (w / 30), y + h - 7 * (h / 40), 8 * (w / 30), 7 * (h / 40));
+  roundRect(x + 2, y + h * 0.5, w - 4, h * 0.4, 6 * (w / 30), pal.body);
+  circle(x + w / 2, y + h * 0.7, 3 * (w / 30), pal.pod);
+  roundRect(x - 5 * (w / 30), y + h * 0.3 - 3, 6 * (w / 30), 9 * (h / 40), 3, pal.pod);
+  roundRect(x + w - 1 * (w / 30), y + h * 0.3 - 3, 6 * (w / 30), 9 * (h / 40), 3, pal.pod);
+  roundRect(x - 2, y, w + 4, h * 0.55, 12 * (w / 30), pal.head);
+  roundRect(x + 2, y + 4, w - 4, h * 0.55 - 9, 9 * (w / 30), pal.visor);
+  const ex = x + w / 2 + face * 3 * (w / 30), ey = y + h * 0.27, blink = frame % 180 < 6 ? 1 : 5 * (h / 40), es = w / 30;
+  ctx.fillStyle = pal.eye;
+  ctx.beginPath(); ctx.ellipse(ex - 6 * es, ey, 3.5 * es, Math.max(0.5, blink), 0, 0, 7); ctx.ellipse(ex + 6 * es, ey, 3.5 * es, Math.max(0.5, blink), 0, 0, 7); ctx.fill();
+}
+function drawRobo(x, y, w, h, face = 1) { drawRoboBase(x, y, w, h, face, PAL_ROBO); }
+// 🔒 LOCK ROBO (the NICE one): shiny silver, a padlock shackle on his head, a giant PADLOCK chest plate,
+// a glowing KEYHOLE in his visor, happy ^ ^ eyes, gold chains on his shoulders and a jingling ring of keys.
+// (x, y, w, h) = his box. o.talk = his mouth moves, o.wave = he waves a key
+function drawLockRobo(x, y, w, h, face = 1, o = {}) {
+  const pal = PAL_LOCK_NICE;
+  const rw = Math.min(w, h * 0.75) * 0.92, rh = rw / 0.75, rx = x + (w - rw) / 2, ry = y + h - rh, cx = rx + rw / 2, k = rw / 30;
+  const sway = Math.sin(frame * 0.12) * 3 * k;
+  for (const d of [-1, 1]) drawChain(cx + d * 15 * k, ry + rh * 0.52, cx + d * 19 * k + sway * d, ry + rh * 0.95, '#ffd740', 0.55 * k);
+  ctx.strokeStyle = '#ffd740'; ctx.lineWidth = Math.max(1.5, 3.2 * k);
+  ctx.beginPath(); ctx.arc(cx, ry + 2 * k, 8 * k, Math.PI, 0); ctx.stroke();
+  drawRoboBase(rx, ry, rw, rh, face, Object.assign({}, pal, { eye: pal.visor }));
+  roundRect(cx - 11 * k, ry + rh * 0.56, 22 * k, rh * 0.3, 4 * k, '#ffd740');
+  strokeRR(cx - 11 * k, ry + rh * 0.56, 22 * k, rh * 0.3, 4 * k, '#fff8e1', Math.max(1, 1.3 * k));
+  circle(cx, ry + rh * 0.66, 2.6 * k, '#1a1a1a'); ctx.fillStyle = '#1a1a1a'; ctx.beginPath(); ctx.moveTo(cx - 1.5 * k, ry + rh * 0.67); ctx.lineTo(cx + 1.5 * k, ry + rh * 0.67); ctx.lineTo(cx + 1 * k, ry + rh * 0.79); ctx.lineTo(cx - 1 * k, ry + rh * 0.79); ctx.fill();
+  // 🔑 his RING OF KEYS (3 keys) jingles on his belt
+  const kx = cx + face * -13 * k, ky = ry + rh * 0.88, jig = Math.sin(frame * 0.35) * 0.35;
+  ctx.strokeStyle = '#ffd740'; ctx.lineWidth = Math.max(1, 1.2 * k); ctx.beginPath(); ctx.arc(kx, ky, 3.2 * k, 0, 7); ctx.stroke();
+  for (let i = -1; i <= 1; i++) drawKey(kx + i * 2 * k, ky + 6 * k, 0.32 * k, i === 0 ? '#ffd740' : '#ffca28', Math.PI / 2 + i * 0.5 + jig);
+  // 🗝️ the KEYHOLE glowing in his visor
+  const vx = cx + face * 3 * k, vy = ry + rh * 0.27;
+  circle(vx, vy, 5 * k, 'rgba(255,215,64,.25)');
+  circle(vx, vy - 0.8 * k, 1.9 * k, '#ffd740');
+  ctx.fillStyle = '#ffd740'; ctx.beginPath(); ctx.moveTo(vx - 1 * k, vy); ctx.lineTo(vx + 1 * k, vy); ctx.lineTo(vx + 1.8 * k, vy + 4 * k); ctx.lineTo(vx - 1.8 * k, vy + 4 * k); ctx.fill();
+  const ex = cx + face * 3 * k, ey = ry + rh * 0.27;
+  ctx.strokeStyle = pal.eye; ctx.lineWidth = Math.max(1, 1.6 * k);
+  for (const d of [-1, 1]) { ctx.beginPath(); ctx.arc(ex + d * 8 * k, ey + 1 * k, 2.6 * k, Math.PI + 0.35, -0.35); ctx.stroke(); }   // happy ^ ^ eyes
+  if (o.talk && frame % 16 < 8) { ellipse(ex, ey + 7 * k, 2.4 * k, 1.8 * k, pal.eye); }
+  else { ctx.beginPath(); ctx.arc(ex, ey + 6.5 * k, 2.2 * k, 0.25, Math.PI - 0.25); ctx.stroke(); }
+  if (o.wave) {                                        // waving a big golden key
+    const a = Math.sin(frame * 0.15) * 0.4;
+    drawKey(rx + (face > 0 ? rw + 8 * k : -8 * k), ry + rh * 0.45 - 6 * k, 0.8 * k, '#ffd740', -Math.PI / 2 + a);
+  }
+}
+
+// ---------- 🎲 a seeded random number maker (the same puzzles every time) ----------
+function RNG(seed) { let a = seed >>> 0; const f = () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; f.int = n => Math.floor(f() * n); f.pick = a => a[Math.floor(f() * a.length)]; f.shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(f() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }; return f; }
+const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]];        // N E S W
+
+// ---------- 🗺️ The 5 vaults and their 48 doors ----------
+const WORLDS = [
+  { name: 'Silver Vault', emoji: '🥈', need: 0,  song: 'think',  bg: ['#37474f', '#90a4ae'], door: '#cfd8dc', trim: '#78909c' },
+  { name: 'Gold Vault',   emoji: '🥇', need: 8,  song: 'gold',   bg: ['#5d4037', '#ffb300'], door: '#ffd54f', trim: '#ff8f00' },
+  { name: 'Glitch Vault', emoji: '👾', need: 18, song: 'glitch', bg: ['#1a0033', '#00c853'], door: '#ea80fc', trim: '#00e676' },
+  { name: 'Time Vault',   emoji: '⏰', need: 28, song: 'time',   bg: ['#1a237e', '#7e57c2'], door: '#b39ddb', trim: '#ffd740' },
+  { name: 'MASTER VAULT', emoji: '👑', need: 36, song: 'master', bg: ['#0d1b3e', '#ffd740'], door: '#ffe082', trim: '#ffab00' },
+];
+const KIND_ORDER = ['slide', 'gear', 'pipe', 'dial', 'light', 'match'];
+const WORLD_LVLS = [[0, 1], [2, 3], [4, 5], [6], [7]];   // each kind has 8 levels: easy -> tricky
+const PUZZLES = [];
+WORLD_LVLS.forEach((lvs, w) => { for (const lv of lvs) for (const kind of KIND_ORDER) PUZZLES.push({ id: kind + lv, kind, lv, w }); });
+WORLDS.forEach((wd, w) => { wd.doors = PUZZLES.map((p, i) => i).filter(i => PUZZLES[i].w === w); });
+const keysHave = () => PUZZLES.filter(p => save.done[p.id]).length;
+const worldOpen = w => keysHave() >= WORLDS[w].need;
+const worldDone = w => WORLDS[w].doors.every(i => save.done[PUZZLES[i].id]);
+
+// ---------- 🎁 treasures behind every vault door ----------
+const FUNNY = [
+  ['🦆', 'a rubber duck wearing a tiny padlock'], ['🧦', 'one stripy sock (where is the other one?)'], ['🥪', 'a sandwich with a KEY in it. Don\'t eat the key!'],
+  ['🫙', 'a jar of pickled keys. Crunchy!'], ['👑', 'a crown made of bottle caps'], ['🍪', 'a key-shaped cookie'], ['🧸', 'a teddy bear in a tiny vault suit'],
+  ['🎈', 'a balloon that says HOORAY'], ['🥄', 'a golden spoon for golden soup'], ['🪀', 'a yo-yo that only goes up'], ['🧲', 'a magnet that sticks to Lock Robo'],
+  ['🐌', 'a snail with a padlock shell'], ['🎩', 'a top hat with a secret pocket'], ['🍌', 'a banana in a tiny safe'], ['🦖', 'a dinosaur that guards the snacks'],
+  ['🧀', 'a cheese with key-shaped holes'], ['🕶️', 'super cool vault sunglasses'], ['🪥', 'Lock Robo\'s spare toothbrush (he has no teeth!)'],
+];
+const STICKERS_IN = [['⭐', 'a shiny star sticker'], ['🌈', 'a rainbow sticker'], ['🔑', 'a golden key sticker'], ['🚀', 'a rocket sticker'], ['🐱', 'a kitty sticker'], ['🍕', 'a pizza sticker']];
+function treasureFor(i) {
+  if (i % 3 === 0) return { kind: 'coins', emoji: '🪙', name: 'a pile of 3 shiny coins!' };
+  if (i % 3 === 1) { const s = STICKERS_IN[(i / 3 | 0) % STICKERS_IN.length]; return { kind: 'sticker', emoji: s[0], name: s[1] + '!' }; }
+  const f = FUNNY[(i / 3 | 0) % FUNNY.length]; return { kind: 'item', emoji: f[0], name: f[1] + '!' };
+}
+
+// ---------- 🗣️ Lock Robo talks (the browser voice reads it out loud) ----------
+let robo = { text: '', t: 0 };
+function speak(line) {
+  try {
+    if (window.speechSynthesis && typeof SpeechSynthesisUtterance !== 'undefined') {
+      const u = new SpeechSynthesisUtterance(String(line).replace(/[*]/g, '').replace(/[^\x20-\x7E]/g, ''));
+      u.rate = 1.0; u.pitch = 0.8; u.volume = 1;
+      window.speechSynthesis.cancel(); window.speechSynthesis.speak(u);
+    }
+  } catch (_) {}
+}
+function roboSay(line, talkOut = true) { robo = { text: line, t: 0 }; if (talkOut) speak(line); }
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const LINES = {
+  solve: ['CLICK, CLACK, CLUNK! You opened it!', 'Woo-hoo! That vault is OPEN!', 'You are a super puzzle cracker!', '*jingle jingle* My keys are dancing for you!', 'Amazing! I knew you could do it!', 'Ta-da! Let\'s see what\'s inside!'],
+  hint: ['Psst! Try THIS one!', '*jingle* My keys told me... THIS one!', 'Here is a tiny secret. Look!', 'I peeked! Try this!', 'My keyhole eye sees a move! Look!'],
+  undo: ['Whoops! Back we go!', 'Undo! Like it never happened!', 'Zip zap, rewind!'],
+  reset: ['Fresh start! You\'ve got this!', 'All shiny and new again!'],
+};
+
+// =====================================================================================
+// 🧩 THE 6 PUZZLE KINDS. Each one has: make (build level lv), init, draw, down/move/up (touch + mouse),
+// key (arrows 'L' 'R' 'U' 'D' + 'A' = SPACE), solved, hint (Lock Robo shows the next move) and verify (a solver).
+// =====================================================================================
+const KINDS = {};
+const AREA = { x: 236, y: 64, w: 488, h: 446 };
+let P = null;                                          // the puzzle we are playing right now
+function before(p) { p.hist.push(JSON.stringify(p.s)); if (p.hist.length > 300) p.hist.shift(); }
+function moved(p) { p.hint = null; p.moves++; if (!p.won && p.K.solved(p)) puzzleSolved(); }
+const inR = (x, y, r) => x >= r[0] && x <= r[0] + r[2] && y >= r[1] && y <= r[1] + r[3];
+function moveCur(p, k, w, h) {
+  const d = { L: [-1, 0], R: [1, 0], U: [0, -1], D: [0, 1] }[k]; if (!d) return false;
+  p.cur.x = Math.max(0, Math.min(w - 1, p.cur.x + d[0])); p.cur.y = Math.max(0, Math.min(h - 1, p.cur.y + d[1])); sfx.click(); return true;
+}
+function drawCursor(x, y, w, h) {                      // the keyboard cursor: a dashed, glowing box
+  ctx.save(); ctx.strokeStyle = frame % 30 < 15 ? '#ffea00' : '#fff'; ctx.lineWidth = 4; if (ctx.setLineDash) ctx.setLineDash([10, 6]);
+  ctx.beginPath(); ctx.rect(x - 3, y - 3, w + 6, h + 6); ctx.stroke(); ctx.restore();
+}
+
+// ---------- 1. 🔑 SLIDE THE KEY (slide the blocks to get the golden key out) ----------
+const SL = { N: 6, cell: 64, bx: 288, by: 76 };
+function slCells(b, p) { const out = []; for (let k = 0; k < b.len; k++) out.push(b.h ? [p + k, b.r] : [b.c, p + k]); return out; }
+function slOcc(blocks, p) { const o = new Array(36).fill(0); blocks.forEach((b, i) => { for (const [x, y] of slCells(b, p[i])) o[y * 6 + x] = i + 1; }); return o; }
+function slRange(blocks, p, i, o) {
+  const b = blocks[i], free = (q) => { const [x, y] = b.h ? [q, b.r] : [b.c, q]; return o[y * 6 + x] === 0 || o[y * 6 + x] === i + 1; };
+  let lo = p[i], hi = p[i];
+  while (lo - 1 >= 0 && free(lo - 1)) lo--;
+  while (hi + b.len < 6 && free(hi + b.len)) hi++;
+  return [lo, hi];
+}
+function slNext(blocks, p) {                           // every move: [block, new position, new state]
+  const o = slOcc(blocks, p), out = [];
+  for (let i = 0; i < blocks.length; i++) { const [lo, hi] = slRange(blocks, p, i, o); for (let q = lo; q <= hi; q++) if (q !== p[i]) { const n = p.slice(); n[i] = q; out.push([i, q, n]); } }
+  return out;
+}
+function slSolve(blocks, p0, cap = 80000) {            // BFS: the fewest moves to get the key out
+  const k0 = p0.join(','), prev = new Map([[k0, null]]), q = [p0];
+  for (let h = 0; h < q.length; h++) {
+    const p = q[h];
+    if (p[0] === 4) { const path = []; let k = p.join(','); while (prev.get(k)) { const [pk, i, np] = prev.get(k); path.unshift([i, np]); k = pk; } return path; }
+    if (prev.size > cap) return null;
+    for (const [i, np, n] of slNext(blocks, p)) { const k = n.join(','); if (!prev.has(k)) { prev.set(k, [p.join(','), i, np]); q.push(n); } }
+  }
+  return null;
+}
+// the 8 boards, made ahead of time by make() below (so opening a door is instant on the iPad). [row, col, length, across?]
+const SLIDE_LEVELS = [[[2,1,2,1],[2,3,3,0],[1,3,2,1],[0,4,2,1]],[[2,1,2,1],[3,1,3,0],[0,4,3,0],[0,2,2,0],[2,3,2,0]],[[2,0,2,1],[5,3,2,1],[3,5,2,0],[1,4,2,0],[1,3,3,0],[4,0,2,1]],[[2,0,2,1],[0,5,3,0],[3,0,2,1],[5,4,2,1],[3,4,2,1],[4,1,2,1],[1,4,2,0]],[[2,0,2,1],[0,2,2,1],[4,3,3,1],[1,3,2,0],[2,5,2,0],[3,0,2,1],[0,4,2,1],[4,2,2,0]],[[2,2,2,1],[2,4,2,0],[4,0,3,1],[5,4,2,1],[0,5,3,0],[0,1,2,0],[0,3,2,1],[3,0,2,1],[3,3,3,0]],[[2,1,2,1],[1,3,3,0],[3,5,2,0],[1,4,2,0],[5,3,2,1],[0,0,2,0],[0,1,3,1],[0,4,2,1],[4,2,2,0],[4,3,2,1]],[[2,2,2,1],[4,0,2,0],[3,2,2,1],[4,1,2,1],[0,3,2,0],[2,4,2,0],[1,0,3,1],[4,3,2,1],[0,1,2,1],[3,0,2,1],[0,4,2,1]]];
+KINDS.slide = {
+  name: 'Slide the Key', emoji: '🔑', help: 'Slide the blocks out of the way, then slide the GOLDEN KEY out the door on the right!',
+  make(lv, rng, fresh) {
+    if (!fresh && SLIDE_LEVELS[lv]) { const bl = SLIDE_LEVELS[lv].map(([r, c, len, h]) => ({ r, c, len, h: !!h })); return { blocks: bl, par: slSolve(bl, bl.map(b => b.h ? b.c : b.r)).length }; }
+    const T = [2, 3, 4, 5, 6, 7, 8, 9][lv], nb = [3, 4, 5, 6, 7, 8, 9, 10][lv];
+    for (let tries = 0; tries < 600; tries++) {
+      const blocks = [{ r: 2, c: 0, len: 2, h: true }], p = [rng.int(3)];
+      for (let n = 0; n < nb; n++) for (let a = 0; a < 40; a++) {
+        const b = { len: rng() < 0.3 ? 3 : 2, h: rng() < 0.5 }; b.r = rng.int(b.h ? 6 : 7 - b.len); b.c = rng.int(b.h ? 7 - b.len : 6);
+        if (b.h && b.r === 2) continue;
+        const pp = b.h ? b.c : b.r, o = slOcc(blocks, p);
+        if (slCells(b, pp).some(([x, y]) => o[y * 6 + x])) continue;
+        blocks.push(b); p.push(pp); break;
+      }
+      if (blocks.length < nb + 1) continue;
+      // find every position this board can reach, then how far each one is from getting the key out
+      const seen = new Map([[p.join(','), p]]), q = [p];
+      for (let h = 0; h < q.length && seen.size < 30000; h++) for (const [, , n] of slNext(blocks, q[h])) { const k = n.join(','); if (!seen.has(k)) { seen.set(k, n); q.push(n); } }
+      if (seen.size >= 30000) continue;
+      const dist = new Map(), q2 = [];
+      for (const [k, s] of seen) if (s[0] === 4) { dist.set(k, 0); q2.push(s); }
+      if (!q2.length) continue;
+      for (let h = 0; h < q2.length; h++) { const d = dist.get(q2[h].join(',')); for (const [, , n] of slNext(blocks, q2[h])) { const k = n.join(','); if (!dist.has(k)) { dist.set(k, d + 1); q2.push(n); } } }
+      const good = [];
+      for (const [k, s] of seen) if (dist.get(k) === T && s[0] <= 2) good.push(s);
+      if (!good.length) continue;
+      const s = rng.pick(good);
+      return { blocks: blocks.map((b, i) => ({ r: b.h ? b.r : s[i], c: b.h ? s[i] : b.c, len: b.len, h: b.h })), par: T };
+    }
+    return null;
+  },
+  init(d) { return { p: d.blocks.map(b => b.h ? b.c : b.r) }; },
+  rect(p, i, pos) { const b = p.data.blocks[i], q = pos === undefined ? p.s.p[i] : pos, x = b.h ? q : b.c, y = b.h ? b.r : q;
+    return [SL.bx + x * SL.cell + 3, SL.by + y * SL.cell + 3, (b.h ? b.len : 1) * SL.cell - 6, (b.h ? 1 : b.len) * SL.cell - 6]; },
+  draw(p) {
+    const { cell, bx, by } = SL, d = p.data;
+    roundRect(bx - 14, by - 14, cell * 6 + 28, cell * 6 + 28, 16, '#263238');
+    roundRect(bx, by, cell * 6, cell * 6, 6, '#455a64');
+    ctx.strokeStyle = 'rgba(255,255,255,.08)'; ctx.lineWidth = 2;
+    for (let i = 1; i < 6; i++) { ctx.beginPath(); ctx.moveTo(bx + i * cell, by); ctx.lineTo(bx + i * cell, by + 6 * cell); ctx.moveTo(bx, by + i * cell); ctx.lineTo(bx + 6 * cell, by + i * cell); ctx.stroke(); }
+    roundRect(bx + 6 * cell - 2, by + 2 * cell + 4, 22, cell - 8, 4, '#ffd740');           // the EXIT door
+    text('➜', bx + 6 * cell + 30, by + 2 * cell + 42, 26, '#ffd740');
+    const COLS = ['#ef5350', '#42a5f5', '#66bb6a', '#ab47bc', '#ff7043', '#26c6da', '#ec407a', '#8d6e63', '#7e57c2', '#9ccc65', '#29b6f6'];
+    d.blocks.forEach((b, i) => {
+      let pos = p.s.p[i];
+      if (p.drag && p.drag.i === i) pos = p.drag.p0 + p.drag.off;
+      if (i === 0 && p.won) pos = 4 + Math.min(3, p.wonT * 0.12);
+      const [x, y, w, h] = this.rect(p, i, pos);
+      const glow = (p.grab === i) || (p.drag && p.drag.i === i);
+      if (glow) roundRect(x - 5, y - 5, w + 10, h + 10, 14, 'rgba(255,234,0,.6)');
+      if (i === 0) {
+        roundRect(x, y, w, h, 12, '#ffc400'); roundRect(x + 4, y + 4, w - 8, h * 0.35, 8, 'rgba(255,255,255,.35)');
+        drawKey(x + w / 2, y + h / 2, 2.6, '#8d6e00');
+      } else {
+        roundRect(x, y, w, h, 10, COLS[(i - 1) % COLS.length]); roundRect(x + 4, y + 4, w - 8, Math.min(h, w) * 0.3, 7, 'rgba(255,255,255,.25)');
+        for (const [rx, ry] of [[x + 9, y + 9], [x + w - 9, y + 9], [x + 9, y + h - 9], [x + w - 9, y + h - 9]]) circle(rx, ry, 3.5, 'rgba(0,0,0,.3)');   // bolts
+        ctx.strokeStyle = 'rgba(0,0,0,.25)'; ctx.lineWidth = 3; ctx.beginPath();                 // a little arrow showing which way it slides
+        if (b.h) { ctx.moveTo(x + w / 2 - 14, y + h / 2); ctx.lineTo(x + w / 2 + 14, y + h / 2); } else { ctx.moveTo(x + w / 2, y + h / 2 - 14); ctx.lineTo(x + w / 2, y + h / 2 + 14); }
+        ctx.stroke();
+      }
+    });
+    if (p.kb && !p.won) drawCursor(bx + p.cur.x * cell, by + p.cur.y * cell, cell, cell);
+  },
+  cellAt(x, y) { const cx = Math.floor((x - SL.bx) / SL.cell), cy = Math.floor((y - SL.by) / SL.cell); return cx >= 0 && cx < 6 && cy >= 0 && cy < 6 ? [cx, cy] : null; },
+  down(p, x, y) {
+    const c = this.cellAt(x, y); if (!c) return;
+    const o = slOcc(p.data.blocks, p.s.p), i = o[c[1] * 6 + c[0]] - 1; if (i < 0) return;
+    const [lo, hi] = slRange(p.data.blocks, p.s.p, i, o);
+    p.drag = { i, x0: x, y0: y, p0: p.s.p[i], lo, hi, off: 0, was: JSON.stringify(p.s) }; p.cur = { x: c[0], y: c[1] }; p.grab = null; sfx.click();
+  },
+  move(p, x, y) {
+    const g = p.drag; if (!g) return;
+    const b = p.data.blocks[g.i], d = (b.h ? x - g.x0 : y - g.y0) / SL.cell;
+    g.off = Math.max(g.lo, Math.min(g.hi, g.p0 + d)) - g.p0;
+  },
+  up(p) {
+    const g = p.drag; if (!g) return; p.drag = null;
+    const np = Math.round(g.p0 + g.off);
+    if (np !== g.p0) { p.hist.push(g.was); p.s.p[g.i] = np; sfx.slide(); moved(p); }
+  },
+  key(p, k) {
+    const bl = p.data.blocks;
+    if (k === 'A') { const o = slOcc(bl, p.s.p), i = o[p.cur.y * 6 + p.cur.x] - 1; p.grab = (i < 0 || p.grab === i) ? null : i; sfx.click(); return; }
+    if (p.grab != null) {
+      const i = p.grab, b = bl[i], dd = { L: -1, R: 1, U: -1, D: 1 }[k], along = b.h ? (k === 'L' || k === 'R') : (k === 'U' || k === 'D');
+      if (along) {
+        const [lo, hi] = slRange(bl, p.s.p, i, slOcc(bl, p.s.p)), np = p.s.p[i] + dd;
+        if (np >= lo && np <= hi) { before(p); p.s.p[i] = np; if (b.h) p.cur.x += dd; else p.cur.y += dd; sfx.slide(); moved(p); } else sfx.nope();
+        return;
+      }
+      p.grab = null;
+    }
+    moveCur(p, k, 6, 6);
+  },
+  solved(p) { return p.s.p[0] === 4; },
+  hint(p) {
+    const path = slSolve(p.data.blocks, p.s.p); if (!path || !path.length) return null;
+    const [i, np] = path[0], r0 = this.rect(p, i), r1 = this.rect(p, i, np), b = p.data.blocks[i];
+    const x0 = r0[0] + r0[2] / 2, y0 = r0[1] + r0[3] / 2, x1 = x0 + (r1[0] - r0[0]), y1 = y0 + (r1[1] - r0[1]);
+    return { rects: [r0], arrow: [x0, y0, x1, y1], say: pick(LINES.hint) + (i === 0 ? (np === 4 ? ' Slide the KEY out the door!' : ' Slide the KEY ' + (np > p.s.p[0] ? 'right' : 'left') + '!') : ' Slide this block ' + (b.h ? (np > p.s.p[i] ? 'right' : 'left') : (np > p.s.p[i] ? 'down' : 'up')) + '!'),
+             act: [{ t: 'drag', x0, y0, x1, y1 }] };
+  },
+  verify(d) { const path = slSolve(d.blocks, this.init(d).p, 200000); return { ok: !!path && path.length >= 1 && this.init(d).p[0] !== 4, moves: path ? path.length : -1 }; },
+};
+
+// ---------- 2. ⚙️ GEAR TURNER (put gears on the pegs so they mesh from the motor to the vault wheel) ----------
+// Gears that touch (up/down/left/right) mesh and turn together. A RUSTY gear is stuck: if your chain touches it, it JAMS!
+function gearGeo(d) { const cell = Math.min(Math.floor(440 / d.w), Math.floor(320 / d.h), 74); return { cell, gx: 480 - d.w * cell / 2, gy: 86 + (320 - d.h * cell) / 2 }; }
+function gearIsGear(d, s, i) { const c = d.cells[i]; return c === 'M' || c === 'W' || c === 'X' || (c === '.' && s.g[i]); }
+function gearComp(d, s) {                              // every gear that turns with the motor
+  const m = d.motor[1] * d.w + d.motor[0], seen = new Set([m]), q = [m];
+  for (let h = 0; h < q.length; h++) { const x = q[h] % d.w, y = q[h] / d.w | 0;
+    for (const [dx, dy] of DIRS) { const nx = x + dx, ny = y + dy, j = ny * d.w + nx; if (nx >= 0 && ny >= 0 && nx < d.w && ny < d.h && !seen.has(j) && gearIsGear(d, s, j)) { seen.add(j); q.push(j); } } }
+  return seen;
+}
+function gearJam(d, comp) { for (const i of comp) if (d.cells[i] === 'X') return true; return false; }
+function gearOK(d, i) {                                // a peg where a gear will NOT touch a rusty one
+  if (d.cells[i] !== '.') return false; const x = i % d.w, y = i / d.w | 0;
+  return !DIRS.some(([dx, dy]) => { const nx = x + dx, ny = y + dy; return nx >= 0 && ny >= 0 && nx < d.w && ny < d.h && d.cells[ny * d.w + nx] === 'X'; });
+}
+function gearPath(d) {                                 // BFS: the shortest safe chain of pegs from the motor to the wheel
+  const start = d.motor[1] * d.w + d.motor[0], goal = d.wheel[1] * d.w + d.wheel[0], prev = new Map([[start, -1]]), q = [start];
+  for (let h = 0; h < q.length; h++) { const i = q[h], x = i % d.w, y = i / d.w | 0;
+    for (const [dx, dy] of DIRS) { const nx = x + dx, ny = y + dy, j = ny * d.w + nx; if (nx < 0 || ny < 0 || nx >= d.w || ny >= d.h || prev.has(j)) continue;
+      if (j === goal) { const path = []; let k = i; while (k !== start) { path.unshift(k); k = prev.get(k); } return path; }
+      if (gearOK(d, j)) { prev.set(j, i); q.push(j); } } }
+  return null;
+}
+KINDS.gear = {
+  name: 'Gear Turner', emoji: '⚙️', help: 'Tap the pegs to put on gears. Make a chain from the green MOTOR to the VAULT WHEEL! Don\'t touch the rusty gears!',
+  make(lv, rng) {
+    const w = [5, 6, 6, 7, 7, 8, 8, 8][lv], h = [3, 3, 4, 4, 5, 5, 5, 5][lv], nw = [1, 2, 3, 4, 6, 7, 8, 9][lv], ns = [0, 0, 1, 1, 2, 2, 3, 3][lv];
+    const minL = w - 2 + Math.floor(lv / 2) + (lv > 0 ? 1 : 0);
+    for (let tries = 0; tries < 3000; tries++) {
+      const cells = new Array(w * h).fill('.'), motor = [0, rng.int(h)], wheel = [w - 1, rng.int(h)];
+      cells[motor[1] * w] = 'M'; cells[wheel[1] * w + w - 1] = 'W';
+      const free = () => { for (let a = 0; a < 50; a++) { const i = rng.int(w * h); if (cells[i] === '.') return i; } return -1; };
+      for (let k = 0; k < nw; k++) { const i = free(); if (i >= 0) cells[i] = '#'; }
+      for (let k = 0; k < ns; k++) for (let a = 0; a < 40; a++) { const i = free(); if (i < 0) continue; const x = i % w;
+        if (x < 2 || x > w - 3) continue; cells[i] = 'X'; break; }
+      if (cells.filter(c => c === 'X').length < ns) continue;
+      const d = { w, h, cells, motor, wheel };
+      const path = gearPath(d); if (!path || path.length < minL || path.length > minL + 4) continue;
+      d.sol = path; d.n = path.length + (lv < 3 ? 1 : 0); return d;
+    }
+    return null;
+  },
+  init(d) { return { g: new Array(d.w * d.h).fill(0) }; },
+  left(p) { return p.data.n - p.s.g.reduce((a, b) => a + b, 0); },
+  draw(p) {
+    const d = p.data, { cell, gx, gy } = gearGeo(d), s = p.s, comp = gearComp(d, s), jam = gearJam(d, comp), win = comp.has(d.wheel[1] * d.w + d.wheel[0]) && !jam;
+    roundRect(gx - 14, gy - 14, d.w * cell + 28, d.h * cell + 28, 16, '#3e2723');
+    roundRect(gx - 6, gy - 6, d.w * cell + 12, d.h * cell + 12, 10, '#5d4037');
+    const mPar = (d.motor[0] + d.motor[1]) % 2, spin = frame * 0.04;
+    for (let i = 0; i < d.w * d.h; i++) {
+      const x = i % d.w, y = i / d.w | 0, cx = gx + x * cell + cell / 2, cy = gy + y * cell + cell / 2, c = d.cells[i];
+      const dir = (x + y) % 2 === mPar ? 1 : -1, turning = comp.has(i) && !jam, wob = comp.has(i) && jam ? Math.sin(frame * 0.8) * 0.08 : 0;
+      const a = (turning ? spin * dir : 0) + wob + (x + y) % 2 * 0.31;
+      if (c === '#') { roundRect(gx + x * cell + 3, gy + y * cell + 3, cell - 6, cell - 6, 8, '#78909c'); for (const [ox, oy] of [[10, 10], [cell - 10, 10], [10, cell - 10], [cell - 10, cell - 10]]) circle(gx + x * cell + ox, gy + y * cell + oy, 3.5, '#455a64'); continue; }
+      circle(cx, cy, 5, 'rgba(0,0,0,.35)');                                    // the peg
+      if (c === 'M') { roundRect(cx - cell * 0.46, cy - cell * 0.46, cell * 0.92, cell * 0.92, 10, '#2e7d32'); drawGear(cx, cy, cell * 0.4, a, '#a5d6a7'); text('⚡', cx, cy + 9, cell * 0.36); }
+      else if (c === 'W') {                                                    // the big round VAULT WHEEL
+        circle(cx, cy, cell * 0.5, '#ff8f00'); drawGear(cx, cy, cell * 0.46, a, '#ffd740', 12);
+        ctx.save(); ctx.translate(cx, cy); ctx.rotate(a); ctx.strokeStyle = '#8d6e00'; ctx.lineWidth = 4;
+        for (let k = 0; k < 3; k++) { ctx.rotate(Math.PI / 3); ctx.beginPath(); ctx.moveTo(-cell * 0.32, 0); ctx.lineTo(cell * 0.32, 0); ctx.stroke(); }
+        ctx.restore(); circle(cx, cy, cell * 0.1, '#8d6e00');
+      } else if (c === 'X') { drawGear(cx, cy, cell * 0.44, wob + 0.2, '#a1663a'); circle(cx - 8, cy + 6, 4, '#6d3b1a'); circle(cx + 9, cy - 7, 3, '#6d3b1a'); text('!', cx, cy + 10, cell * 0.4, '#ff5252'); }
+      else if (s.g[i]) drawGear(cx, cy, cell * 0.47, a, turning ? '#e0e0e0' : '#b0bec5');
+    }
+    if (p.kb && !p.won) drawCursor(gx + p.cur.x * cell, gy + p.cur.y * cell, cell, cell);
+    const left = this.left(p), ty = gy + d.h * cell + 46;
+    text('⚙️ Gears left: ' + left, 480, ty, 26, left ? '#fff' : '#ffab91');
+    if (jam) text('JAMMED! A rusty gear is stuck!', 480, ty + 34, 22, '#ff8a80');
+    else if (win) text('The vault wheel is TURNING!', 480, ty + 34, 22, '#b9f6ca');
+  },
+  cellAt(p, x, y) { const d = p.data, { cell, gx, gy } = gearGeo(d), cx = Math.floor((x - gx) / cell), cy = Math.floor((y - gy) / cell); return cx >= 0 && cy >= 0 && cx < d.w && cy < d.h ? [cx, cy] : null; },
+  toggle(p, x, y) {
+    const d = p.data, i = y * d.w + x; p.cur = { x, y };
+    if (d.cells[i] === 'X') { sfx.locked(); roboSay('That gear is all rusty and STUCK. Keep your gears away from it!'); return; }
+    if (d.cells[i] !== '.') return;
+    if (!p.s.g[i] && this.left(p) <= 0) { sfx.nope(); roboSay('Out of gears! Tap a gear to take it off first.'); return; }
+    before(p); p.s.g[i] = p.s.g[i] ? 0 : 1; p.s.g[i] ? sfx.gear() : sfx.ungear();
+    const comp = gearComp(d, p.s); if (gearJam(d, comp) && p.s.g[i]) { sfx.jam(); roboSay('Uh oh! JAMMED! That gear touches a rusty one. Tap it to take it off!'); }
+    moved(p);
+  },
+  down(p, x, y) { const c = this.cellAt(p, x, y); if (c) this.toggle(p, c[0], c[1]); },
+  key(p, k) { if (k === 'A') this.toggle(p, p.cur.x, p.cur.y); else moveCur(p, k, p.data.w, p.data.h); },
+  solved(p) { const comp = gearComp(p.data, p.s); return comp.has(p.data.wheel[1] * p.data.w + p.data.wheel[0]) && !gearJam(p.data, comp); },
+  hint(p) {
+    const d = p.data, s = p.s, comp = gearComp(d, s), { cell, gx, gy } = gearGeo(d);
+    const at = i => { const x = i % d.w, y = i / d.w | 0; return { r: [gx + x * cell, gy + y * cell, cell, cell], act: [{ t: 'tap', x: gx + x * cell + cell / 2, y: gy + y * cell + cell / 2 }] }; };
+    let i = -1, say = '';
+    if (gearJam(d, comp)) { i = [...comp].findIndex(j => s.g[j] && !gearOK(d, j)); i = i >= 0 ? [...comp][i] : -1; say = 'Take off THIS gear. It touches a rusty one!'; }
+    if (i < 0) { const need = d.sol.filter(j => !s.g[j]);
+      if (need.length && this.left(p) < need.length) { i = s.g.findIndex((v, j) => v && !d.sol.includes(j)); say = 'Take off THIS gear. You need it somewhere else!'; }
+      else if (need.length) { i = need[0]; say = pick(LINES.hint) + ' Put a gear HERE!'; } }
+    if (i < 0) return null;
+    const a = at(i); return { rects: [a.r], say, act: a.act };
+  },
+  verify(d) { const path = gearPath(d); return { ok: !!path && path.length <= d.n && path.length > 0, moves: path ? path.length : -1 }; },
+};
+
+// ---------- 3. 🚰 PIPE LOCK (turn the pipes so the golden flow reaches the lock) ----------
+// A pipe tile's openings are bits: N=1 E=2 S=4 W=8. Tapping turns it a quarter turn clockwise.
+const rotM = m => ((m << 1) | (m >> 3)) & 15;
+function pipeGeo(d) { const cell = Math.min(Math.floor(400 / d.w), Math.floor(330 / d.h), 86); return { cell, gx: 480 - d.w * cell / 2, gy: 84 + (330 - d.h * cell) / 2 }; }
+function pipeFlow(d, m) {                              // which tiles the golden flow fills
+  const full = new Set(), st = d.rs * d.w; if (!(m[st] & 8)) return full;
+  full.add(st); const q = [st];
+  for (let h = 0; h < q.length; h++) { const i = q[h], x = i % d.w, y = i / d.w | 0;
+    for (let k = 0; k < 4; k++) { if (!(m[i] & (1 << k))) continue; const nx = x + DIRS[k][0], ny = y + DIRS[k][1], j = ny * d.w + nx;
+      if (nx < 0 || ny < 0 || nx >= d.w || ny >= d.h || full.has(j) || !(m[j] & (1 << ((k + 2) % 4)))) continue; full.add(j); q.push(j); } }
+  return full;
+}
+function pipeDone(d, m) { const e = d.re * d.w + d.w - 1; return pipeFlow(d, m).has(e) && !!(m[e] & 2); }
+function pipeSolve(d, budget = 400000) {               // a real solver: find a path where every tile can be turned to fit
+  const end = d.re * d.w + d.w - 1, seen = new Set(); let n = 0;
+  const go = (i, entry) => {
+    if (++n > budget) return null;
+    const x = i % d.w, y = i / d.w | 0; let r = d.m0[i];
+    const shapes = new Set(); for (let k = 0; k < 4; k++) { shapes.add(r); r = rotM(r); }
+    seen.add(i);
+    for (const s of shapes) { if (!(s & (1 << entry))) continue;
+      for (let k = 0; k < 4; k++) { if (k === entry || !(s & (1 << k))) continue;
+        if (i === end && k === 1) { seen.delete(i); return [[i, s]]; }
+        const nx = x + DIRS[k][0], ny = y + DIRS[k][1], j = ny * d.w + nx;
+        if (nx < 0 || ny < 0 || nx >= d.w || ny >= d.h || seen.has(j)) continue;
+        const rest = go(j, (k + 2) % 4); if (rest) { seen.delete(i); return [[i, s]].concat(rest); } } }
+    seen.delete(i); return null;
+  };
+  return go(d.rs * d.w, 3);
+}
+KINDS.pipe = {
+  name: 'Pipe Lock', emoji: '🚰', help: 'Tap a pipe to turn it. Connect the golden flow from the key tank to the LOCK!',
+  make(lv, rng) {
+    const w = [3, 4, 4, 5, 5, 6, 6, 7][lv], h = [3, 3, 4, 4, 4, 4, 5, 5][lv], minLen = w + Math.floor(lv / 2) + (lv > 2 ? 2 : 0);
+    for (let tries = 0; tries < 2000; tries++) {
+      const rs = rng.int(h), re = rng.int(h), end = re * w + w - 1, vis = new Set();
+      const dfs = (i) => { vis.add(i); if (i === end) return [i];
+        const x = i % w, y = i / w | 0, order = rng.shuffle([0, 1, 2, 3]);
+        for (const k of order) { const nx = x + DIRS[k][0], ny = y + DIRS[k][1], j = ny * w + nx; if (nx < 0 || ny < 0 || nx >= w || ny >= h || vis.has(j)) continue;
+          const r = dfs(j); if (r) return [i].concat(r); }
+        return null; };
+      const path = dfs(rs * w); if (!path || path.length < minLen || path.length > minLen + w + 2) continue;
+      const sol = new Array(w * h).fill(-1), m0 = new Array(w * h);
+      const dirTo = (a, b) => { const dx = b % w - a % w, dy = (b / w | 0) - (a / w | 0); return DIRS.findIndex(q => q[0] === dx && q[1] === dy); };
+      path.forEach((c, k) => { const ent = k === 0 ? 3 : dirTo(c, path[k - 1]), ex = k === path.length - 1 ? 1 : dirTo(c, path[k + 1]); sol[c] = (1 << ent) | (1 << ex); });
+      const decoys = lv >= 3 ? [5, 10, 3, 6, 12, 9, 7, 14, 13, 11] : [5, 10, 3, 6, 12, 9];
+      for (let i = 0; i < w * h; i++) { let m = sol[i] >= 0 ? sol[i] : rng.pick(decoys); for (let r = rng.int(4); r > 0; r--) m = rotM(m); m0[i] = m; }
+      let wrong = path.filter(c => m0[c] !== sol[c]).length;
+      for (const c of path) if (wrong < Math.min(path.length, 2 + lv) && m0[c] === sol[c]) { m0[c] = rotM(m0[c]); if (m0[c] !== sol[c]) wrong++; }
+      const d = { w, h, rs, re, m0, sol, path };
+      if (pipeDone(d, m0)) continue;
+      return d;
+    }
+    return null;
+  },
+  init(d) { return { m: d.m0.slice() }; },
+  draw(p) {
+    const d = p.data, { cell, gx, gy } = pipeGeo(d), m = p.s.m, full = pipeFlow(d, m), done = pipeDone(d, m);
+    roundRect(gx - 12, gy - 12, d.w * cell + 24, d.h * cell + 24, 14, '#0d47a1');
+    // the golden KEY TANK on the left, and the LOCK on the right
+    const sy = gy + d.rs * cell + cell / 2, ey = gy + d.re * cell + cell / 2;
+    roundRect(gx - 54, sy - 30, 44, 60, 10, '#ffb300'); drawKey(gx - 32, sy, 1.1, '#fff8e1'); ctx.fillStyle = '#ffd740'; ctx.fillRect(gx - 12, sy - cell * 0.14, 12, cell * 0.28);
+    ctx.fillStyle = done ? '#ffd740' : '#90a4ae'; ctx.fillRect(gx + d.w * cell, ey - cell * 0.14, 14, cell * 0.28);
+    drawPadlock(gx + d.w * cell + 34, ey, 1.4, done ? '#ffd740' : '#90a4ae', done ? Math.min(1, p.wonT / 10) : 0);
+    for (let i = 0; i < d.w * d.h; i++) {
+      const x = i % d.w, y = i / d.w | 0, cx = gx + x * cell + cell / 2, cy = gy + y * cell + cell / 2;
+      roundRect(gx + x * cell + 3, gy + y * cell + 3, cell - 6, cell - 6, 10, (x + y) % 2 ? '#1565c0' : '#1976d2');
+      const sp = (p.spin && p.spin[i]) || 0;
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(-sp / 8 * Math.PI / 2);
+      const col = full.has(i) ? '#ffd740' : '#cfd8dc', lw = cell * 0.26;
+      ctx.lineCap = 'round';
+      for (let k = 0; k < 4; k++) if (m[i] & (1 << k)) {
+        ctx.strokeStyle = '#263238'; ctx.lineWidth = lw + 6; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(DIRS[k][0] * cell / 2, DIRS[k][1] * cell / 2); ctx.stroke();
+      }
+      for (let k = 0; k < 4; k++) if (m[i] & (1 << k)) {
+        ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(DIRS[k][0] * cell / 2, DIRS[k][1] * cell / 2); ctx.stroke();
+      }
+      circle(0, 0, lw * 0.62, col);
+      if (full.has(i)) circle(Math.sin(frame * 0.2 + i) * 3, 0, lw * 0.22, '#fff8e1');
+      ctx.restore();
+    }
+    if (p.kb && !p.won) drawCursor(gx + p.cur.x * cell, gy + p.cur.y * cell, cell, cell);
+  },
+  update(p) { if (p.spin) for (const k in p.spin) if (p.spin[k] > 0) p.spin[k]--; },
+  turn(p, x, y) { const i = y * p.data.w + x; p.cur = { x, y }; before(p); p.s.m[i] = rotM(p.s.m[i]); p.spin = p.spin || {}; p.spin[i] = 8; sfx.turn(); moved(p); },
+  down(p, x, y) { const d = p.data, { cell, gx, gy } = pipeGeo(d), cx = Math.floor((x - gx) / cell), cy = Math.floor((y - gy) / cell); if (cx >= 0 && cy >= 0 && cx < d.w && cy < d.h) this.turn(p, cx, cy); },
+  key(p, k) { if (k === 'A') this.turn(p, p.cur.x, p.cur.y); else moveCur(p, k, p.data.w, p.data.h); },
+  solved(p) { return pipeDone(p.data, p.s.m); },
+  hint(p) {
+    const d = p.data, { cell, gx, gy } = pipeGeo(d);
+    for (const i of d.path) { const m = p.s.m[i]; if (m === d.sol[i]) continue;
+      let n = 0, r = m; while (r !== d.sol[i] && n < 4) { r = rotM(r); n++; }
+      const x = i % d.w, y = i / d.w | 0;
+      return { rects: [[gx + x * cell, gy + y * cell, cell, cell]], say: pick(LINES.hint) + ' Tap this pipe ' + (n === 1 ? 'ONE time!' : n + ' times!'), act: [{ t: 'tap', x: gx + x * cell + cell / 2, y: gy + y * cell + cell / 2 }] };
+    }
+    return null;
+  },
+  verify(d) {
+    const m = d.m0.slice(); for (const i of d.path) m[i] = d.sol[i];
+    const s = pipeSolve(d);
+    return { ok: pipeDone(d, m) && !pipeDone(d, d.m0) && !!s, moves: d.path.filter(i => d.m0[i] !== d.sol[i]).length };
+  },
+};
+
+// ---------- 4. 🔢 CODE DIAL (solve the clues, turn the dials, pull the handle) ----------
+// TRUE Game Factory facts (from the games and the Hall of Heroes)
+const TRIVIA = [
+  ['How many eyes does Chaos Nova have?', 1, 'Chaos Nova has one big eye'],
+  ['How many eyes does Emperor Zorg have?', 3, 'Emperor Zorg has three eyes'],
+  ['How many bops does King Gloop take in Robo Jump?', 3, 'King Gloop takes 3 bops'],
+  ['How many bops does Magma Gloop take in Robo Jump?', 5, 'Magma Gloop takes 5 bops'],
+  ['How many bops does The Big Glitch take?', 7, 'The Big Glitch takes 7 bops'],
+  ['How many Star Engines did Duke Googool take?', 6, 'Duke Googool took 6 Star Engines'],
+  ['How many robot arms does the Omega Core have?', 4, 'the Omega Core has 4 robot arms'],
+  ['How many sides does Tinker the robot have?', 8, 'Tinker has 8 sides'],
+  ['How many sides does Clank the robot have?', 6, 'Clank has 6 sides'],
+  ['How many hats does a Snow-Bot stack on its head?', 2, 'a Snow-Bot stacks 2 hats'],
+  ['How many KEY PIECES unlock a page in Robo Jump 8?', 3, 'it takes 3 key pieces'],
+  ['How many forms does Chaos Nova have?', 3, 'Chaos Nova has 3 forms'],
+  ['How many tanks does the Factory Heart plug into?', 7, 'the Factory Heart plugs into 7 tanks'],
+  ['How many keys hang on MY key ring? Look at me!', 3, 'I have 3 keys on my ring'],
+];
+function dialGeo(n) { const dw = 92, gap = 20, x0 = 480 - (n * dw + (n - 1) * gap) / 2; return { dw, gap, x0, y: 286 }; }
+const TRY_BTN = [392, 448, 176, 54];
+KINDS.dial = {
+  name: 'Code Dial', emoji: '🔢', help: 'Read the clues, turn each dial to the right number, then pull the handle: TRY IT!',
+  make(lv, rng) {
+    const tv = rng.shuffle(TRIVIA.slice(0, 13)), used = [];
+    const triv = () => { const t = tv.find(q => !used.includes(q)); used.push(t); return { q: t[0], a: t[1], why: t[2] }; };
+    const add = () => { const a = 1 + rng.int(4), b = 1 + rng.int(4); return { q: `What is ${a} + ${b}?`, a: a + b, why: `${a} + ${b} = ${a + b}` }; };
+    const sub = () => { const a = 5 + rng.int(5), b = 1 + rng.int(a - 1); return { q: `What is ${a} - ${b}?`, a: a - b, why: `${a} - ${b} = ${a - b}` }; };
+    const add3 = () => { const a = 1 + rng.int(3), b = 1 + rng.int(3), c = 1 + rng.int(3); return { q: `What is ${a} + ${b} + ${c}?`, a: a + b + c, why: `${a} + ${b} + ${c} = ${a + b + c}` }; };
+    const dbl = () => { const a = 2 + rng.int(3); return { q: `What is DOUBLE ${a}? (${a} + ${a})`, a: a * 2, why: `${a} + ${a} = ${a * 2}` }; };
+    const half = () => { const a = 2 * (2 + rng.int(3)); return { q: `What is HALF of ${a}?`, a: a / 2, why: `half of ${a} is ${a / 2}` }; };
+    const ring = () => ({ q: TRIVIA[13][0], a: 3, why: TRIVIA[13][2] });
+    const both = () => { for (const a of tv) for (const b of tv) if (a !== b && !used.includes(a) && !used.includes(b) && a[1] + b[1] <= 9) { used.push(a, b);
+      return { q: a[0].replace('?', '') + ' PLUS ' + b[0].charAt(0).toLowerCase() + b[0].slice(1), a: a[1] + b[1], why: `${a[2]}, and ${b[2]}, so ${a[1]} + ${b[1]} = ${a[1] + b[1]}` }; } return add(); };
+    const plan = [[add, ring], [sub, triv], [add, triv, sub], [triv, add, triv], [triv, dbl, triv], [triv, half, triv], [triv, add3, triv, sub], [both, triv, dbl, triv]][lv];
+    const cl = plan.map(f => f());
+    return { n: cl.length, clues: cl.map(c => c.q), ans: cl.map(c => c.a), why: cl.map(c => c.why) };
+  },
+  init(d) { return { d: new Array(d.n).fill(0), sel: 0, open: false, lights: null }; },
+  draw(p) {
+    const d = p.data, s = p.s, g = dialGeo(d.n);
+    // 📜 the clue card
+    let lines = []; d.clues.forEach((c, j) => wrap(`${j + 1}. ${c}`, 456, 19).forEach((l, k) => lines.push([l, k === 0])));
+    const ch = lines.length * 23 + 18;
+    roundRect(244, 70, 472, ch, 12, '#fff3e0'); strokeRR(244, 70, 472, ch, 12, '#ffb74d', 3);
+    lines.forEach(([l, first], k) => plain(l, 256 + (first ? 0 : 20), 94 + k * 23, 19, '#4e342e', 'left'));
+    for (let j = 0; j < d.n; j++) {
+      const x = g.x0 + j * (g.dw + g.gap), y = g.y;
+      text('Dial ' + (j + 1), x + g.dw / 2 - (s.lights ? 10 : 0), y - 8, 16, '#fff');
+      if (s.lights) circle(x + g.dw / 2 + 32, y - 14, 9, s.lights[j] ? '#00e676' : '#ff5252');
+      if (p.kb && s.sel === j && !p.won) roundRect(x - 6, y - 4, g.dw + 12, 156, 14, 'rgba(255,234,0,.5)');
+      roundRect(x, y, g.dw, 148, 12, '#546e7a');
+      roundRect(x + 8, y + 6, g.dw - 16, 34, 8, '#78909c'); text('▲', x + g.dw / 2, y + 32, 24);
+      roundRect(x + 8, y + 46, g.dw - 16, 56, 8, '#102027');
+      text(String(s.d[j]), x + g.dw / 2, y + 90, 46, '#ffd740');
+      roundRect(x + 8, y + 108, g.dw - 16, 34, 8, '#78909c'); text('▼', x + g.dw / 2, y + 134, 24);
+    }
+    const [bx, by, bw, bh] = TRY_BTN;
+    roundRect(bx, by, bw, bh, 16, s.open ? '#00c853' : '#ff9100'); text(s.open ? '🔓 OPEN!' : '🔓 TRY IT!', bx + bw / 2, by + 37, 26);
+  },
+  spin(p, j, dd) { before(p); p.s.sel = j; p.s.d[j] = (p.s.d[j] + dd + 10) % 10; p.s.lights = null; sfx.dial(); moved(p); },
+  tryIt(p) {
+    const s = p.s, d = p.data; s.lights = s.d.map((v, j) => v === d.ans[j]);
+    if (s.lights.every(Boolean)) { s.open = true; moved(p); }
+    else { sfx.nope(); roboSay(pick(['Close! The GREEN lights are right. Fix the red ones!', 'Bzzt! Not yet! Green lights are good, red lights need fixing!', 'Hmm, my lock says nope! Look at the red lights!'])); }
+  },
+  down(p, x, y) {
+    const d = p.data, g = dialGeo(d.n);
+    if (inR(x, y, TRY_BTN)) { this.tryIt(p); return; }
+    for (let j = 0; j < d.n; j++) { const dx = g.x0 + j * (g.dw + g.gap);
+      if (x >= dx && x <= dx + g.dw && y >= g.y && y <= g.y + 148) { this.spin(p, j, y < g.y + 104 ? 1 : -1); return; } }
+  },
+  key(p, k) {
+    const s = p.s;
+    if (k === 'L' || k === 'R') { s.sel = Math.max(0, Math.min(p.data.n - 1, s.sel + (k === 'L' ? -1 : 1))); sfx.click(); }
+    else if (k === 'U' || k === 'D') this.spin(p, s.sel, k === 'U' ? 1 : -1);
+    else if (k === 'A') this.tryIt(p);
+  },
+  solved(p) { return p.s.open; },
+  hint(p) {
+    const d = p.data, s = p.s, g = dialGeo(d.n), j = s.d.findIndex((v, k) => v !== d.ans[k]);
+    if (j < 0) return { rects: [TRY_BTN], say: 'All the dials are right! Now pull the handle: TRY IT!', act: [{ t: 'tap', x: TRY_BTN[0] + 80, y: TRY_BTN[1] + 27 }] };
+    const act = [], dist = j - s.sel;
+    for (let k = 0; k < Math.abs(dist); k++) act.push({ t: 'key', k: dist > 0 ? 'ArrowRight' : 'ArrowLeft' });
+    const up = (d.ans[j] - s.d[j] + 10) % 10; for (let k = 0; k < (up <= 5 ? up : 10 - up); k++) act.push({ t: 'key', k: up <= 5 ? 'ArrowUp' : 'ArrowDown' });
+    return { rects: [[g.x0 + j * (g.dw + g.gap), g.y, g.dw, 148]], say: `Dial ${j + 1} is ${d.ans[j]}! Because ${d.why[j]}.`, act };
+  },
+  verify(d) { return { ok: d.ans.length === d.n && d.clues.length === d.n && d.ans.every(a => Number.isInteger(a) && a >= 0 && a <= 9) && d.ans.some(a => a !== 0), moves: d.n }; },
+};
+
+// ---------- 5. 💡 LIGHT SWITCH (tap a lock: it flips itself AND its neighbors. Light them ALL!) ----------
+function lightGeo(d) { const cell = Math.min(Math.floor(370 / d.n), 88); return { cell, gx: 480 - d.n * cell / 2, gy: 80 + (370 - d.n * cell) / 2 }; }
+function lightNb(d, i) { const n = d.n, x = i % n, y = i / n | 0, out = [i]; for (const [dx, dy] of DIRS) { const nx = x + dx, ny = y + dy; if (nx >= 0 && ny >= 0 && nx < n && ny < n && !d.holes[ny * n + nx]) out.push(ny * n + nx); } return out; }
+function lightPress(d, on, i) { for (const j of lightNb(d, i)) on[j] ^= 1; }
+function lightSolve(d, on) {                           // Gaussian elimination (mod 2): which locks to tap, fewest taps
+  const cells = []; for (let i = 0; i < d.n * d.n; i++) if (!d.holes[i]) cells.push(i);
+  const V = cells.length, rows = cells.map(i => { let r = 0; cells.forEach((j, v) => { if (lightNb(d, j).includes(i)) r |= 1 << v; }); return r | ((on[i] ? 0 : 1) << V); });
+  const piv = []; let r = 0;
+  for (let c = 0; c < V && r < rows.length; c++) {
+    let k = r; while (k < rows.length && !(rows[k] >> c & 1)) k++; if (k === rows.length) continue;
+    [rows[r], rows[k]] = [rows[k], rows[r]];
+    for (let q = 0; q < rows.length; q++) if (q !== r && (rows[q] >> c & 1)) rows[q] ^= rows[r];
+    piv.push(c); r++;
+  }
+  for (let q = r; q < rows.length; q++) if (rows[q] >> V & 1) return null;   // can't be solved
+  const free = []; for (let c = 0; c < V; c++) if (!piv.includes(c)) free.push(c);
+  let best = null;
+  for (let f = 0; f < (1 << Math.min(free.length, 10)); f++) {
+    let x = 0; free.forEach((c, k) => { if (f >> k & 1) x |= 1 << c; });
+    for (let q = piv.length - 1; q >= 0; q--) { const c = piv[q], row = rows[q]; let v = row >> V & 1; for (let c2 = 0; c2 < V; c2++) if (c2 !== c && (row >> c2 & 1) && (x >> c2 & 1)) v ^= 1; if (v) x |= 1 << c; }
+    const sol = cells.filter((_, v) => x >> v & 1); if (!best || sol.length < best.length) best = sol;
+  }
+  return best;
+}
+KINDS.light = {
+  name: 'Light Switch', emoji: '💡', help: 'Tap a lock to flip it AND the locks next to it. Make EVERY lock light up gold!',
+  make(lv, rng) {
+    const n = [3, 3, 3, 4, 4, 4, 5, 5][lv], k = [1, 2, 3, 3, 4, 4, 5, 6][lv];
+    for (let tries = 0; tries < 500; tries++) {
+      const holes = new Array(n * n).fill(0);
+      if (lv >= 5) { holes[0] = 1; holes[n * n - 1] = 1; if (lv === 7) { holes[n - 1] = 1; holes[n * (n - 1)] = 1; } }
+      const d = { n, holes }, on = holes.map(h => h ? 1 : 1), cells = rng.shuffle(on.map((_, i) => i).filter(i => !holes[i])).slice(0, k);
+      for (const i of cells) lightPress(d, on, i);
+      if (on.every(Boolean)) continue;
+      const sol = lightSolve(d, on); if (!sol || sol.length < Math.max(1, k - 1)) continue;
+      d.on0 = on; d.par = sol.length; return d;
+    }
+    return null;
+  },
+  init(d) { return { on: d.on0.slice() }; },
+  draw(p) {
+    const d = p.data, { cell, gx, gy } = lightGeo(d), on = p.s.on;
+    roundRect(gx - 14, gy - 14, d.n * cell + 28, d.n * cell + 28, 18, '#1a237e');
+    for (let i = 0; i < d.n * d.n; i++) {
+      if (d.holes[i]) continue;
+      const x = i % d.n, y = i / d.n | 0, cx = gx + x * cell + cell / 2, cy = gy + y * cell + cell / 2;
+      roundRect(gx + x * cell + 4, gy + y * cell + 4, cell - 8, cell - 8, 12, on[i] ? '#3949ab' : '#212121');
+      if (on[i]) { circle(cx, cy, cell * 0.42, 'rgba(255,234,0,.18)'); circle(cx, cy, cell * 0.3 + Math.sin(frame * 0.1 + i) * 2, 'rgba(255,234,0,.2)'); }
+      drawPadlock(cx, cy + 2, cell / 52, on[i] ? '#ffd740' : '#616161', p.won ? 1 : 0);
+    }
+    const lit = on.filter((v, i) => v && !d.holes[i]).length, all = d.holes.filter(h => !h).length;
+    text(`💡 ${lit} of ${all} lit`, 480, gy + d.n * cell + 44, 24, '#fff59d');
+    if (p.kb && !p.won) drawCursor(gx + p.cur.x * cell, gy + p.cur.y * cell, cell, cell);
+  },
+  press(p, x, y) { const d = p.data, i = y * d.n + x; p.cur = { x, y }; if (d.holes[i]) return; before(p); lightPress(d, p.s.on, i); p.s.on[i] ? sfx.toggle() : sfx.untoggle(); moved(p); },
+  down(p, x, y) { const d = p.data, { cell, gx, gy } = lightGeo(d), cx = Math.floor((x - gx) / cell), cy = Math.floor((y - gy) / cell); if (cx >= 0 && cy >= 0 && cx < d.n && cy < d.n) this.press(p, cx, cy); },
+  key(p, k) { if (k === 'A') this.press(p, p.cur.x, p.cur.y); else moveCur(p, k, p.data.n, p.data.n); },
+  solved(p) { return p.s.on.every((v, i) => v || p.data.holes[i]); },
+  hint(p) {
+    const d = p.data, sol = lightSolve(d, p.s.on); if (!sol || !sol.length) return null;
+    const i = sol[0], { cell, gx, gy } = lightGeo(d), x = i % d.n, y = i / d.n | 0;
+    return { rects: [[gx + x * cell, gy + y * cell, cell, cell]], say: pick(LINES.hint) + ` Tap this lock! (${sol.length} ${sol.length === 1 ? 'tap' : 'taps'} to go)`, act: [{ t: 'tap', x: gx + x * cell + cell / 2, y: gy + y * cell + cell / 2 }] };
+  },
+  verify(d) {
+    const sol = lightSolve(d, d.on0); if (!sol) return { ok: false, moves: -1 };
+    const on = d.on0.slice(); for (const i of sol) lightPress(d, on, i);
+    return { ok: on.every(Boolean) && !d.on0.every(Boolean), moves: sol.length };
+  },
+};
+
+// ---------- 6. 🗝️ KEY MATCH (which key fits which lock? Look at the head and the bumpy teeth!) ----------
+// levels 0-3: drag (or tap) each key onto the lock with its shadow.  levels 4-7: MEMORY! flip cards to find each key + its lock.
+const KEY_COLS = ['#ffd740', '#ff8a65', '#81d4fa', '#a5d6a7', '#ce93d8', '#f48fb1'];
+function drawKeyShape(x, y, s, key, shadow) {          // a big key, head on the left, teeth hanging below the shaft
+  const col = shadow ? '#1b1b2f' : KEY_COLS[key.col % KEY_COLS.length];
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s); ctx.fillStyle = col;
+  ctx.fillRect(-20, -4, 62, 8);                        // shaft
+  key.teeth.forEach((t, k) => ctx.fillRect(-6 + k * 12, 3, 10, t * 8 - 2));
+  const hx = -32; ctx.beginPath();
+  if (key.head === 0) ctx.arc(hx, 0, 15, 0, 7);
+  else if (key.head === 1) ctx.rect(hx - 14, -14, 28, 28);
+  else if (key.head === 2) { ctx.moveTo(hx, -17); ctx.lineTo(hx + 16, 12); ctx.lineTo(hx - 16, 12); ctx.closePath(); }
+  else if (key.head === 3) { ctx.moveTo(hx, 14); ctx.bezierCurveTo(hx - 22, -2, hx - 10, -20, hx, -8); ctx.bezierCurveTo(hx + 10, -20, hx + 22, -2, hx, 14); }
+  else if (key.head === 4) { for (let i = 0; i < 10; i++) { const a = i * Math.PI / 5 - Math.PI / 2, r = i % 2 ? 8 : 18; ctx.lineTo(hx + Math.cos(a) * r, Math.sin(a) * r); } ctx.closePath(); }
+  else { ctx.arc(hx - 7, 4, 9, 0, 7); ctx.moveTo(hx + 16, 4); ctx.arc(hx + 7, 4, 9, 0, 7); ctx.moveTo(hx + 9, -8); ctx.arc(hx, -8, 9, 0, 7); }
+  ctx.fill();
+  if (!shadow) { circle(hx, -1, 4.5, 'rgba(0,0,0,.35)'); ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.fillRect(-20, -4, 62, 2.5); }
+  ctx.restore();
+}
+function drawLockCard(x, y, w, h, key, open) {         // a padlock with the key's SHADOW on its face
+  ctx.strokeStyle = '#cfd8dc'; ctx.lineWidth = 9; ctx.beginPath(); ctx.arc(x + w / 2, y + 30 - (open ? 14 : 0), w * 0.28, Math.PI, 0); ctx.stroke();
+  roundRect(x, y + 28, w, h - 28, 12, open ? '#ffd740' : '#90a4ae'); roundRect(x + 5, y + 33, w - 10, h - 38, 9, open ? '#fff8e1' : '#eceff1');
+  drawKeyShape(x + w / 2 + 4, y + 28 + (h - 28) / 2 - 8, (w - 12) / 92, key, !open);
+}
+KINDS.match = {
+  name: 'Key Match', emoji: '🗝️', help: 'Every lock shows the SHADOW of its key. Drag each key to the lock it fits!',
+  helpMem: 'MEMORY MATCH! Flip two cards. Find each key AND the lock it fits!',
+  make(lv, rng) {
+    const mem = lv >= 4, pairs = mem ? [3, 4, 5, 6][lv - 4] : [3, 4, 4, 5][lv];
+    const heads = mem ? [0, 1, 2, 3, 4, 5] : [[0, 1, 2, 3, 4, 5], rng.shuffle([0, 1, 2, 3, 4, 5]).slice(0, 2), [rng.int(6)], [rng.int(6)]][lv];
+    const keys = [], seen = new Set();
+    for (let a = 0; keys.length < pairs && a < 5000; a++) {
+      const k = { head: lv === 0 ? heads[keys.length] : rng.pick(heads), teeth: [1, 2, 3, 4].map(() => 1 + rng.int(3)), col: keys.length };
+      if (lv >= 2 && lv < 4 && keys.length) { k.teeth = keys[rng.int(keys.length)].teeth.slice(); const t = rng.int(4); k.teeth[t] = 1 + (k.teeth[t] + rng.int(2)) % 3; }   // look-alike keys: just 1 bump different!
+      const id = k.head + ':' + k.teeth.join(''); if (seen.has(id)) continue; seen.add(id); keys.push(k);
+    }
+    const idx = keys.map((_, i) => i);
+    if (!mem) return { mode: 'pattern', pairs, keys, lockOrder: rng.shuffle(idx.slice()), keyOrder: rng.shuffle(idx.slice()) };
+    const cards = rng.shuffle(idx.flatMap(i => [{ k: i, lock: false }, { k: i, lock: true }]));
+    return { mode: 'memory', pairs, keys, cards, cols: [3, 4, 5, 4][lv - 4] };
+  },
+  init(d) { return d.mode === 'pattern' ? { done: d.keys.map(() => false) } : { got: d.cards.map(() => false), open: [] }; },
+  noUndo(p) { return p.data.mode === 'memory'; },
+  slot(d) { const sw = Math.min(120, Math.floor(476 / d.pairs)); return { sw, x0: 480 - d.pairs * sw / 2 }; },
+  lockR(d, j) { const { sw, x0 } = this.slot(d); return [x0 + j * sw + 3, 76, sw - 6, 170]; },
+  keyR(d, j) { const { sw, x0 } = this.slot(d); return [x0 + j * sw + 3, 326, sw - 6, 120]; },
+  cardR(d, i) { const rows = Math.ceil(d.cards.length / d.cols), cw = 104, chh = rows > 2 ? 118 : 140, gx = 480 - d.cols * cw / 2, gy = 76 + (rows > 2 ? 0 : 30);
+    return [gx + (i % d.cols) * cw + 4, gy + Math.floor(i / d.cols) * chh + 4, cw - 8, chh - 10]; },
+  draw(p) {
+    const d = p.data, s = p.s;
+    if (d.mode === 'pattern') {
+      for (let j = 0; j < d.pairs; j++) { const k = d.lockOrder[j], r = this.lockR(d, j); drawLockCard(r[0], r[1], r[2], r[3], d.keys[k], s.done[k]); }
+      for (let j = 0; j < d.pairs; j++) { const k = d.keyOrder[j], r = this.keyR(d, j);
+        roundRect(r[0], r[1], r[2], r[3], 12, 'rgba(0,0,0,.25)');
+        if (s.done[k]) continue;
+        if (p.sel === k) roundRect(r[0] - 4, r[1] - 4, r[2] + 8, r[3] + 8, 14, 'rgba(255,234,0,.55)');
+        let kx = r[0] + r[2] / 2 + 6, ky = r[1] + r[3] / 2 - 8;
+        if (p.dragK && p.dragK.k === k) { kx = p.dragK.x; ky = p.dragK.y; }
+        else if (p.bounce && p.bounce.k === k) { kx += Math.sin(p.bounce.t * 1.3) * p.bounce.t; }
+        drawKeyShape(kx, ky, (r[2] - 4) / 92, d.keys[k], false);
+      }
+      text('Keys:', 480, 316, 18, '#cfd8dc');
+      if (p.kb && !p.won) { const r = p.cur.y === 0 ? this.lockR(d, p.cur.x) : this.keyR(d, p.cur.x); drawCursor(r[0], r[1], r[2], r[3]); }
+    } else {
+      d.cards.forEach((c, i) => {
+        const r = this.cardR(d, i), up = s.got[i] || s.open.includes(i);
+        if (!up) { roundRect(r[0], r[1], r[2], r[3], 12, '#5e35b1'); roundRect(r[0] + 6, r[1] + 6, r[2] - 12, r[3] - 12, 9, '#7e57c2'); text('?', r[0] + r[2] / 2, r[1] + r[3] / 2 + 16, 44, '#ffd740'); return; }
+        roundRect(r[0], r[1], r[2], r[3], 12, s.got[i] ? '#00c853' : '#fff8e1');
+        if (c.lock) drawLockCard(r[0] + 10, r[1] + 6, r[2] - 20, r[3] - 14, d.keys[c.k], s.got[i]);
+        else drawKeyShape(r[0] + r[2] / 2 + 6, r[1] + r[3] / 2 - 6, 0.85, d.keys[c.k], false);
+      });
+      if (p.kb && !p.won) { const r = this.cardR(d, p.cur.y * d.cols + p.cur.x); drawCursor(r[0], r[1], r[2], r[3]); }
+    }
+  },
+  update(p) {
+    if (p.bounce && --p.bounce.t <= 0) p.bounce = null;
+    if (p.wait > 0 && --p.wait === 0) p.s.open = [];
+  },
+  tryLock(p, k, j) {
+    const d = p.data;
+    if (d.lockOrder[j] === k) { before(p); p.s.done[k] = true; p.sel = null; sfx.key(); sfx.unlockSmall && sfx.unlockSmall(); moved(p); return true; }
+    sfx.nope(); p.bounce = { k, t: 14 };
+    roboSay(pick(['Hmm, the teeth don\'t fit! Look at the bumps!', 'Wiggle wiggle... nope! Try another lock!', 'That key is too tickly for that lock!', 'Look at the shape of the head!']));
+    return false;
+  },
+  flip(p, i) {
+    const s = p.s, d = p.data; if (p.wait > 0 || s.got[i] || s.open.includes(i)) return;
+    p.cur = { x: i % d.cols, y: Math.floor(i / d.cols) };
+    s.open.push(i); sfx.flip();
+    if (s.open.length === 2) { const [a, b] = s.open;
+      if (d.cards[a].k === d.cards[b].k) { s.got[a] = s.got[b] = true; s.open = []; sfx.key(); moved(p); }
+      else { p.wait = 55; } }
+  },
+  down(p, x, y) {
+    const d = p.data;
+    if (d.mode === 'memory') { for (let i = 0; i < d.cards.length; i++) if (inR(x, y, this.cardR(d, i))) { this.flip(p, i); return; } return; }
+    for (let j = 0; j < d.pairs; j++) { const k = d.keyOrder[j]; if (!p.s.done[k] && inR(x, y, this.keyR(d, j))) { p.sel = k; p.dragK = { k, x, y, x0: x, y0: y }; p.cur = { x: j, y: 1 }; sfx.click(); return; } }
+    if (p.sel != null) for (let j = 0; j < d.pairs; j++) if (inR(x, y, this.lockR(d, j))) { p.cur = { x: j, y: 0 }; this.tryLock(p, p.sel, j); return; }
+  },
+  move(p, x, y) { if (p.dragK) { p.dragK.x = x; p.dragK.y = y; } },
+  up(p, x, y) {
+    const g = p.dragK; if (!g) return; p.dragK = null;
+    if (Math.hypot(x - g.x0, y - g.y0) < 14) return;     // just a tap: the key stays picked
+    const d = p.data; for (let j = 0; j < d.pairs; j++) if (inR(x, y, this.lockR(d, j))) { this.tryLock(p, g.k, j); return; }
+  },
+  key(p, k) {
+    const d = p.data;
+    if (d.mode === 'memory') { if (k === 'A') { const i = p.cur.y * d.cols + p.cur.x; if (i < d.cards.length) this.flip(p, i); } else moveCur(p, k, d.cols, Math.ceil(d.cards.length / d.cols)); return; }
+    if (k === 'A') {
+      if (p.cur.y === 1) { const kk = d.keyOrder[p.cur.x]; if (!p.s.done[kk]) { p.sel = kk; p.cur.y = 0; sfx.click(); } }
+      else if (p.sel != null) this.tryLock(p, p.sel, p.cur.x);
+      return;
+    }
+    moveCur(p, k, d.pairs, 2);
+  },
+  solved(p) { return p.data.mode === 'pattern' ? p.s.done.every(Boolean) : p.s.got.every(Boolean); },
+  hint(p) {
+    const d = p.data, s = p.s, ctr = r => ({ t: 'tap', x: r[0] + r[2] / 2, y: r[1] + r[3] / 2 });
+    if (d.mode === 'pattern') {
+      const k = d.keyOrder.find(q => !s.done[q]); if (k === undefined) return null;
+      const kr = this.keyR(d, d.keyOrder.indexOf(k)), lr = this.lockR(d, d.lockOrder.indexOf(k));
+      return { rects: [kr, lr], say: pick(LINES.hint) + ' This key fits THAT lock!', act: [ctr(kr), ctr(lr)] };
+    }
+    if (p.wait > 0) return null;
+    let a = s.open.length === 1 ? s.open[0] : s.got.findIndex(g => !g); if (a < 0) return null;
+    const b = d.cards.findIndex((c, i) => i !== a && c.k === d.cards[a].k), ra = this.cardR(d, a), rb = this.cardR(d, b);
+    return { rects: [ra, rb], say: pick(LINES.hint) + ' These two cards match!', act: s.open.length === 1 ? [ctr(rb)] : [ctr(ra), ctr(rb)] };
+  },
+  verify(d) {
+    const ids = new Set(d.keys.map(k => k.head + ':' + k.teeth.join('')));
+    const perm = a => a && a.length === d.pairs && new Set(a).size === d.pairs && a.every(v => v >= 0 && v < d.pairs);
+    const ok = d.keys.length === d.pairs && ids.size === d.pairs && (d.mode === 'pattern' ? perm(d.lockOrder) && perm(d.keyOrder) : d.cards.length === d.pairs * 2 && d.keys.every((_, i) => d.cards.filter(c => c.k === i).length === 2));
+    return { ok, moves: d.pairs };
+  },
+};
+
+// =====================================================================================
+// 🎮 THE GAME: title, Lock Robo's talks, the vault map, puzzles and the big CLICK-CLACK-CLUNK
+// =====================================================================================
+const DATA = {};
+function puzzleData(i) {                               // built the first time you open a door (same puzzle every time)
+  const pz = PUZZLES[i];
+  if (!DATA[i]) DATA[i] = KINDS[pz.kind].make(pz.lv, RNG(7 + KIND_ORDER.indexOf(pz.kind) * 1009 + pz.lv * 97));
+  return DATA[i];
+}
+let state = 'title', mapSel = { w: 0, j: 0 }, talk = null, openT = 0, parts = [], shake = 0, banner = '', bannerT = 0, endT = 0;
+const INTRO = [
+  '*jingle jingle* Hi Ben! It\'s me, LOCK ROBO!',
+  'I used to lock up every game in the book... because I was lonely.',
+  'But Robo and his friends showed me that SHARING is way more fun!',
+  'So I built a PUZZLE VAULT, just for you! Every door has a little puzzle inside.',
+  'Open a vault and you get a GOLDEN KEY and a treasure. Golden keys open the next vault!',
+  'Stuck? Tap HINT and I will show you a move. UNDO takes a move back. Let\'s GO!',
+];
+const ENDING = [
+  'You opened the MASTER VAULT! You are the best puzzle cracker EVER!',
+  'Inside is my most special treasure... a FRIENDSHIP KEY. It\'s for you!',
+  'Thank you for playing with me, Ben. I\'m not lonely anymore! *jingle jingle*',
+];
+function startTalk(lines, after) { talk = { lines, i: 0, after }; state = 'talk'; roboSay(lines[0]); }
+function nextTalk() {
+  talk.i++; sfx.click();
+  if (talk.i >= talk.lines.length) { const a = talk.after; talk = null; a(); return; }
+  roboSay(talk.lines[talk.i]);
+}
+function goBack() { try { parent.closeGame && parent.closeGame(); } catch (_) {} }   // ⬅ back to the Game Factory book
+function toMap() { state = 'map'; setSong('title'); }
+function openPuzzle(i) {
+  const pz = PUZZLES[i], K = KINDS[pz.kind], data = puzzleData(i);
+  P = { i, def: pz, K, data, s: K.init(data), hist: [], hint: null, moves: 0, cur: { x: 0, y: 0 }, kb: false, won: false, wonT: 0, grab: null, sel: null, wait: 0, hints: 0 };
+  if (pz.kind === 'match' && data.mode === 'pattern') P.cur = { x: 0, y: 1 };
+  state = 'puzzle'; setSong(WORLDS[pz.w].song); sfx.creak();
+  const help = pz.kind === 'match' && data.mode === 'memory' ? K.helpMem : K.help;
+  const seenKey = pz.kind + (data.mode || '');
+  if (!save.seen[seenKey]) { save.seen[seenKey] = 1; writeSave(); roboSay(help); }
+  else roboSay(help, false);
+}
+function puzzleSolved() {
+  P.won = true; P.wonT = 0; P.hint = null; P.drag = null; P.dragK = null;
+  sfx.key();
+  const id = P.def.id, first = !save.done[id], before = keysHave();
+  P.first = first; P.treasure = treasureFor(P.i);
+  if (first) {
+    save.done[id] = 1; bankCoin(1);
+    if (P.treasure.kind === 'coins') bankCoin(3); else save.items.push(P.treasure.emoji);
+    writeSave();
+    if (keysHave() >= 10) sticker('vault-cracker');
+    P.newWorld = WORLDS.findIndex(wd => wd.need > before && wd.need <= keysHave());
+    P.master = P.def.w === 4 && worldDone(4) && !save.master;
+  }
+}
+function finishOpen() {                                // after the celebration: back to the map (or the big ending!)
+  sfx.click();
+  if (P.master) { save.master = 1; writeSave(); trophy('lockVault'); state = 'ending'; endT = 0; setSong('victory'); bigFanfare(); startTalk(ENDING, () => { state = 'map'; setSong('title'); }); state = 'ending'; return; }
+  const w = P.def.w, nextJ = WORLDS[w].doors.findIndex(i => !save.done[PUZZLES[i].id]);
+  if (P.newWorld >= 0) { mapSel = { w: P.newWorld, j: 0 }; banner = `🔓 The ${WORLDS[P.newWorld].name} is OPEN!`; bannerT = 240; roboSay(`Wow! You unlocked the ${WORLDS[P.newWorld].name}!`); }
+  else if (nextJ >= 0) mapSel = { w, j: nextJ };
+  else { const nw = WORLDS.findIndex((wd, k) => worldOpen(k) && !worldDone(k)); if (nw >= 0) mapSel = { w: nw, j: WORLDS[nw].doors.findIndex(i => !save.done[PUZZLES[i].id]) }; }
+  toMap();
+}
+function doHint() {
+  if (!P || P.won) return;
+  const h = P.K.hint(P); if (!h) return;
+  P.hint = Object.assign(h, { t: 0 }); P.hints++; sfx.hint(); roboSay(h.say);
+}
+function doUndo() {
+  if (!P || P.won) return;
+  if (P.K.noUndo && P.K.noUndo(P)) { roboSay('No undo in Memory Match. Just keep flipping!'); return; }
+  if (!P.hist.length) { sfx.nope(); return; }
+  P.s = JSON.parse(P.hist.pop()); P.hint = null; P.grab = null; P.sel = null; sfx.undo(); roboSay(pick(LINES.undo), false);
+}
+function doReset() {
+  if (!P || P.won) return;
+  if (!(P.K.noUndo && P.K.noUndo(P))) before(P);
+  P.s = P.K.init(P.data); P.hint = null; P.grab = null; P.sel = null; P.wait = 0; sfx.undo(); roboSay(pick(LINES.reset), false);
+}
+function burst(x, y, cols, n = 14, pw = 4) {
+  for (let i = 0; i < n; i++) { const a = Math.random() * 7, v = pw * (0.4 + Math.random()); parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 2, life: 50 + Math.random() * 30, c: cols[i % cols.length], s: 3 + Math.random() * 4 }); }
+}
+
+// ---------- update (60 times a second) ----------
+function update() {
+  frame++; robo.t++;
+  if (bannerT > 0) bannerT--;
+  if (shake > 0) shake--;
+  for (const q of parts) { q.x += q.vx; q.y += q.vy; q.vy += 0.12; q.life--; }
+  parts = parts.filter(q => q.life > 0);
+  if (state === 'puzzle' && P) {
+    if (P.K.update) P.K.update(P);
+    if (P.hint) P.hint.t++;
+    if (P.won && ++P.wonT === 40) { state = 'open'; openT = 0; }
+  } else if (state === 'open') {
+    openT++;
+    if (openT === 1) sfx.unlock();
+    if (openT === 37) { shake = 12; burst(480, 250, ['#ffd740', '#fff'], 20, 6); }
+    if (openT === 50) sfx.creak();
+    if (openT === 62) { fanfare(); roboSay(pick(LINES.solve)); if (P.treasure.kind === 'coins') sfx.coin(); }
+    if (openT > 62 && openT % 12 === 0 && openT < 200) burst(480 + (Math.random() - 0.5) * 300, 200 + (Math.random() - 0.5) * 140, ['#ffd740', '#ea80fc', '#40c4ff', '#69f0ae'], 12, 4);
+  } else if (state === 'ending' || state === 'title') {
+    endT++;
+    if (state === 'ending' && endT % 15 === 0) burst(Math.random() * W, 80 + Math.random() * 300, ['#ffd740', '#ea80fc', '#40c4ff', '#69f0ae'], 14, 5);
+  }
+}
+
+// ---------- drawing the screens ----------
+const BTN = { back: [16, 10, 120, 44], music: [884, 10, 60, 44], hint: [752, 70, 192, 62], undo: [752, 142, 192, 62], reset: [752, 214, 192, 62], play: [360, 400, 240, 76] };
+function button(r, label, col, size = 24) { roundRect(r[0], r[1] + 4, r[2], r[3], 16, 'rgba(0,0,0,.3)'); roundRect(r[0], r[1], r[2], r[3], 16, col); roundRect(r[0] + 4, r[1] + 4, r[2] - 8, r[3] * 0.38, 12, 'rgba(255,255,255,.22)'); text(label, r[0] + r[2] / 2, r[1] + r[3] / 2 + size * 0.36, size); }
+function drawBg(w) {
+  const wd = WORLDS[w] || WORLDS[0], g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, wd.bg[0]); g.addColorStop(1, wd.bg[1]);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  ctx.globalAlpha = 0.08;                              // rows of little rivets, like the inside of a vault
+  for (let y = 20; y < H; y += 40) for (let x = (y / 40 % 2) * 20; x < W; x += 40) circle(x, y, 3, '#fff');
+  if (w === 2) for (let k = 0; k < 14; k++) { ctx.fillStyle = k % 2 ? '#ff00e5' : '#00e676'; ctx.fillRect((k * 173 + frame * (k % 3 + 1)) % W, (k * 97) % H, 10, 10); }   // 👾 glitchy pixels
+  if (w === 3) for (let k = 0; k < 5; k++) { const cx = 90 + k * 200, cy = 470 - (k % 2) * 380; ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(cx, cy, 30, 0, 7); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(frame * 0.02 + k) * 22, cy + Math.sin(frame * 0.02 + k) * 22); ctx.stroke(); }   // ⏰ clocks
+  ctx.globalAlpha = 1;
+}
+function drawMusicBtn() { roundRect(BTN.music[0], BTN.music[1], BTN.music[2], BTN.music[3], 12, 'rgba(0,0,0,.35)'); text(musicOn ? '🎵' : '🔇', BTN.music[0] + 30, BTN.music[1] + 31, 22); }
+function drawBubble(x, y, w, str, size = 19) {         // Lock Robo's speech bubble (tail points down to him)
+  const lines = wrap(str, w - 28, size), h = lines.length * (size + 5) + 22;
+  roundRect(x, y, w, h, 16, '#fffde7'); strokeRR(x, y, w, h, 16, '#ffb300', 3);
+  ctx.fillStyle = '#fffde7'; ctx.beginPath(); ctx.moveTo(x + w / 2 - 14, y + h - 2); ctx.lineTo(x + w / 2, y + h + 18); ctx.lineTo(x + w / 2 + 14, y + h - 2); ctx.fill();
+  lines.forEach((l, k) => plain(l, x + w / 2, y + 16 + size + k * (size + 5) - 4, size, '#3e2723'));
+  return h;
+}
+function drawTitle() {
+  drawBg(4);
+  const t = frame;
+  for (let k = 0; k < 8; k++) drawKey(80 + k * 115, 70 + Math.sin(t * 0.03 + k) * 12, 1.6, k % 2 ? '#ffd740' : '#fff59d', Math.sin(t * 0.02 + k) * 0.5);
+  text('🔐 LOCK ROBO\'S', 480, 140, 44, '#ffd740');
+  text('PUZZLE VAULT', 480, 205, 64, '#fff');
+  drawLockRobo(150, 210, 190, 260, 1, { wave: true, talk: robo.t < 120 });
+  drawRobo(760, 330, 90, 120, -1);
+  text('Robo came to play too!', 805, 480, 18, '#e3f2fd');
+  // a big round vault door in the middle
+  circle(480, 310, 70, '#8d6e63'); circle(480, 310, 62, '#ffd740'); drawGear(480, 310, 40, t * 0.01, '#ffb300', 12); circle(480, 310, 14, '#8d6e00');
+  button(BTN.play, '▶ PLAY', '#00c853', 34);
+  text(`🔑 ${keysHave()} of ${PUZZLES.length} golden keys   🎁 ${save.items.length} treasures`, 480, 505, 20, '#fff8e1');
+  button(BTN.back, '⬅ BOOK', '#546e7a', 20); drawMusicBtn();
+}
+function doorXY(w, j) { return [186 + j * 64, 66 + w * 84]; }
+function drawMap() {
+  drawBg(mapSel.w);
+  text('🔐 THE VAULT MAP', 480, 42, 30, '#ffd740');
+  text(`🔑 ${keysHave()}/${PUZZLES.length}`, 820, 42, 24, '#fff59d');
+  button(BTN.back, '⬅ BACK', '#546e7a', 20); drawMusicBtn();
+  WORLDS.forEach((wd, w) => {
+    const open = worldOpen(w), [, y] = doorXY(w, 0);
+    roundRect(10, y - 4, 940, 74, 14, open ? 'rgba(0,0,0,.25)' : 'rgba(0,0,0,.5)');
+    text(wd.emoji + ' ' + wd.name, 96, y + 30, 17, open ? '#fff' : '#90a4ae');
+    text(open ? (worldDone(w) ? '⭐ all open!' : `${wd.doors.filter(i => save.done[PUZZLES[i].id]).length}/${wd.doors.length} open`) : `🔒 need ${wd.need} 🔑`, 96, y + 56, 15, open ? '#fff59d' : '#ffab91');
+    wd.doors.forEach((pi, j) => {
+      const [x] = doorXY(w, j), pz = PUZZLES[pi], done = save.done[pz.id], sel = mapSel.w === w && mapSel.j === j;
+      if (sel) roundRect(x - 5, y - 2, 64, 70, 12, frame % 30 < 15 ? '#ffea00' : '#fff');
+      roundRect(x, y + 2, 54, 62, 10, open ? (done ? '#263238' : wd.door) : '#546e7a');
+      if (done) {                                        // an OPEN door: swung open, treasure shining inside
+        circle(x + 27, y + 34, 16, 'rgba(255,215,64,.35)'); text(treasureFor(pi).emoji, x + 27, y + 42, 22);
+        ctx.fillStyle = wd.trim; ctx.fillRect(x, y + 2, 8, 62); text('✓', x + 46, y + 20, 16, '#69f0ae');
+      } else {
+        circle(x + 27, y + 36, 15, open ? wd.trim : '#455a64'); drawGear(x + 27, y + 36, 11, 0, open ? '#fff8e1' : '#78909c', 8);
+        text(KINDS[pz.kind].emoji, x + 13, y + 20, 13);
+      }
+    });
+    if (!open) { drawChain(176, y + 34, 950, y + 34, '#b0bec5', 1.1); drawPadlock(560, y + 34, 1.3, '#ffb300'); }
+  });
+  text('Tap a door to open its puzzle!   (arrows + SPACE work too)', 480, 510, 17, '#fff');
+  if (bannerT > 0) { roundRect(180, 200, 600, 80, 20, 'rgba(0,0,0,.75)'); text(banner, 480, 252, 32, '#ffd740'); }
+}
+function drawTalk(lines, i) {
+  drawBg(state === 'ending' ? 4 : 0);
+  if (state === 'ending') { circle(700, 260, 150, '#8d6e63'); circle(700, 260, 140, '#3e2723'); circle(700, 260, 100, 'rgba(255,215,64,.4)'); drawKey(700, 260, 5, '#ffd740', -0.4 + Math.sin(frame * 0.05) * 0.1); text('🏆 Trophy: Vault Cracker!', 700, 470, 28, '#ffd740'); drawRobo(560, 360, 60, 80, 1); }
+  drawLockRobo(60, 230, 220, 270, 1, { talk: true, wave: state === 'ending' });
+  drawBubble(state === 'ending' ? 40 : 300, 40, state === 'ending' ? 480 : 600, lines[i], 26);
+  text('TAP or SPACE ▶', state === 'ending' ? 280 : 600, 505, 20, '#fff');
+}
+function drawArrow(x0, y0, x1, y1, col) {
+  const a = Math.atan2(y1 - y0, x1 - x0), L = Math.hypot(x1 - x0, y1 - y0); if (L < 4) return;
+  ctx.strokeStyle = col; ctx.lineWidth = 9; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1 - Math.cos(a) * 14, y1 - Math.sin(a) * 14); ctx.stroke();
+  ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x1 - Math.cos(a - 0.5) * 30, y1 - Math.sin(a - 0.5) * 30); ctx.lineTo(x1 - Math.cos(a + 0.5) * 30, y1 - Math.sin(a + 0.5) * 30); ctx.fill();
+}
+function drawPuzzle() {
+  const wd = WORLDS[P.def.w], K = P.K;
+  drawBg(P.def.w);
+  roundRect(AREA.x - 4, AREA.y - 4, AREA.w + 8, AREA.h + 8, 18, 'rgba(0,0,0,.28)');
+  const num = wd.doors.indexOf(P.i) + 1;
+  text(`${wd.emoji} ${wd.name} • Door ${num}: ${K.emoji} ${K.name}`, 510, 42, 24, '#fff');
+  button(BTN.back, '⬅ MAP', '#546e7a', 20); drawMusicBtn();
+  K.draw(P);
+  if (P.hint && !P.won) {                              // 💡 Lock Robo shows the next move
+    const pulse = 0.5 + Math.sin(P.hint.t * 0.2) * 0.5;
+    for (const r of P.hint.rects) { strokeRR(r[0] - 6, r[1] - 6, r[2] + 12, r[3] + 12, 14, `rgba(255,234,0,${0.5 + pulse * 0.5})`, 6); }
+    if (P.hint.arrow) { const [x0, y0, x1, y1] = P.hint.arrow; drawArrow(x0, y0, x1, y1, `rgba(255,23,68,${0.6 + pulse * 0.4})`); }
+  }
+  // 🔒 Lock Robo, our host, on the left
+  drawLockRobo(46, 300, 150, 196, 1, { talk: robo.t < 90, wave: P.won });
+  drawBubble(10, 66, 222, robo.text || K.help, 17);
+  // buttons + controls on the right
+  button(BTN.hint, '💡 HINT', '#ffab00', 26);
+  button(BTN.undo, '↩ UNDO', K.noUndo && K.noUndo(P) ? '#78909c' : '#29b6f6', 26);
+  button(BTN.reset, '🔄 RESET', '#ab47bc', 26);
+  const tips = { slide: ['Drag a block', 'or: arrows move,', 'SPACE grabs'], gear: ['Tap a peg', 'to add a gear,', 'tap again = off'], pipe: ['Tap a pipe', 'to turn it'], dial: ['Tap ▲ ▼', 'then TRY IT!', 'or: arrows + SPACE'],
+    light: ['Tap a lock', 'to flip it'], match: P.data.mode === 'memory' ? ['Tap 2 cards', 'to flip them'] : ['Drag a key', 'to its lock', 'or tap key, tap lock'] }[P.def.kind];
+  tips.concat(['', 'X = hint  Z = undo', 'R = reset']).forEach((l, k) => text(l, 848, 312 + k * 24, 17, '#e3f2fd'));
+  text(`Moves: ${P.moves}`, 848, 312 + 7 * 24, 17, '#fff59d');
+}
+function drawOpen() {                                  // 🔓 CLICK, CLACK, CLUNK! The vault door swings open!
+  drawBg(P.def.w);
+  const cx = 500, cy = 250, R = 150, spin = Math.min(openT, 37) / 37 * Math.PI * 1.5, sw = Math.max(0, Math.min(1, (openT - 50) / 30)), ang = sw * 1.35;
+  circle(cx, cy, R + 16, '#37474f'); circle(cx, cy, R + 6, '#263238');
+  circle(cx, cy, R - 4, '#1a1a1a');                    // inside the vault
+  if (sw > 0) {
+    circle(cx, cy, R * 0.8, `rgba(255,215,64,${0.25 * sw})`);
+    for (let k = 0; k < 8; k++) { const a = k * Math.PI / 4 + frame * 0.01; ctx.strokeStyle = `rgba(255,236,130,${0.35 * sw})`; ctx.lineWidth = 10; ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(a) * R * 0.9, cy + Math.sin(a) * R * 0.9); ctx.stroke(); }
+    const rise = Math.min(1, Math.max(0, (openT - 62) / 30));
+    ctx.save(); ctx.globalAlpha = Math.max(0.2, rise); text(P.treasure.emoji, cx, cy + 30 - rise * 20, 64 + rise * 30); ctx.restore();
+  }
+  const hx = cx - R, dw = R * Math.cos(ang), dcx = hx + dw;   // the door: hinged on the left, it swings toward us
+  if (dw > 2) {
+    ctx.save(); ctx.translate(dcx, cy); ctx.scale(Math.max(0.02, Math.cos(ang)), 1);
+    circle(0, 0, R, '#90a4ae'); circle(0, 0, R - 12, '#b0bec5');
+    for (let k = 0; k < 12; k++) { const a = k * Math.PI / 6, out = openT < 37 ? 1 : Math.max(0.82, 1 - (openT - 37) * 0.01); circle(Math.cos(a) * (R - 22) * out, Math.sin(a) * (R - 22) * out, 7, '#607d8b'); }   // the bolts slide in
+    ctx.rotate(spin); ctx.strokeStyle = '#ffd740'; ctx.lineWidth = 12; ctx.lineCap = 'round';
+    for (let k = 0; k < 3; k++) { ctx.rotate(Math.PI / 3); ctx.beginPath(); ctx.moveTo(-70, 0); ctx.lineTo(70, 0); ctx.stroke(); }
+    circle(0, 0, 26, '#ffb300'); drawKey(0, 0, 1.4, '#fff8e1');
+    ctx.restore();
+  }
+  if (openT > 4) text('CLICK!', 300, 120, 30, '#fff59d');
+  if (openT > 18) text('CLACK!', 700, 120, 30, '#fff59d');
+  if (openT > 37) text('CLUNK!', 500, 70, 48 + Math.max(0, 50 - openT), '#ffd740');
+  drawLockRobo(10, 300, 150, 196, 1, { talk: openT > 60 && robo.t < 90, wave: true });
+  if (openT > 70) {
+    roundRect(250, 420, 520, 92, 18, 'rgba(0,0,0,.6)');
+    text(P.first ? '+1 🔑 GOLDEN KEY!' : 'You cracked it again!', 510, 456, 28, '#ffd740');
+    text('Inside: ' + P.treasure.name, 510, 494, 20, '#fff');
+  }
+  if (openT > 90) text('TAP or SPACE ▶', 870, 505, 20, frame % 40 < 28 ? '#fff' : '#ffd740');
+}
+function draw() {
+  ctx.save();
+  if (shake > 0) ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+  if (state === 'title') drawTitle();
+  else if (state === 'talk' || state === 'ending') drawTalk(talk ? talk.lines : ENDING, talk ? talk.i : ENDING.length - 1);
+  else if (state === 'map') drawMap();
+  else if (state === 'puzzle') drawPuzzle();
+  else if (state === 'open') drawOpen();
+  for (const q of parts) { ctx.globalAlpha = Math.min(1, q.life / 30); ctx.fillStyle = q.c; ctx.fillRect(q.x, q.y, q.s, q.s); }
+  ctx.globalAlpha = 1;
+  if (stickerNew > 0) { stickerNew--; roundRect(300, 470, 360, 44, 14, 'rgba(0,0,0,.7)'); text('⭐ NEW STICKER: Vault Cracker!', 480, 500, 20, '#ffd740'); }
+  ctx.restore();
+}
+
+// ---------- Input: keyboard (and the iPad buttons, which send the same keys) ----------
+function wakeAudio() {
+  if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); setupAudio(); } catch (_) { actx = null; } }
+  else if (actx.state === 'suspended' && actx.resume) actx.resume();
+}
+function play() { sfx.click(); if (!save.seen.intro) { save.seen.intro = 1; writeSave(); startTalk(INTRO, toMap); } else toMap(); }
+function openDoor(w, j) {
+  mapSel = { w, j };
+  if (!worldOpen(w)) { sfx.locked(); banner = `🔒 Needs ${WORLDS[w].need} golden keys (you have ${keysHave()})`; bannerT = 150; roboSay(`That vault needs ${WORLDS[w].need} golden keys. Open more doors first!`); return; }
+  openPuzzle(WORLDS[w].doors[j]);
+}
+function mapMove(k) {
+  const m = mapSel;
+  if (k === 'L') m.j--; if (k === 'R') m.j++; if (k === 'U') m.w--; if (k === 'D') m.w++;
+  m.w = Math.max(0, Math.min(WORLDS.length - 1, m.w)); m.j = Math.max(0, Math.min(WORLDS[m.w].doors.length - 1, m.j)); sfx.click();
+}
+addEventListener('keydown', e => {
+  wakeAudio();
+  const raw = e.key, k = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D', ' ': 'A', Enter: 'A' }[raw];
+  if (raw === ' ' || raw.startsWith('Arrow')) { if (e.preventDefault) e.preventDefault(); }
+  if (e.repeat && k === 'A') return;
+  if ((raw === 'm' || raw === 'M') && !e.repeat) { toggleMusic(); return; }
+  if (state === 'title') { if (k === 'A') play(); else if (raw === 'Escape') goBack(); }
+  else if (state === 'talk' || state === 'ending') { if (k === 'A' && talk) nextTalk(); }
+  else if (state === 'map') { if (k === 'A') openDoor(mapSel.w, mapSel.j); else if (k) mapMove(k); else if (raw === 'Escape') { state = 'title'; sfx.click(); } }
+  else if (state === 'puzzle' && P) {
+    if (raw === 'Escape') { toMap(); return; }
+    if (P.won) return;
+    if (raw === 'z' || raw === 'Z') doUndo();
+    else if (raw === 'x' || raw === 'X') doHint();
+    else if (raw === 'r' || raw === 'R') doReset();
+    else if (k) { P.kb = true; P.K.key(P, k); }
+  } else if (state === 'open') { if (k === 'A' && openT > 90) finishOpen(); }
+});
+// ---------- Input: taps, clicks and drags (touchpad.js turns finger touches into mouse events) ----------
+function canvasXY(e) { const r = C.getBoundingClientRect(); return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height]; }
+let mouseDown = false;
+C.addEventListener('mousedown', e => {
+  wakeAudio(); mouseDown = true;
+  const [x, y] = canvasXY(e);
+  if (inR(x, y, BTN.music)) { toggleMusic(); return; }
+  if (state === 'title') { if (inR(x, y, BTN.back)) goBack(); else play(); }
+  else if (state === 'talk' || state === 'ending') { if (talk) nextTalk(); }
+  else if (state === 'map') {
+    if (inR(x, y, BTN.back)) { state = 'title'; sfx.click(); return; }
+    WORLDS.forEach((wd, w) => wd.doors.forEach((_, j) => { const [dx, dy] = doorXY(w, j); if (inR(x, y, [dx - 4, dy, 62, 68])) openDoor(w, j); }));
+  } else if (state === 'puzzle' && P) {
+    if (inR(x, y, BTN.back)) { toMap(); return; }
+    if (P.won) return;
+    if (inR(x, y, BTN.hint)) doHint();
+    else if (inR(x, y, BTN.undo)) doUndo();
+    else if (inR(x, y, BTN.reset)) doReset();
+    else { P.kb = false; P.K.down(P, x, y); }
+  } else if (state === 'open') { if (openT > 90) finishOpen(); }
+});
+addEventListener('mousemove', e => { if (!mouseDown || state !== 'puzzle' || !P || !P.K.move) return; const [x, y] = canvasXY(e); P.K.move(P, x, y); });
+addEventListener('mouseup', e => { if (!mouseDown) return; mouseDown = false; if (state !== 'puzzle' || !P || !P.K.up) return; const [x, y] = canvasXY(e); P.K.up(P, x, y); });
+
+// ---------- Main loop (steady speed on every screen) ----------
+let last = performance.now(), acc = 0;
+function loop(now) {
+  acc += Math.min(100, now - last); last = now;
+  while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; }
+  playMusic();
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
