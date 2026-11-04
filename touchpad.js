@@ -18,11 +18,51 @@
 //   - Reads game controllers (like 8BitDo) on any device and sends the same key presses.
 //   - Wakes up game sounds on the iPad (Safari only allows sound after a real tap).
 //   - Add ?touch=1 to the address to see the touch controls on a laptop.
+//   - Jukebox mode (game.html?jukebox=1&song=NAME): the book's 🎶 Jukebox plays a game's REAL music in a hidden copy of the game.
+// ---------- 🎶 Jukebox mode ----------
+// The book makes a hidden <iframe src="game.html?jukebox=1"> and calls JUKEBOX.start(code) to turn on the game's own music.
+// In this mode nothing is ever saved (no trophies, fish, coins...), nothing shows, no talking, no pop-ups, no touch pad,
+// and all the game's sound goes into the book's speaker (book.jbOut = { ctx, out }), so the book can stop it any time.
+(function () {
+  if (!/[?&]jukebox=1(&|#|$)/.test(location.search)) return;
+  const J = window.JUKEBOX = { song: decodeURIComponent((/[?&]song=([^&#]*)/.exec(location.search) || [])[1] || '') };
+  try { const P = Storage.prototype, no = function () {}; P.setItem = no; P.removeItem = no; P.clear = no; } catch (_) {}   // never save
+  let book = null; try { if (window.parent !== window && window.parent.jbOut) book = window.parent; } catch (_) {}
+  J.book = book;
+  try { window.parent = { closeGame() {} }; } catch (_) {}            // the game can't close the book's game window
+  window.alert = function () {}; window.confirm = function () { return false; }; window.prompt = function () { return null; };
+  // hidden frames may not get animation frames, so the game's loop runs on a plain timer instead (the music is booked ahead)
+  window.requestAnimationFrame = function (cb) { return setTimeout(function () { cb(performance.now()); }, 33); };
+  window.cancelAnimationFrame = function (id) { clearTimeout(id); };
+  try { const st = document.createElement('style'); st.textContent = 'html { visibility: hidden !important; }'; document.head.appendChild(st); } catch (_) {}
+  // the game's sound goes into the book's speaker: a stand-in for the book's AudioContext whose "destination" is the book's jbOut
+  J.makeCtx = function () {
+    const o = book && book.jbOut; if (!o || !o.ctx) return null;
+    const ctx = o.ctx, side = {};
+    return new Proxy(ctx, {
+      get(t, k) {
+        if (k === 'destination') return o.out;
+        if (k === 'close' || k === 'suspend') return function () { return Promise.resolve(); };   // the book's speaker stays on
+        if (Object.prototype.hasOwnProperty.call(side, k)) return side[k];
+        const v = Reflect.get(t, k, t); return typeof v === 'function' ? v.bind(t) : v;
+      },
+      set(t, k, v) { side[k] = v; return true; },
+    });
+  };
+  // the book calls this to start the music: the code runs in the game's own scope, so it can reach the game's music variables
+  J.start = function (code) { J.started = true; return (0, eval)(String(code)); };
+})();
 // ---------- 🔊 talking voices that keep working ----------
 // Chrome only lets a page talk after a tap IN THAT PAGE, and games inside the book are their own little page.
 // So a game borrows the book's voice (the book already got Ben's tap). If the voice gets stuck, it un-sticks it and tries again.
 (function () {
   try {
+    if (window.JUKEBOX) {   // 🎶 jukebox mode: the game stays quiet (only its music plays)
+      const quiet = { speak() {}, cancel() {}, pause() {}, resume() {}, getVoices() { return []; }, speaking: false, pending: false, paused: false,
+        addEventListener() {}, removeEventListener() {}, onvoiceschanged: null };
+      Object.defineProperty(window, 'speechSynthesis', { configurable: true, get: () => quiet });
+      return;
+    }
     let synth = window.speechSynthesis, Utt = window.SpeechSynthesisUtterance;
     try { if (window.parent !== window && parent.speechSynthesis && parent.location.host === location.host) { synth = parent.speechSynthesis; Utt = parent.SpeechSynthesisUtterance; } } catch (_) {}
     if (!synth || !Utt) return;
@@ -53,7 +93,8 @@
 
   // ---------- 👾 Glitch Mode: a secret from the Game Factory book's Glitch Hole makes every game look glitchy ----------
   let glitchOn = false; try { glitchOn = localStorage.getItem('gfGlitch') === 'true'; } catch (_) {}
-  if (glitchOn && !/(arcade|index)\.html$|\/$/.test(location.pathname)) {
+  const JB = window.JUKEBOX;   // 🎶 jukebox mode: no glitch pictures, no touch pad, no controllers
+  if (glitchOn && !JB && !/(arcade|index)\.html$|\/$/.test(location.pathname)) {
     const st = document.createElement('style');
     st.textContent = `canvas { animation: tpGlitch 2.2s infinite steps(1); }
       @keyframes tpGlitch { 0%, 100% { transform: none; filter: none; }
@@ -90,7 +131,7 @@
     };
     if (document.body) addFx(); else addEventListener('DOMContentLoaded', addFx);
   }
-  const isTouch = forced || (navigator.maxTouchPoints > 0 && matchMedia('(pointer: coarse)').matches);
+  const isTouch = !JB && (forced || (navigator.maxTouchPoints > 0 && matchMedia('(pointer: coarse)').matches));
 
   // ---------- pretend key presses ----------
   const down = new Set();
@@ -103,7 +144,7 @@
   // ---------- sound on iPad: resume every AudioContext after a real tap ----------
   const AC = window.AudioContext || window.webkitAudioContext, contexts = [];
   if (AC) {
-    const Wrapped = function (...a) { const c = new AC(...a); contexts.push(c); return c; };
+    const Wrapped = function (...a) { const j = JB && JB.makeCtx(); if (j) return j; const c = new AC(...a); contexts.push(c); return c; };
     Wrapped.prototype = AC.prototype;
     window.AudioContext = window.webkitAudioContext = Wrapped;
     const wake = () => contexts.forEach(c => { if (c.state !== 'running') c.resume(); });
@@ -263,6 +304,6 @@
     }
     requestAnimationFrame(poll);
   }
-  addEventListener('gamepadconnected', () => { if (!poll.on) { poll.on = true; requestAnimationFrame(poll); } });
+  addEventListener('gamepadconnected', () => { if (!poll.on && !JB) { poll.on = true; requestAnimationFrame(poll); } });
   addEventListener('blur', () => { for (const k of [...down]) press(k, false); padDown.clear(); });
 })();
