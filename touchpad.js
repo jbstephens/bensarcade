@@ -131,6 +131,53 @@
     };
     if (document.body) addFx(); else addEventListener('DOMContentLoaded', addFx);
   }
+
+  // ---------- ⬇️ "More below" signs: laptops hide scroll bars, so show when a panel (or the page) has more buttons further down ----------
+  if (!JB && !/(arcade|index)\.html$|\/$/.test(location.pathname)) {
+    const st = document.createElement('style');
+    st.textContent = `.tpScroll::-webkit-scrollbar { width: 12px; } .tpScroll::-webkit-scrollbar-thumb { background: #ff9800; border-radius: 8px; border: 2px solid #fff; }
+      .tpScroll::-webkit-scrollbar-track { background: rgba(0,0,0,.08); border-radius: 8px; }
+      .tpMore { position: fixed; z-index: 99990; transform: translateX(-50%); background: #ff9800; color: #fff; font: bold 15px system-ui, sans-serif;
+        padding: 5px 14px; border-radius: 999px; border: 3px solid #fff; box-shadow: 0 3px 8px rgba(0,0,0,.35); cursor: pointer; white-space: nowrap;
+        animation: tpBob 1s ease-in-out infinite; -webkit-user-select: none; user-select: none; }
+      @keyframes tpBob { 50% { margin-top: -5px; } }
+      @media print { .tpMore { display: none !important; } }`;
+    document.head.appendChild(st);
+    const pills = new Map();   // scrolling box → its sign
+    const pageBox = () => document.scrollingElement || document.documentElement;
+    const scrolls = el => { const s = getComputedStyle(el); return /(auto|scroll)/.test(s.overflowY); };
+    const check = () => {
+      if (!document.body) return;
+      const H = innerHeight, live = new Set();
+      const boxes = [...document.body.querySelectorAll('div, section, main, aside, nav, ul, form')].filter(el => el.scrollHeight - el.clientHeight > 30 && el.clientHeight > 120 && scrolls(el));
+      const pg = pageBox(), bs = getComputedStyle(document.body).overflowY, hs = getComputedStyle(document.documentElement).overflowY;
+      if (bs !== 'hidden' && hs !== 'hidden' && pg.scrollHeight - H > 30) boxes.push(pg);
+      for (const el of boxes) {
+        const isPage = el === pg, r = isPage ? { top: 0, bottom: H, left: 0, width: innerWidth } : el.getBoundingClientRect();
+        if (!isPage && (r.width < 80 || r.bottom < 60 || r.top > H - 60 || getComputedStyle(el).visibility === 'hidden')) continue;
+        if (!isPage) {   // skip boxes hidden under a title screen or pop-up
+          const hit = document.elementFromPoint(r.left + r.width / 2, Math.min(r.bottom, H) - 20);
+          if (hit && !el.contains(hit) && !hit.classList.contains('tpMore')) continue;
+          el.classList.add('tpScroll');
+        }
+        const left = el.scrollHeight - el.clientHeight - el.scrollTop;
+        if (left <= 30) continue;
+        live.add(el);
+        let p = pills.get(el);
+        if (!p) {
+          p = document.createElement('div'); p.className = 'tpMore'; p.textContent = '⬇️ More below ⬇️';
+          p.addEventListener('click', e => { e.stopPropagation(); el.scrollBy({ top: el.clientHeight * 0.7, behavior: 'smooth' }); });
+          document.body.appendChild(p); pills.set(el, p);
+        }
+        p.style.left = (r.left + r.width / 2) + 'px';
+        p.style.top = (Math.min(r.bottom, H) - 42) + 'px';
+      }
+      for (const [el, p] of pills) if (!live.has(el)) { p.remove(); pills.delete(el); }
+    };
+    let t = 0; const soon = () => { if (!t) t = setTimeout(() => { t = 0; check(); }, 120); };
+    addEventListener('scroll', soon, true); addEventListener('resize', soon); addEventListener('click', soon, true);
+    addEventListener('load', soon); setInterval(check, 1500);
+  }
   const isTouch = !JB && (forced || (navigator.maxTouchPoints > 0 && matchMedia('(pointer: coarse)').matches));
 
   // ---------- pretend key presses ----------
