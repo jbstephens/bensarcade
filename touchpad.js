@@ -178,6 +178,62 @@
     addEventListener('scroll', soon, true); addEventListener('resize', soon); addEventListener('click', soon, true);
     addEventListener('load', soon); setInterval(check, 1500);
   }
+  // ---------- 🖨️ Print fix: Chrome's print preview fails ("Print preview failed") when one page has lots of emoji in its
+  // picture. Just for printing: emoji-only labels become little pictures of the same emoji, emoji inside words are left
+  // out if there are still too many, and see-through parts holding emoji turn solid. Everything goes back after printing.
+  if (!JB) {
+    const NS = 'http://www.w3.org/2000/svg', EMO = /\p{Extended_Pictographic}(?:️|‍\p{Extended_Pictographic})*️?/gu, HAS = /\p{Extended_Pictographic}/u;
+    const LIMIT = 10;                    // up to this many emoji labels on a page print fine
+    const pics = {};
+    const pic = ch => {
+      if (pics[ch]) return pics[ch];
+      const c = document.createElement('canvas'); c.width = c.height = 96; const x = c.getContext('2d');
+      x.font = '78px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
+      x.fillText(ch, 48, 54); return (pics[ch] = c.toDataURL('image/png'));
+    };
+    let undo = null;
+    const solid = () => {
+      if (undo) return; undo = [];
+      const texts = [...document.querySelectorAll('svg text')].filter(t => HAS.test(t.textContent));
+      if (texts.length <= LIMIT) { undo = []; return; }
+      const left = [];
+      for (const t of texts) {
+        for (let a = t; a && a.tagName && a.tagName.toLowerCase() !== 'svg'; a = a.parentElement) {   // solid, not see-through
+          const at = a.getAttribute('opacity'); if (at === null) continue;
+          undo.push(() => a.setAttribute('opacity', at)); a.removeAttribute('opacity');
+        }
+        const txt = t.textContent, list = txt.match(EMO) || [];
+        let b = null; try { b = t.getBBox(); } catch (_) {}
+        if (txt.replace(EMO, '').trim() === '' && b && b.width > 0) {     // an emoji-only label → pictures
+          const fs = parseFloat(getComputedStyle(t).fontSize) || b.height, size = fs * 1.05, total = size * list.length;
+          const cx = b.x + b.width / 2, cy = b.y + b.height / 2, tr = t.getAttribute('transform');
+          list.forEach((ch, i) => {
+            const im = document.createElementNS(NS, 'image');
+            im.setAttribute('href', pic(ch)); im.setAttribute('width', size); im.setAttribute('height', size);
+            im.setAttribute('x', cx - total / 2 + i * size); im.setAttribute('y', cy - size / 2);
+            if (tr) im.setAttribute('transform', tr);
+            t.parentNode.insertBefore(im, t); undo.push(() => im.remove());
+          });
+          const d = t.style.display; t.style.display = 'none'; undo.push(() => { t.style.display = d; });
+        } else left.push(t);
+      }
+      if (left.length > LIMIT) for (const t of left) {          // still too many: print those words without their emoji
+        const w = document.createTreeWalker(t, NodeFilter.SHOW_TEXT);
+        for (let n = w.nextNode(); n; n = w.nextNode()) {
+          const old = n.data; if (!HAS.test(old)) continue;
+          n.data = old.replace(EMO, '').replace(/^ +/, ''); undo.push(() => { n.data = old; });
+        }
+      }
+    };
+    const restore = () => { if (!undo) return; for (let i = undo.length - 1; i >= 0; i--) try { undo[i](); } catch (_) {} undo = null; };
+    addEventListener('beforeprint', solid);
+    addEventListener('afterprint', restore);
+    const realPrint = window.print;   // also fix things up right before a game's own Print button opens the print window
+    if (typeof realPrint === 'function') window.print = function () {
+      solid(); const t0 = Date.now();
+      try { return realPrint.apply(window, arguments); } finally { if (Date.now() - t0 > 400) setTimeout(restore, 0); }   // Chrome waits in print(); iPad uses afterprint
+    };
+  }
   const isTouch = !JB && (forced || (navigator.maxTouchPoints > 0 && matchMedia('(pointer: coarse)').matches));
 
   // ---------- pretend key presses ----------
