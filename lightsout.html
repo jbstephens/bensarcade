@@ -1,0 +1,1283 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>🔦 Lights Out!</title>
+<script>TOUCHPAD = { dpad: true, south: [' ', 'LIGHT'], west: ['x', 'HIDE'] };</script>
+<script src="touchpad.js?v=9"></script>
+<style>
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: #05060f; display: flex;
+    align-items: center; justify-content: center; overflow: hidden;
+  }
+  canvas {
+    width: min(100vw, calc(100vh * 960 / 520));
+    height: auto; display: block; border-radius: 12px;
+    box-shadow: 0 10px 40px rgba(0,0,0,.5);
+  }
+</style>
+<canvas id="game" width="960" height="520"></canvas>
+<script>
+// 🔦 LIGHTS OUT!
+// The Game Factory's power went out at night! Robo explores 4 dark floors with his FLASHLIGHT,
+// finds 5 fuses per floor and plugs them into the fuse box. Phantom Robos peek out of the dark
+// (their eyes glow first) — shine the light on them and they freeze and giggle away.
+// Sammy (glow-in-the-dark brown tabby) meows to show the way when you're stuck.
+// At the very top: flip the BIG FACTORY POWER SWITCH! (The Phantoms just wanted a night-light party.)
+const C = document.getElementById('game'), ctx = C.getContext('2d');
+const W = 960, H = 520, T = 40;
+
+// ---------- Saves, trophies, stickers ----------
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }
+let stickerNew = 0;
+function sticker(id) { try { const s = JSON.parse(localStorage.getItem('gfStickers') || '{}'); if (!s[id]) { s[id] = 1; localStorage.setItem('gfStickers', JSON.stringify(s)); stickerNew = 150; } } catch (_) {} }   // for the Sticker Book in the Game Factory book
+
+let save = { floor: 0, best: 0, done: false, easy: false, music: true };
+function loadSave() {
+  try { const s = JSON.parse(localStorage.getItem('lightsOut') || 'null'); if (s && typeof s === 'object') save = Object.assign(save, s); } catch (_) {}
+  save.floor = Math.max(0, Math.min(3, save.floor | 0)); save.best = Math.max(save.floor, Math.min(3, save.best | 0));
+}
+function writeSave() { try { localStorage.setItem('lightsOut', JSON.stringify(save)); } catch (_) {} }
+loadSave();
+
+
+// ---------- Sound effects ----------
+let actx = null, master = null, musicBus = null, sfxBus = null, delayIn = null, delayNode = null, noiseBuf = null;
+let musicOn = save.music !== false;
+function note(freq, start, dur, wave = 'square', vol = 0.12, slideTo = null) {
+  if (!actx) return;
+  const t = actx.currentTime + start;
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type = wave; o.frequency.setValueAtTime(freq, t);
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+  g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.006);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g); g.connect(sfxBus || actx.destination);
+  o.start(t); o.stop(t + dur + 0.02);
+}
+const sfx = {
+  jump:   () => note(400, 0, 0.15, 'sine', 0.15, 900),
+  djump:  () => { note(600, 0, 0.12, 'sine', 0.14, 1300); note(900, 0.05, 0.1, 'triangle', 0.06); },
+  hover:  () => note(120 + Math.random() * 40, 0, 0.06, 'sawtooth', 0.025),
+  rocket: () => note(90 + Math.random() * 50, 0, 0.07, 'sawtooth', 0.04, 60),
+  coin:   () => { note(988, 0, 0.08); note(1319, 0.07, 0.2); },
+  star:   () => [880, 1109, 1319, 1760, 2217].forEach((f, i) => note(f, i * 0.07, 0.25, 'sine', 0.12)),
+  stomp:  () => note(400, 0, 0.15, 'triangle', 0.2, 100),
+  spring: () => note(200, 0, 0.3, 'sine', 0.2, 900),
+  ouch:   () => note(500, 0, 0.4, 'sawtooth', 0.1, 80),
+  check:  () => { note(660, 0, 0.1); note(880, 0.1, 0.2); },
+  dash:   () => note(300, 0, 0.2, 'sawtooth', 0.08, 1200),
+  drill:  () => { note(160 + Math.random() * 40, 0, 0.08, 'square', 0.05, 120); },
+  dig:    () => { note(120, 0, 0.18, 'sawtooth', 0.12, 50); note(400, 0, 0.06, 'square', 0.05, 200); },
+  smash:  () => { note(110, 0, 0.4, 'sawtooth', 0.18, 35); note(70, 0.05, 0.4, 'square', 0.1, 30); },
+  clank:  () => { note(1200, 0, 0.06, 'square', 0.06, 900); note(600, 0.02, 0.1, 'triangle', 0.08); },
+  wall:   () => note(700, 0, 0.1, 'triangle', 0.12, 400),
+  morph:  () => { [392, 523, 659, 784, 1047, 1319].forEach((f, i) => note(f, i * 0.045, 0.16, 'square', 0.06)); note(200, 0, 0.35, 'sine', 0.12, 1600); },
+  nomorph: () => { note(300, 0, 0.12, 'square', 0.07); note(220, 0.1, 0.18, 'square', 0.07); },
+  splash: () => note(300, 0, 0.25, 'sine', 0.1, 80),
+  bubble: () => note(600 + Math.random() * 300, 0, 0.08, 'sine', 0.06, 1200),
+  boing:  () => note(260, 0, 0.22, 'sine', 0.14, 620),
+  warn:   () => { note(880, 0, 0.08, 'square', 0.08); note(880, 0.12, 0.08, 'square', 0.08); },
+  boss:   () => [196, 185, 175, 165].forEach((f, i) => note(f, i * 0.25, 0.3, 'sawtooth', 0.12)),
+  bossHit: () => { note(300, 0, 0.3, 'square', 0.15, 60); note(900, 0, 0.1, 'sine', 0.1); },
+  bossDie: () => { for (let i = 0; i < 8; i++) note(400 - i * 40, i * 0.08, 0.15, 'sawtooth', 0.08); },
+  land:   () => note(80, 0, 0.5, 'triangle', 0.25, 40),
+  click:  () => note(700, 0, 0.06, 'square', 0.06),
+  win:    () => [523, 659, 784, 1047, 784, 1047].forEach((f, i) => note(f, i * 0.12, 0.2, 'square', 0.1)),
+};
+
+// ---------- MUSIC ENGINE ----------
+// Every song has 5 tracks: LEAD (fat detuned synth + vibrato + echo), HARMONY / COUNTER-MELODY, CHORD PADS,
+// a punchy BASS (filter envelope) and DRUMS (kick, snare, hats, claps, toms made from oscillators + noise).
+// Songs are written in scale degrees, so the harmony can follow the melody and the final chorus can KEY CHANGE up.
+// Form: intro, verse, chorus, verse, chorus, bridge, chorus, KEY CHANGE chorus, tag = 64 bars, then it loops to the verse.
+let MUSIC_LOG = null;                                  // tests set this to an array to see every scheduled note
+const midi = n => 440 * Math.pow(2, (n - 69) / 12);
+function setupAudio() {
+  master = actx.createGain(); master.gain.value = 0.9;
+  if (actx.createDynamicsCompressor) {
+    const comp = actx.createDynamicsCompressor();
+    comp.threshold.value = -14; comp.ratio.value = 4; comp.attack.value = 0.005; comp.release.value = 0.2;
+    master.connect(comp); comp.connect(actx.destination);
+  } else master.connect(actx.destination);
+  musicBus = actx.createGain(); musicBus.gain.value = musicOn ? 0.6 : 0; musicBus.connect(master);
+  sfxBus = actx.createGain(); sfxBus.gain.value = 0.85; sfxBus.connect(master);
+  // feedback-delay echo for the lead (time is set per song)
+  delayIn = actx.createGain(); delayIn.gain.value = 0.28;
+  delayNode = actx.createDelay(2); delayNode.delayTime.value = 0.32;
+  const fb = actx.createGain(); fb.gain.value = 0.34;
+  const dlp = actx.createBiquadFilter(); dlp.type = 'lowpass'; dlp.frequency.value = 2400;
+  delayIn.connect(delayNode); delayNode.connect(dlp); dlp.connect(fb); fb.connect(delayNode); dlp.connect(musicBus);
+  noiseBuf = actx.createBuffer(1, actx.sampleRate, actx.sampleRate);
+  const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+}
+function toggleMusic() {
+  musicOn = !musicOn; save.music = musicOn; writeSave();
+  if (actx && musicBus) { const t = actx.currentTime; musicBus.gain.cancelScheduledValues(t); musicBus.gain.setValueAtTime(musicBus.gain.value, t); musicBus.gain.linearRampToValueAtTime(musicOn ? 0.6 : 0, t + 0.25); }
+  if (musicOn) { nextT = 0; }
+}
+// a smooth gain envelope: 0 -> peak (attack) -> sustain level -> 0 (release). No clicks!
+function envGain(t, a, peak, sus, dur, rel, out) {
+  const g = actx.createGain(), hold = t + Math.max(a + 0.002, dur);
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(peak, t + a);
+  if (sus < 1) g.gain.setTargetAtTime(peak * sus, t + a, Math.max(0.03, dur * 0.35));
+  g.gain.setTargetAtTime(0, hold, rel / 4);           // smooth exponential release, never a jump
+  g.connect(out);
+  return g;
+}
+function osc(type, f, t, end, detune = 0) {
+  const o = actx.createOscillator(); o.type = type; o.frequency.setValueAtTime(f, t);
+  if (detune) o.detune.setValueAtTime(detune, t);
+  o.start(t); o.stop(end + 0.05); return o;
+}
+function lowpass(f, q, t) { const b = actx.createBiquadFilter(); b.type = 'lowpass'; b.frequency.setValueAtTime(f, t); b.Q.value = q; return b; }
+// 🎺 LEAD: detuned oscillators, filter, delayed vibrato on long notes, and an echo send
+function leadVoice(m, t, dur, vol, kind, out, echo = true) {
+  const f = midi(m), end = t + dur + 0.25;
+  let g;
+  if (kind === 'steel' || kind === 'bell') {           // hit-and-ring voices (steel drum, crystal bell)
+    g = envGain(t, 0.004, vol, 0.25, Math.min(dur, 0.6), 0.25, out);
+    const parts = kind === 'steel' ? [[1, 1], [2, 0.35], [3.01, 0.12]] : [[1, 1], [2.01, 0.25], [4.02, 0.12], [5.4, 0.05]];
+    for (const [k, v] of parts) { const pg = actx.createGain(); pg.gain.value = v; osc('sine', f * k, t, end).connect(pg); pg.connect(g); }
+  } else {
+    g = envGain(t, kind === 'flute' || kind === 'glass' ? 0.035 : 0.012, vol, 0.8, dur, 0.12, out);
+    const types = { saw: ['sawtooth', 'sawtooth'], square: ['square', 'square'], brass: ['sawtooth', 'sawtooth'],
+                    flute: ['sine', 'triangle'], glass: ['triangle', 'sine'] }[kind] || ['sawtooth', 'square'];
+    const cut = { saw: 3000, square: 2600, brass: 1400, flute: 4000, glass: 3500 }[kind] || 2800;
+    const lp = lowpass(cut, kind === 'brass' ? 3 : 1.5, t);
+    if (kind === 'brass') { lp.frequency.linearRampToValueAtTime(3600, t + 0.06); lp.frequency.setTargetAtTime(1700, t + 0.08, 0.2); }
+    lp.connect(g);
+    const o1 = osc(types[0], f, t, end, -7), o2 = osc(types[1], kind === 'glass' ? f * 2 : f, t, end, 7);
+    const mix = actx.createGain(); mix.gain.value = kind === 'glass' ? 0.6 : 0.5;
+    o1.connect(mix); o2.connect(mix); mix.connect(lp);
+    if (dur > 0.28) {                                  // vibrato fades in on held notes
+      const lfo = osc('sine', 5.6, t, end), lg = actx.createGain();
+      lg.gain.setValueAtTime(0, t); lg.gain.linearRampToValueAtTime(0, t + 0.12); lg.gain.linearRampToValueAtTime(f * 0.009, t + 0.4);
+      lfo.connect(lg); lg.connect(o1.frequency); lg.connect(o2.frequency);
+    }
+  }
+  if (echo && delayIn) g.connect(delayIn);
+}
+// 🎹 PAD: soft detuned saws (strings), a vowel-filtered "choir", or an organ
+function padVoice(notes, t, dur, vol, kind, out) {
+  for (const m of notes) {
+    const f = midi(m), end = t + dur + 0.6;
+    const g = envGain(t, kind === 'choir' ? 0.35 : 0.22, vol, 0.85, dur, 0.5, out);
+    if (kind === 'organ') {
+      osc('sine', f, t, end).connect(g);
+      const g2 = actx.createGain(); g2.gain.value = 0.4; osc('sine', f * 2, t, end).connect(g2); g2.connect(g);
+    } else if (kind === 'choir') {                     // "aah": two formant filters + slow vibrato
+      const src = actx.createGain(); src.gain.value = 0.5;
+      const o1 = osc('sawtooth', f, t, end, -9), o2 = osc('sawtooth', f, t, end, 9);
+      o1.connect(src); o2.connect(src);
+      for (const [ff, q, v] of [[730, 6, 1], [1090, 7, 0.6], [2440, 8, 0.25]]) {
+        const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = ff; bp.Q.value = q;
+        const bg = actx.createGain(); bg.gain.value = v * 2.2; src.connect(bp); bp.connect(bg); bg.connect(g);
+      }
+      const lfo = osc('sine', 4.8, t, end), lg = actx.createGain(); lg.gain.value = f * 0.006; lfo.connect(lg); lg.connect(o1.frequency); lg.connect(o2.frequency);
+    } else {
+      const lp = lowpass(kind === 'saw' ? 1500 : 1100, 0.7, t); lp.connect(g);
+      osc('sawtooth', f, t, end, -11).connect(lp); osc('sawtooth', f, t, end, 11).connect(lp);
+    }
+  }
+}
+// 🎸 BASS: punchy filter envelope
+function bassVoice(m, t, dur, vol, kind, out) {
+  const f = midi(m), end = t + dur + 0.1;
+  const g = envGain(t, 0.006, vol, 0.7, dur, 0.06, out);
+  const lp = lowpass(kind === 'slap' ? 3200 : 1600, kind === 'slap' ? 8 : 5, t);
+  lp.frequency.setTargetAtTime(kind === 'slap' ? 380 : 260, t + 0.01, kind === 'slap' ? 0.05 : 0.09);
+  lp.connect(g);
+  osc(kind === 'square' ? 'square' : 'sawtooth', f, t, end).connect(lp);
+  const sg = actx.createGain(); sg.gain.value = 0.6; osc(kind === 'sub' ? 'triangle' : 'sine', f, t, end).connect(sg); sg.connect(g);
+}
+// 🎨 COUNTER-MELODY / arpeggio pluck
+function pluckVoice(m, t, dur, vol, kind, out) {
+  const f = midi(m), end = t + dur + 0.2;
+  const g = envGain(t, 0.004, vol, 0.35, dur, 0.12, out);
+  if (kind === 'bell') { osc('sine', f, t, end).connect(g); const g2 = actx.createGain(); g2.gain.value = 0.3; osc('sine', f * 3.01, t, end).connect(g2); g2.connect(g); }
+  else { const lp = lowpass(2600, 1, t); lp.frequency.setTargetAtTime(900, t, 0.08); lp.connect(g); osc(kind === 'square' ? 'square' : 'triangle', f, t, end).connect(lp); osc('sawtooth', f, t, end, 5).connect(lp); }
+}
+function noiseHit(t, type, freq, q, vol, decay, out) {
+  const s = actx.createBufferSource(); s.buffer = noiseBuf;
+  const fl = actx.createBiquadFilter(); fl.type = type; fl.frequency.value = freq; fl.Q.value = q;
+  const g = actx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.002); g.gain.exponentialRampToValueAtTime(0.001, t + decay);
+  s.connect(fl); fl.connect(g); g.connect(out); s.start(t); s.stop(t + decay + 0.05);
+}
+// 🥁 DRUMS
+function drumHit(kind, t, vol, out) {
+  if (kind === 'k') {                                  // kick: a sine that drops in pitch fast
+    const o = osc('sine', 150, t, t + 0.35); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    const g = actx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.003); g.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
+    o.connect(g); g.connect(out);
+  } else if (kind === 's') {                           // snare: noise + a little tone
+    noiseHit(t, 'highpass', 1400, 0.7, vol * 0.8, 0.16, out);
+    const o = osc('triangle', 190, t, t + 0.1), g = actx.createGain();
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol * 0.5, t + 0.002); g.gain.exponentialRampToValueAtTime(0.001, t + 0.09); o.connect(g); g.connect(out);
+  } else if (kind === 'h') noiseHit(t, 'highpass', 7500, 1, vol, 0.04, out);
+  else if (kind === 'o') noiseHit(t, 'highpass', 6500, 1, vol, 0.22, out);
+  else if (kind === 'c') { for (let i = 0; i < 3; i++) noiseHit(t + i * 0.011, 'bandpass', 1500, 2, vol, 0.03 + (i === 2 ? 0.1 : 0), out); }
+  else if (kind === 'x') noiseHit(t, 'highpass', 4000, 0.5, vol, 1.2, out);          // crash cymbal
+  else if (kind === 'r') { const o = osc('sine', 2400, t, t + 0.06), g = actx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.002); g.gain.exponentialRampToValueAtTime(0.001, t + 0.04); o.connect(g); g.connect(out); }
+  else if (kind === 't') {                             // tom
+    const o = osc('sine', 140, t, t + 0.3); o.frequency.exponentialRampToValueAtTime(75, t + 0.25);
+    const g = actx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.003); g.gain.exponentialRampToValueAtTime(0.001, t + 0.28); o.connect(g); g.connect(out);
+  }
+}
+// ---- song compiler: scale degrees -> notes ----
+// Melody tokens (one per 8th note): 1-7 = scale degree, ' = octave up, , = octave down, b/# = flat/sharp, - = hold, . = rest. | = bar line.
+// Chords (one per bar, "4/5" = two per bar): degree number, M = make it major, m = minor, b = flat root (bVII), 7 = add the 7th.
+const SCALES = { major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10], dorian: [0, 2, 3, 5, 7, 9, 10] };
+const degS = (sc, k) => sc[((k - 1) % 7 + 7) % 7] + 12 * Math.floor((k - 1) / 7);
+function parseMel(str, sc) {
+  return str.replace(/\|/g, ' ').trim().split(/\s+/).filter(Boolean).map(tk => {
+    if (tk === '.') return null;
+    if (tk === '-') return 'h';
+    const m = tk.match(/^([b#]?)([1-7])([',]*)$/);
+    if (!m) return null;
+    const acc = m[1] === 'b' ? -1 : m[1] === '#' ? 1 : 0, d = +m[2];
+    const oct = (m[3].match(/'/g) || []).length - (m[3].match(/,/g) || []).length;
+    let hd = d - 2, ho = oct; if (hd < 1) { hd += 7; ho--; }            // a third below, inside the scale
+    return { s: sc[d - 1] + acc + 12 * oct, hs: sc[hd - 1] + 12 * ho };
+  });
+}
+function melEvents(arr) {                              // onset -> length in 8ths (holds tie notes together)
+  const ev = new Array(arr.length).fill(null);
+  for (let i = 0; i < arr.length; i++) if (arr[i] && arr[i] !== 'h') { let n = 1; while (arr[i + n] === 'h') n++; ev[i] = Object.assign({ len: n }, arr[i]); }
+  return ev;
+}
+function mirrorMel(arr) {                              // 🪞 play a melody backwards (for Mirror City's bridge)
+  const runs = []; let i = 0;
+  while (i < arr.length) { let n = 1; while (arr[i + n] === 'h') n++; runs.push(arr.slice(i, i + n)); i += n; }
+  return runs.reverse().flat();
+}
+function parseChord(tk, sc) {
+  let flat = false; if (tk[0] === 'b') { flat = true; tk = tk.slice(1); }
+  const r = +tk[0], q = tk.slice(1), root = sc[r - 1] - (flat ? 1 : 0);
+  let third = flat ? root + 4 : root + ((degS(sc, r + 2) - sc[r - 1]) % 12 + 12) % 12;
+  if (q.includes('M')) third = root + 4;
+  if (q.includes('m')) third = root + 3;
+  const ch = [root, third, root + 7];
+  if (q.includes('7')) ch.push(root + ((degS(sc, r + 6) - sc[r - 1]) % 12 + 12) % 12);
+  return ch;
+}
+// ---- drum / bass / arpeggio styles. 16 steps per bar (12 for a waltz). Bass: R root, O octave, 5 fifth, - hold. Arp: chord tone 0-3.
+const STYLES = {
+  pop: {
+    I: { k: 'x.......x.......', h: '..x...x...x...x.', bass: 'R-------R---R-O-', arp: '0.1.2.1.0.1.2.1.' },
+    V: { k: 'x.....x.x.......', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', bass: 'R..R..R.R..R..O.', arp: '0.1.2.1.0.1.2.1.' },
+    V2: { k: 'x.....x.x.....x.', s: '....x.......x...', h: 'x.xxx.x.x.xxx.x.', bass: 'R..R..R.R..R.5O.', arp: '0121312101213121' },
+    C: { k: 'x...x...x...x...', s: '....x.......x...', h: 'x.xxx.x.x.xxx.x.', o: '..............x.', bass: 'R.RO.RR.R.RO.R5.', arp: '0121312101213121' },
+    B: { k: 'x.......x.......', s: '........x.......', h: 'x...x...x...x...', bass: 'R-------5-------', arp: '0...1...2...3...' } },
+  waltz: {
+    I: { k: 'x...........', h: '....x...x...', bass: 'R-----------', arp: '0...1...2...' },
+    V: { k: 'x...........', s: '....x...x...', h: 'x.x.x.x.x.x.', bass: 'R-..5-..5-..', arp: '0.1.2.3.2.1.' },
+    C: { k: 'x.....x.....', s: '....x...x...', h: 'xxx.x.x.xxx.', o: '..........x.', bass: 'R-..O-..5-..', arp: '012321012321' },
+    B: { k: 'x...........', s: '........x...', h: 'x...x...x...', bass: 'R-----------', arp: '0...2...3...' } },
+  calypso: {
+    I: { k: 'x...x...x...x...', r: 'x..x..x...x.x...', bass: 'R..5..R.R..5..O.', arp: '..0...1...0...2.' },
+    V: { k: 'x...x...x...x...', h: '..x...x...x...x.', r: 'x..x..x...x.x...', bass: 'R..5..R.R..5..O.', arp: '..0.1...0.2...1.' },
+    C: { k: 'x...x...x...x...', s: '....x.......x...', o: '..x...x...x...x.', r: 'x..x..x...x.x...', bass: 'R..5..R.R..O.5.R', arp: '..0.1.2...0.1.2.' },
+    B: { k: 'x.......x.......', r: 'x..x..x...x.x...', h: '..x...x...x...x.', bass: 'R-....5-R-....O-', arp: '0...1...2...1...' } },
+  funk: {
+    I: { k: 'x.....x...x.....', h: 'x.x.x.x.x.x.x.x.', bass: 'R..R.O..R.R..5O.' },
+    V: { k: 'x.....x...x..x..', s: '....x.......x...', c: '....x.......x...', h: 'xxxxxxxxxxxxxxxx', bass: 'R..R.O.RR..5.O.R', arp: '..0...1...0...2.' },
+    C: { k: 'x.....x...x..x..', s: '....x..x.x..x...', c: '....x.......x...', h: 'x.xxx.xxx.xxx.xx', o: '......x.......x.', bass: 'R.RO..R.R..O5.R.', arp: '0.0.1.1.2.2.1.1.' },
+    B: { k: 'x.........x.....', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', bass: 'R-..R-..5-..O-..', arp: '0...........1...' } },
+  sparkle: {
+    I: { h: '..x...x...x...x.', bass: 'R-------R-------', arp: '0123012301230123' },
+    V: { k: 'x.......x.......', s: '....x.......x...', h: '..x...x...x...x.', bass: 'R...R...R...O...', arp: '0123212301232123' },
+    C: { k: 'x...x...x...x...', s: '....x.......x...', h: 'xxxxxxxxxxxxxxxx', bass: 'R.R.O.R.R.R.O.5.', arp: '0123321001233210' },
+    B: { k: 'x...............', h: 'x...x...x...x...', bass: 'R-------5-------', arp: '3210321032103210' } },
+  mystery: {
+    I: { k: 'x...............', t: '..........x.....', bass: 'R---------------', arp: '0...2...1...3...' },
+    V: { k: 'x.......x.......', r: '......x.......x.', h: '..x...x...x...x.', bass: 'R.....R.R.......', arp: '0.2.1.2.0.2.1.2.' },
+    C: { k: 'x.....x.x.......', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', bass: 'R.....R.R...5...', arp: '0213021302130213' },
+    B: { k: 'x...............', r: '....x.......x...', h: '..x...x...x...x.', bass: 'R-------R-------', arp: '3...2...1...0...' } },
+  epic: {
+    I: { k: 'x.......x.......', t: '............x.x.', bass: 'R-------R-------' },
+    V: { k: 'x.....x.x.......', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', t: '..............xx', bass: 'R.R.R.R.R.R.R.R.', arp: '0...1...2...1...' },
+    C: { k: 'x...x.x.x...x.x.', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', o: '..x...x...x...x.', bass: 'R.R.O.R.R.R.O.R.', arp: '0.1.2.1.0.1.2.1.' },
+    B: { k: 'x.......x.......', t: 'x...x...x...xxxx', h: '..x...x...x...x.', bass: 'R-------5-------', arp: '0...........2...' } },
+  boss: {
+    I: { k: 'x...x...x...x...', h: 'xxxxxxxxxxxxxxxx', bass: 'R.R.R.R.R.R.R.R.' },
+    V: { k: 'x...x...x...x...', s: '....x.......x...', h: 'xxxxxxxxxxxxxxxx', bass: 'R.R.O.R.R.R.O.R.', arp: '0.1.2.1.0.1.2.1.' },
+    C: { k: 'x.x.x...x.x.x...', s: '....x.......x.x.', h: 'xxxxxxxxxxxxxxxx', o: '..x...x...x...x.', bass: 'R.R.O.R.R.R.O.R.', arp: '0121012101210121' },
+    B: { k: 'x.......x.......', s: '....x.......x...', t: '........x.x.xxxx', bass: 'R-------R-------', arp: '0...1...2...3...' } },
+  march: {
+    I: { k: 'x.......x.......', s: 'x..x..x.x.x.x.xx', bass: 'R-------5-------' },
+    V: { k: 'x...x...x...x...', s: '....x..x....x.xx', h: 'x.x.x.x.x.x.x.x.', bass: 'R...5...R...5...', arp: '0.1.2.1.0.1.2.1.' },
+    C: { k: 'x...x...x...x...', s: '....x..x....x.xx', h: 'x.x.x.x.x.x.x.x.', o: '..............x.', bass: 'R.R.5.5.R.R.O.5.', arp: '0121312101213121' },
+    B: { k: 'x.......x.......', s: 'x.x.x.x.x.x.xxxx', bass: 'R-------5-------', arp: '0...1...2...3...' } },
+};
+const DRUM_VOL = { k: 0.55, s: 0.3, h: 0.07, o: 0.06, c: 0.22, r: 0.09, t: 0.32, x: 0.1 };
+function compileSong(name, def) {
+  const sc = SCALES[def.scale || 'major'], spb = def.beats === 3 ? 12 : 16, per = spb / 2;
+  const secs = {};
+  for (const k in def.sec) {
+    const S = def.sec[k];
+    if (S.mirror) continue;
+    const ch = S.ch.trim().split(/\s+/).map(b => b.split('/').map(c => parseChord(c, sc)));
+    const mel = S.mel ? parseMel(S.mel, sc) : new Array(ch.length * per).fill(null);
+    secs[k] = { ch, mel, ev: melEvents(mel), bars: ch.length };
+  }
+  for (const k in def.sec) if (def.sec[k].mirror) {                    // mirrored section = another section backwards
+    const src = secs[def.sec[k].mirror], mel = mirrorMel(src.mel);
+    secs[k] = { ch: src.ch.slice().reverse(), mel, ev: melEvents(mel), bars: src.bars };
+  }
+  const form = def.form || ['I', 'V', 'C', 'V', 'C', 'B', 'C', 'K', 'T'], bars = [], reps = {};
+  for (const f of form) {
+    const key = f === 'K' ? 'C' : f === 'T' ? 'I' : f, S = secs[key], tr = (f === 'K' || f === 'T') ? (def.kc || 2) : 0;
+    reps[f] = (reps[f] || 0) + 1;
+    for (let i = 0; i < S.bars; i++) bars.push({ key, f, i, tr, rep: reps[f], last: i === S.bars - 1 });
+  }
+  const loopBar = Math.max(0, bars.findIndex(b => b.f === 'V'));
+  return Object.assign({}, def, { name, sc, spb, per, secs, bars, loopStep: loopBar * spb, total: bars.length * spb, style: STYLES[def.style] });
+}
+// ---- the scheduler: looks ahead and books notes a little early, so the timing is rock steady ----
+let song = 'title', songPos = 0, nextT = 0, songOut = null, SONGS = {};
+function setSong(name) {
+  if (typeof JB_SONG !== 'undefined' && JB_SONG) name = JB_SONG;      // 🎶 jukebox mode keeps playing the song the book asked for
+  if (song === name) return;
+  song = name; songPos = 0; nextT = 0;
+  if (songOut && actx) {                               // fade the old song out (no pops)
+    const g = songOut, t = actx.currentTime;
+    g.gain.cancelScheduledValues(t); g.gain.setValueAtTime(g.gain.value, t); g.gain.linearRampToValueAtTime(0, t + 0.4);
+    setTimeout(() => { try { g.disconnect(); } catch (_) {} }, 1200);
+  }
+  songOut = null;
+}
+const stepDur = S => 60 / S.bpm / 4;
+function logNote(track, m, b) { if (MUSIC_LOG) MUSIC_LOG.push({ song: song, track, m, f: b.f, tr: b.tr }); }
+function chordAt(S, b, st) { const c = S.secs[b.key].ch[b.i]; return c[st < S.spb / 2 || c.length < 2 ? 0 : 1]; }
+function scheduleStep(S, pos, t) {
+  const b = S.bars[Math.floor(pos / S.spb)], st = pos % S.spb, sd = stepDur(S), sec = S.secs[b.key], key = S.base + b.tr;
+  const out = songOut, inst = S.inst, sty = (b.f === 'V' && b.rep > 1 && S.style.V2) ? S.style.V2 : S.style[b.key] || S.style.V;
+  const swing = st % 2 ? (S.swing || 0) * sd : 0, tt = t + swing;
+  const ch = chordAt(S, b, st);
+  // 🥁 drums
+  for (const d of ['k', 's', 'h', 'o', 'c', 'r', 't']) {
+    let pat = sty[d];
+    if (b.last && st >= S.spb - 4 && (d === 's' || d === 't') && b.f !== 'T') pat = 'xxxxxxxxxxxxxxxx';   // drum fill at the end of each part
+    if (b.f === 'V' && b.rep === 1 && b.i < 2 && d === 's') continue;                                    // verse 1 starts gently
+    if (pat && pat[st] === 'x') { drumHit(d, tt, DRUM_VOL[d] * (d === 's' && b.last && st >= S.spb - 4 ? 0.6 + (st - S.spb + 4) * 0.12 : 1), out); logNote('drum' + d, 0, b); }
+  }
+  if (st === 0 && b.i === 0 && (b.key === 'C' || b.f === 'B')) { drumHit('x', t, DRUM_VOL.x, out); logNote('drumx', 0, b); }
+  // 🎸 bass
+  const bp = sty.bass;
+  if (bp && bp[st] !== '.' && bp[st] !== '-') {
+    let n = 1; while (bp[st + n] === '-') n++;
+    const r = ((key + ch[0]) % 12 + 12) % 12 + 33, off = { R: 0, O: 12, 5: 7, 3: ch[1] - ch[0] }[bp[st]] || 0;
+    bassVoice(r + off, tt, n * sd * 0.92, 0.17 * (inst.bassVol || 1), inst.bass, out); logNote('bass', r + off, b);
+  }
+  // 🎹 pads (on each chord change)
+  if (st === 0 || (st === S.spb / 2 && sec.ch[b.i].length > 1)) {
+    const len = sec.ch[b.i].length > 1 ? S.spb / 2 : S.spb, base = S.base - 12;
+    const notes = ch.map(s => { let m = key + s; while (m < base - 9) m += 12; while (m > base + 4) m -= 12; return m; });
+    padVoice(notes, t, len * sd * 0.98, 0.034 * (inst.padVol || 1) * (b.f === 'I' ? 0.8 : 1), inst.pad, out); logNote('pad', notes[0], b);
+  }
+  // 🎨 counter-melody arpeggio
+  const ap = sty.arp;
+  if (ap && ap[st] !== '.' && ap[st] !== '-' && ap[st] !== undefined) {
+    const k = +ap[st], tones = ch.slice(0, 3).map(s => { let m = key + s; while (m < S.base - 7) m += 12; while (m >= S.base + 5) m -= 12; return m; }).sort((a, c) => a - c);
+    const m = k === 3 ? tones[0] + 12 : tones[k];
+    pluckVoice(m + (inst.arpOct || 0) * 12, tt, sd * (inst.arpLen || 1.6), 0.045 * (inst.arpVol || 1), inst.arp, out); logNote('arp', m, b);
+  }
+  // 🎺 lead melody (+ harmony a third below in choruses and the 2nd verse, + octave doubling after the KEY CHANGE)
+  if (st % 2 === 0) {
+    const e = sec.ev[b.i * S.per + st / 2];
+    if (e) {
+      const m = S.base + b.tr + e.s, dur = e.len * sd * 2 * 0.94, lv = 0.12 * (inst.leadVol || 1) * (b.f === 'I' || b.f === 'T' ? 0.85 : 1);
+      leadVoice(m, tt, dur, lv, inst.lead, out); logNote('lead', m, b);
+      if (b.key === 'C' || (b.f === 'V' && b.rep > 1) || b.f === 'B') { leadVoice(S.base + b.tr + e.hs, tt, dur, lv * 0.42, inst.harm || inst.lead, out, false); logNote('harm', S.base + b.tr + e.hs, b); }
+      if (b.f === 'K') { leadVoice(m + 12, tt, dur, lv * 0.28, inst.lead, out, false); logNote('lead8', m + 12, b); }
+    }
+  }
+}
+function playMusic() {
+  if (!actx || !musicBus || !musicOn) return;
+  const S = SONGS[song] || SONGS.title;
+  if (!songOut) {
+    songOut = actx.createGain(); songOut.gain.value = 1; songOut.connect(musicBus);
+    if (delayNode) delayNode.delayTime.setValueAtTime(stepDur(S) * 3, actx.currentTime);     // dotted-8th echo
+    nextT = 0;
+  }
+  if (nextT < actx.currentTime) nextT = actx.currentTime + 0.05;                               // first note or we fell behind
+  while (nextT < actx.currentTime + 0.16) {
+    scheduleStep(S, songPos, nextT);
+    nextT += stepDur(S); songPos++;
+    if (songPos >= S.total) songPos = S.loopStep;                                              // loop back to the first verse
+  }
+}
+// ---------- THE SONGS (all original!) ----------
+// Spooky-fun: minor keys, a music-box waltz, a wobbly theremin-ish lead — but playful, never scary.
+const SONG_DEFS = {
+  // 🎠 TITLE: "The Music Box in the Dark" — D minor waltz with a twinkly bell lead
+  title: { bpm: 138, base: 62, scale: 'minor', beats: 3, style: 'waltz', kc: 1,
+    inst: { lead: 'bell', harm: 'glass', pad: 'choir', padVol: 0.8, bass: 'sub', bassVol: 0.8, arp: 'bell', arpOct: 1, arpLen: 2, arpVol: 0.7, leadVol: 1.25 },
+    sec: {
+      I: { ch: '1 6 4 5M', mel: "5 - - 3 - 1 | 6 - - - 5 - | 4 - 6 - 1' - | #7 - - - - ." },
+      V: { ch: '1 1 4 5M 6 4 2 5M',
+           mel: "1' - 7 1' - 5 | 3 - - 5 - . | 4 - 6 1' - 6 | #7 - - 5 - . | 6 - 1' 3' - 1' | 4 - 6 1' - 4' | 2' - 1' 7 - 6 | #7 - - - - ." },
+      C: { ch: '6 3 7 1 6 4 5M 1',
+           mel: "3' - - 1' - 6 | 5' - - 3' - . | 4' - 2' 7 - 2' | 3' - - 1' - . | 1' - 3' 6' - 3' | 4' - 1' 6 - 4 | #7 - 2' 5' - 4' | 3' - - - - ." },
+      B: { ch: '4 1 4 5M 6 3 2 5M',
+           mel: "6 - 4 1' - 6 | 5 - 3 1' - . | 6 - 4 2' - 1' | #7 - - 2' - . | 1' - 6 3' - 1' | 3' - 1' 5' - . | 4' - 2' 6 - 2' | #7 - - - - ." } } },
+  // 🔦 DARK FLOORS: "Tiptoe Theremin" — E minor, a wobbly glassy lead sneaking over soft drums
+  dark: { bpm: 100, base: 64, scale: 'minor', style: 'mystery', kc: 1,
+    inst: { lead: 'glass', harm: 'flute', pad: 'choir', padVol: 0.9, bass: 'sub', arp: 'bell', arpOct: 1, arpLen: 2, arpVol: 0.8, leadVol: 1.1 },
+    sec: {
+      I: { ch: '1 6 4 5M', mel: "5 - . 6 5 - 3 - | 1 - - - . . . . | 6 - . 1' 6 - 4 - | #7, - - - 2 - . ." },
+      V: { ch: '1 4 1 5M 6 4 2 5M',
+           mel: ". 1 3 5 - 3 #4 5 | 6 - 4 - 1' - . . | . 5 3 1 - 3 5 1' | #7 - - - 5 - . . | . 6 1' 3' - 1' 6 1' | 1' - 6 4 - 6 1' . | 2' - 1' 7 - 6 4 2 | #7, - - - . . . ." },
+      C: { ch: '4 5 1 6 4 5M 1 1',
+           mel: "4 . 6 1' - 6 4 6 | 5 . 7 2' - 7 5 . | 3 . 5 1' - 7 1' 3' | 3' - - - 1' - . . | 4' - 3' - 1' - 6 - | 2' - #7 - 5 - 3' 2' | 1' - - 5 3 - 5 7 | 1' - - - . . . ." },
+      B: { ch: '6 7 3 1 6 7 5M 5M',
+           mel: "3' . 1' . 6 . 1' . | 2' . 7 . 5 . 2' . | 3' . 7 . 5 . 3 . | 1' - - - . . . . | 1' . 6 . 3 . 6 . | 2' . 7 . 4 . 7 . | #7 - 2' - 4' - 3' - | 2' - #7 - - . . ." } } },
+  // 💡 LIGHTS ON: "Bright as Day" — sparkly C major, everything is cheerful again
+  bright: { bpm: 128, base: 72, style: 'sparkle', kc: 2,
+    inst: { lead: 'flute', harm: 'glass', pad: 'saw', padVol: 0.8, bass: 'sub', arp: 'bell', arpOct: 1, arpLen: 2, arpVol: 0.8 },
+    sec: {
+      I: { ch: '1 4 5 1', mel: "5 . 1' . 7 . 1' . | 6 . 4 . 6 . 1' . | 7 - 5 - 2' - 7 . | 1' - - - . . . ." },
+      V: { ch: '1 6 4 5 1 6 2 5',
+           mel: "3 . 5 . 1' - 5 . | 6 - 1' - 3' - . . | 4' . 3' . 1' - 6 . | 7 - - - 5 - . . | 3 . 5 . 1' - 5 . | 6 - 1' - 3' - 2' . | 2' . 4' . 6 - 2' . | 5 - - - . 5 6 7" },
+      C: { ch: '4 5 3 6 2 5 1 1',
+           mel: "1' . 6 . 1' . 4' . | 2' - 7 - 5 - . . | 3' . 1' . 5 . 3' . | 3' - 1' - 6 - . . | 6 . 2' . 4' . 2' . | 7 . 2' . 5' - 4' . | 3' - 1' - 5 - 3' 2' | 1' - - - . . . ." },
+      B: { ch: '6 3 4 5 6 3 2 5',
+           mel: "6 - 1' 3' - 1' 6 . | 5 - 7 3' - 7 5 . | 4 - 6 1' - 4' 3' . | 2' - - - 7 - . . | 6 - 1' 3' - 6' 5' . | 3' - 5' 3' - 1' 7 . | 6 - 2' 4' - 6' 4' . | 2' - - - 5 6 7 1'" } } },
+  // 🎉 NIGHT-LIGHT PARTY: the big happy ending, G major pop
+  party: { bpm: 140, base: 67, style: 'pop', kc: 2,
+    inst: { lead: 'saw', harm: 'square', pad: 'saw', bass: 'saw', arp: 'pluck' },
+    sec: {
+      I: { ch: '1 5 6 4', mel: "1' - 7 - 5 - 3 - | 2 - 5 - 7 - 2' - | 3' - 2' - 1' - 6 - | 4 - 6 - 1' - 2' -" },
+      V: { ch: '1 5 6 4 1 5 4 5',
+           mel: "1' . 1' . 7 1' - 5 | . . 3 5 - 3 2 . | 3 . 3 . 2 3 - 6 | . . 1' 6 - 4 6 . | 1' . 1' . 7 1' - 5 | . . 2' 7 - 5 7 . | 6 - 4 - 6 - 1' - | 7 - - - 5 6 7 ." },
+      C: { ch: '4 1 5 6 4 1 5 1',
+           mel: "1' - 6 - 4 6 1' 4' | 3' - 1' - 5 - 1' 3' | 2' - 7 - 5 - 7 2' | 3' - 1' - 6 - . . | 4' - 3' - 1' - 6 - | 3' - 1' - 5 - 3' 5' | 4' - 2' - 7 - 2' 4' | 3' - - - 1' . . ." },
+      B: { ch: '6 4 1 5 6 4 2 5',
+           mel: "6 . . 6 1' . 3' . | 4' - 3' - 1' - . . | 3' . . 1' 5 . 1' . | 2' - - - 7 - . . | 6 . . 6 1' . 3' . | 4' - 6' - 4' - 1' . | 2' . 1' . 6 . 2' . | 5' - - - - . . ." } } },
+};
+for (const k in SONG_DEFS) SONGS[k] = compileSong(k, SONG_DEFS[k]);
+const JB_SONG = (window.JUKEBOX && window.JUKEBOX.song && SONG_DEFS[window.JUKEBOX.song]) ? window.JUKEBOX.song : null;   // 🎶 the book's Music Factory can ask for any song
+if (JB_SONG) song = JB_SONG;
+
+// ---------- Spooky-fun sound effects (all soft) ----------
+function noiseFx(dur, freq, vol, type = 'bandpass') { if (!actx || !noiseBuf) return; noiseHit(actx.currentTime, type, freq, 1.5, vol, dur, sfxBus); }
+Object.assign(sfx, {
+  fuse:   () => { [659, 784, 988, 1319].forEach((f, i) => note(f, i * 0.07, 0.22, 'triangle', 0.1)); note(2637, 0.3, 0.3, 'sine', 0.05); },
+  battery: () => { note(520, 0, 0.1, 'square', 0.06, 900); note(1040, 0.08, 0.15, 'sine', 0.08); },
+  creak:  () => { note(170 + Math.random() * 40, 0, 0.45, 'sawtooth', 0.045, 110); note(240, 0.1, 0.3, 'triangle', 0.04, 150); },
+  whoosh: () => noiseFx(0.5, 600, 0.08),
+  hoot:   () => { note(392, 0, 0.25, 'sine', 0.06, 370); note(370, 0.35, 0.4, 'sine', 0.06, 330); },
+  ooo:    () => { note(330, 0, 0.7, 'sine', 0.05, 440); note(334, 0, 0.7, 'triangle', 0.025, 446); },
+  giggle: () => { for (let i = 0; i < 6; i++) note(900 + (i % 2) * 260 + i * 40, i * 0.07, 0.07, 'sine', 0.08); },
+  boop:   () => { note(500, 0, 0.12, 'sine', 0.1, 300); note(300, 0.13, 0.3, 'triangle', 0.08, 200); },
+  boost:  () => { note(400, 0, 0.25, 'sine', 0.08, 1400); noiseFx(0.25, 3000, 0.04); },
+  click:  () => note(900, 0, 0.04, 'square', 0.05),
+  hide:   () => note(260, 0, 0.12, 'triangle', 0.08, 180),
+  meow:   () => { note(700, 0, 0.18, 'sine', 0.09, 950); note(950, 0.17, 0.3, 'sine', 0.08, 600); },
+  empty:  () => { note(300, 0, 0.12, 'square', 0.05); note(220, 0.12, 0.18, 'square', 0.05); },
+  jingle: () => { [523, 659, 784, 1047, 784, 1047, 1319, 1568].forEach((f, i) => { note(f, i * 0.1, 0.25, 'triangle', 0.1); note(f * 2, i * 0.1, 0.15, 'sine', 0.03); }); },
+  power:  () => { note(60, 0, 1.6, 'sawtooth', 0.12, 240); [523, 659, 784, 1047, 1319, 1568, 2093].forEach((f, i) => note(f, 1 + i * 0.09, 0.4, 'triangle', 0.1)); },
+});
+
+// ---------- The 4 floors ----------
+// # wall, o furniture, D hiding spot, c creaky floorboard, f fuse, b battery, P start, G Phantom Robo, B fuse box, E stairs, S Sammy, X the BIG power switch
+const FLOORS = [
+  { name: 'The Workshop', icon: '🔧', floor: '#6d4c41', floorB: '#d7a86e', wall: '#3e2723', wallB: '#a1887f', deco: 'bench', hideName: 'desk',
+    map: [
+      '##############################',
+      '#P...c....#......b....#..f...#',
+      '#.........#..oo.......#......#',
+      '#..D......c..oo...D...#..D...#',
+      '#.........#...........c......#',
+      '#####.#####.......f...####.###',
+      '#.........#####.#######......#',
+      '#..f......#...........#..G...#',
+      '#....oo...c...D.......#......#',
+      '#....oo...#.....G.....c...b..#',
+      '#.........#...........#......#',
+      '###.#######......f....###.####',
+      '#.....c...#...........#......#',
+      '#..D......####c########..D...#',
+      '#.f.......#........BE....oo..#',
+      '#......b..c...S..........oo..#',
+      '##############################'] },
+  { name: 'The Toy Room', icon: '🧸', floor: '#4a2c5e', floorB: '#f8bbd0', wall: '#2a1640', wallB: '#ce93d8', deco: 'toys', hideName: 'blanket fort',
+    map: [
+      '##############################',
+      '#E.B.....#.........#.....f...#',
+      '#........c....oo...#..D......#',
+      '#..oo....#....oo...c.........#',
+      '#..oo....#.........#....oo...#',
+      '#........#..D..G...#....oo...#',
+      '##c#######.........####c######',
+      '#........#.........#.........#',
+      '#..f..D..c.f..oo...c..G...f..#',
+      '#........#....oo...#.........#',
+      '#...G....#.........#..D......#',
+      '#######c########.###########c#',
+      '#..b.........#.........c.....#',
+      '#..........D.c...oo..........#',
+      '#.f...oo.....#...oo....D...b.#',
+      '#.....oo.....#......S......P.#',
+      '##############################'] },
+  { name: 'The Boiler Basement', icon: '🔥', floor: '#263238', floorB: '#b0bec5', wall: '#101a1f', wallB: '#78909c', deco: 'boiler', hideName: 'big crate',
+    map: [
+      '##############################',
+      '#P......c.......#....f.......#',
+      '#.......#.......#...........D#',
+      '#..oo...#..D....c....oo......#',
+      '#..oo...#.......#....oo......#',
+      '#.......#...G...#.........G..#',
+      '###c#####.......#####c########',
+      '#.......c.......#............#',
+      '#.f..D..#..oo...c...oo..oo...#',
+      '#.......#..oo...#...oo..oo.f.#',
+      '#....G..#.......#............#',
+      '#c#######c#######..D.....c...#',
+      '#.......#...........#######c##',
+      '#..f....#..oo..b....#........#',
+      '#..D....c..oo.......c..f...BE#',
+      '#....b..#.......S...#........#',
+      '##############################'] },
+  { name: 'The Rooftop Observatory', icon: '🔭', floor: '#1a237e', floorB: '#90caf9', wall: '#0d1240', wallB: '#5c6bc0', deco: 'scope', hideName: 'star bench',
+    map: [
+      '##############################',
+      '#P.....c.......#......f......#',
+      '#..............c.............#',
+      '#..D...oo......#.....oo...D..#',
+      '#......oo......#.....oo......#',
+      '#..f......G....#.........G...#',
+      '#####c######.......######c####',
+      '#..........#...XB..#.........#',
+      '#..b...D...c.......c...D..b..#',
+      '#..........#.......#.........#',
+      '#######c####...G...####c######',
+      '#..............#....f........#',
+      '#..oo..........c......G..oo..#',
+      '#..oo..........#.........oo..#',
+      '#.f.....D......#......D....f.#',
+      '#.......b......#.S....b......#',
+      '##############################'] },
+];
+const COLS = 30, ROWS = 17, MW = COLS * T, MH = ROWS * T;
+
+// ---------- Game state ----------
+let state = 'title', frame = 0, stT = 0, easy = !!save.easy, floorSel = save.floor;
+let L = null, P = null, cam = { x: 0, y: 0 }, parts = [], floats = [], paws = [], msg = null;
+let battery = 100, boostT = 0, ckpt = { x: 0, y: 0 }, caughtT = 0, introT = 0, endT = 0, stuckT = 0, creakCool = 0;
+let hootT = 600 + Math.floor(Math.random() * 600), tipShown = {};
+const tc = v => Math.floor(v / T), mid = t => t * T + T / 2;
+const dist = (a, b, c, d) => Math.hypot(a - c, b - d);
+function tileAt(tx, ty) { if (!L || tx < 0 || ty < 0 || tx >= COLS || ty >= ROWS) return '#'; return L.grid[ty][tx]; }
+function solidAt(tx, ty) { const c = tileAt(tx, ty); return c === '#' || c === 'o' || c === 'B' || c === 'X' || (c === 'E' && !L.litDone); }
+function wallAt(px, py) { return tileAt(tc(px), tc(py)) === '#'; }
+function blockedBox(x, y, r) { return solidAt(tc(x - r), tc(y - r)) || solidAt(tc(x + r), tc(y - r)) || solidAt(tc(x - r), tc(y + r)) || solidAt(tc(x + r), tc(y + r)); }
+function los(x1, y1, x2, y2) {
+  const d = dist(x1, y1, x2, y2), n = Math.ceil(d / 10);
+  for (let i = 1; i < n; i++) { const k = i / n; if (wallAt(x1 + (x2 - x1) * k, y1 + (y2 - y1) * k)) return false; }
+  return true;
+}
+// grid path (BFS) from tile a to tile b — used by Sammy and by chasing Phantoms
+function bfs(ax, ay, bx, by, ghost) {
+  const prev = new Int16Array(COLS * ROWS).fill(-1), q = [ay * COLS + ax]; prev[ay * COLS + ax] = ay * COLS + ax;
+  while (q.length) {
+    const cur = q.shift(), cx = cur % COLS, cy = (cur / COLS) | 0;
+    if (cx === bx && cy === by) break;
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = cx + dx, ny = cy + dy, id = ny * COLS + nx;
+      if (nx < 0 || ny < 0 || nx >= COLS || ny >= ROWS || prev[id] !== -1) continue;
+      if (solidAt(nx, ny) && !(nx === bx && ny === by)) continue;
+      prev[id] = cur; q.push(id);
+    }
+  }
+  const end = by * COLS + bx; if (prev[end] === -1) return null;
+  const path = []; let c = end; while (c !== ay * COLS + ax) { path.push([c % COLS, (c / COLS) | 0]); c = prev[c]; if (path.length > 900) break; }
+  return path.reverse();
+}
+
+function startFloor(i, fromTitle) {
+  const F = FLOORS[i];
+  L = { i, F, grid: F.map.map(r => r.split('')), fuses: [], bats: [], ph: [], got: 0, placed: false, lit: 0, litDone: false, box: null, stairs: null, sw: null, sam: null, swOn: false };
+  let px = 0, py = 0, gi = 0;
+  F.map.forEach((row, y) => [...row].forEach((c, x) => {
+    const cx = mid(x), cy = mid(y);
+    if (c === 'P') { px = cx; py = cy; L.grid[y][x] = '.'; }
+    else if (c === 'f') { L.fuses.push({ x: cx, y: cy, got: false, tw: Math.random() * 100 }); L.grid[y][x] = '.'; }
+    else if (c === 'b') { L.bats.push({ x: cx, y: cy, t: 0 }); L.grid[y][x] = '.'; }
+    else if (c === 'G') {
+      L.grid[y][x] = '.';
+      if (!easy || gi % 2 === 0) L.ph.push({ hx: cx, hy: cy, x: cx, y: cy, st: 'wander', t: 0, tx: cx, ty: cy, frz: 0, eye: 0.3, goneT: 0, path: null, pathT: 0, bob: Math.random() * 6, face: 1 });
+      gi++;
+    }
+    else if (c === 'B') L.box = { x: cx, y: cy, tx: x, ty: y };
+    else if (c === 'E') L.stairs = { x: cx, y: cy, tx: x, ty: y };
+    else if (c === 'X') L.sw = { x: cx, y: cy, tx: x, ty: y };
+    else if (c === 'S') { L.sam = { x: cx, y: cy, hx: cx, hy: cy, st: 'sit', path: null, meowT: 0, face: 1, walk: 0 }; L.grid[y][x] = '.'; }
+  }));
+  P = { x: px, y: py, ang: 0, face: 1, hidden: false, inv: 60, walk: 0, moving: false, lastTile: '' };
+  ckpt = { x: px, y: py }; battery = 100; boostT = 0; parts = []; floats = []; paws = []; stuckT = 0;
+  state = 'intro'; introT = 0; msg = null;
+  save.floor = i; save.best = Math.max(save.best, i); writeSave();
+  setSong('dark'); sfx.whoosh();
+  updateCam(true);
+}
+function updateCam(snap) {
+  const tx = Math.max(0, Math.min(MW - W, P.x - W / 2)), ty = Math.max(0, Math.min(MH - H + 0, P.y - H / 2 - 10));
+  if (snap) { cam.x = tx; cam.y = ty; } else { cam.x += (tx - cam.x) * 0.15; cam.y += (ty - cam.y) * 0.15; }
+}
+function say(txt, col = '#fff59d', time = 150) { msg = { txt, col, t: time }; }
+function floatText(x, y, txt, col = '#fff') { floats.push({ x, y, txt, col, life: 70 }); }
+function burst(x, y, n, cols, spd = 3, above = true) {
+  for (let i = 0; i < n; i++) { const a = Math.random() * 7, s = Math.random() * spd + 0.5; parts.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 40 + Math.random() * 30, col: cols[i % cols.length], r: 2 + Math.random() * 3, above }); }
+}
+
+// ---------- Input (keyboard, touchpad.js buttons, controller and taps) ----------
+const keys = { left: false, right: false, up: false, down: false, light: false };
+const press = { light: false, hide: false, enter: false, esc: false, l: false, r: false, u: false, d: false, m: false };
+let tap = null;
+function wakeAudio() {
+  if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); setupAudio(); } catch (_) { actx = null; } }
+  else if (actx.state === 'suspended' && actx.resume) actx.resume();
+}
+addEventListener('keydown', e => {
+  wakeAudio();
+  const k = e.key, rep = e.repeat;
+  if (k === 'ArrowLeft' || k === 'a' || k === 'A') { keys.left = true; if (!rep) press.l = true; }
+  if (k === 'ArrowRight' || k === 'd' || k === 'D') { keys.right = true; if (!rep) press.r = true; }
+  if (k === 'ArrowUp' || k === 'w' || k === 'W') { keys.up = true; if (!rep) press.u = true; }
+  if (k === 'ArrowDown' || k === 's' || k === 'S') { keys.down = true; if (!rep) press.d = true; }
+  if (k === ' ') { if (!keys.light) press.light = true; keys.light = true; }
+  if ((k === 'x' || k === 'X' || k === 'Shift') && !rep) press.hide = true;
+  if (k === 'Enter' && !rep) press.enter = true;
+  if (k === 'Escape' && !rep) press.esc = true;
+  if ((k === 'm' || k === 'M') && !rep) press.m = true;
+  if (k === ' ' || k.indexOf('Arrow') === 0) { if (e.preventDefault) e.preventDefault(); }
+});
+addEventListener('keyup', e => {
+  const k = e.key;
+  if (k === 'ArrowLeft' || k === 'a' || k === 'A') keys.left = false;
+  if (k === 'ArrowRight' || k === 'd' || k === 'D') keys.right = false;
+  if (k === 'ArrowUp' || k === 'w' || k === 'W') keys.up = false;
+  if (k === 'ArrowDown' || k === 's' || k === 'S') keys.down = false;
+  if (k === ' ') keys.light = false;
+});
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+C.addEventListener('mousedown', e => {
+  wakeAudio();
+  const r = C.getBoundingClientRect();
+  tap = { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height };
+});
+const inBox = (b) => tap && tap.x >= b[0] && tap.x <= b[0] + b[2] && tap.y >= b[1] && tap.y <= b[1] + b[3];
+const BTN_PAUSE = [W - 58, 8, 48, 40];
+
+// ---------- Playing ----------
+function beamInfo() {
+  const on = battery > 0 && !P.hidden, b = boostT > 0, k = easy ? 1.25 : 1;
+  return { on, range: on ? (b ? 380 : 250) * k : 0, half: on ? (b ? 0.85 : 0.5) * (easy ? 1.15 : 1) : 0, boost: b };
+}
+function inBeam(x, y) {
+  const B = beamInfo(); if (!B.on) return false;
+  const d = dist(P.x, P.y, x, y); if (d > B.range) return false;
+  let a = Math.atan2(y - P.y, x - P.x) - P.ang; while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2;
+  return Math.abs(a) < B.half + 0.1 && los(P.x, P.y, x, y);
+}
+function nearestTarget() {
+  if (L.litDone) return L.sw && !L.swOn && L.i === 3 ? L.sw : L.stairs;
+  if (L.got >= 5) return L.box;
+  let best = null, bd = 1e9;
+  for (const f of L.fuses) if (!f.got) { const d = dist(P.x, P.y, f.x, f.y); if (d < bd) { bd = d; best = f; } }
+  return best;
+}
+function updatePlay() {
+  // 🎮 walking (8 directions); any move gets you out of a hiding spot
+  let dx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0), dy = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
+  P.moving = false;
+  if (P.hidden) {
+    if (press.hide || ((press.l || press.r || press.u || press.d) && stT > 12)) { P.hidden = false; press.hide = false; sfx.hide(); }
+    dx = dy = 0;
+  }
+  if (dx || dy) {
+    const n = Math.hypot(dx, dy), sp = 2.7;
+    const vx = dx / n * sp, vy = dy / n * sp;
+    if (!blockedBox(P.x + vx, P.y, 12)) P.x += vx;
+    if (!blockedBox(P.x, P.y + vy, 12)) P.y += vy;
+    // the flashlight swings smoothly toward where you walk
+    const want = Math.atan2(dy, dx); let da = want - P.ang; while (da > Math.PI) da -= Math.PI * 2; while (da < -Math.PI) da += Math.PI * 2;
+    P.ang += da * 0.3; if (dx) P.face = dx > 0 ? 1 : -1;
+    P.moving = true; P.walk++;
+    if (P.walk % 20 === 0) note(120 + Math.random() * 30, 0, 0.05, 'triangle', 0.03);
+  }
+  const tx = tc(P.x), ty = tc(P.y), here = tileAt(tx, ty), key = tx + ',' + ty;
+  // 🪵 creaky floorboards wake up the Phantom Robos nearby
+  if (key !== P.lastTile) {
+    P.lastTile = key;
+    if (here === 'c' && creakCool <= 0) {
+      sfx.creak(); floatText(P.x, P.y - 30, 'creeeak!', '#ffcc80'); creakCool = 40;
+      const R = easy ? 200 : 320;
+      if (!L.litDone) for (const g of L.ph) if (g.st !== 'gone' && g.st !== 'frozen' && dist(g.x, g.y, P.x, P.y) < R) { g.st = 'curious'; g.tx = P.x; g.ty = P.y; g.t = 0; g.path = null; }
+      if (!tipShown.creak) { tipShown.creak = 1; say('Creaky floor! Phantoms heard that! 👀', '#ffcc80'); }
+    }
+  }
+  if (creakCool > 0) creakCool--;
+  // 🛏️ hiding spots
+  if (!P.hidden && press.hide) {
+    if (here === 'D') { P.hidden = true; P.x = mid(tx); P.y = mid(ty); sfx.hide(); stT = 0; floatText(P.x, P.y - 30, 'Shhh... hiding!', '#b3e5fc'); }
+    else { floatText(P.x, P.y - 30, 'Find a ' + L.F.hideName + ' to hide!', '#b3e5fc'); sfx.empty(); }
+  }
+  // 🔦 LIGHT = super beam
+  if (press.light && !P.hidden) {
+    const cost = easy ? 5 : 8;
+    if (battery >= cost) { battery -= cost; boostT = 70; sfx.boost(); }
+    else { sfx.empty(); floatText(P.x, P.y - 30, 'Need a battery! 🔋', '#ffab91'); }
+  }
+  if (boostT > 0) boostT--;
+  if (!P.hidden && battery > 0 && !L.litDone) battery = Math.max(0, battery - (easy ? 0.011 : 0.02));
+  if (L.litDone) battery = 100;
+  // 🔋 batteries (they come back after a while)
+  for (const b of L.bats) {
+    if (b.t > 0) { b.t--; continue; }
+    if (dist(P.x, P.y, b.x, b.y) < 28 && battery < 98) { battery = Math.min(100, battery + 45); b.t = 900; sfx.battery(); burst(b.x, b.y, 12, ['#b2ff59', '#ffff8d']); floatText(b.x, b.y - 24, '+ Battery!', '#b2ff59'); }
+  }
+  // 🔌 fuses (each one is also a checkpoint)
+  for (const f of L.fuses) {
+    if (f.got || dist(P.x, P.y, f.x, f.y) > 28) continue;
+    f.got = true; L.got++; ckpt = { x: f.x, y: f.y }; stuckT = 0; sfx.fuse();
+    burst(f.x, f.y, 22, ['#ffd740', '#fff', '#ff6e40']);
+    floatText(f.x, f.y - 26, 'FUSE ' + L.got + '/5!', '#ffd740');
+    if (L.sam && L.sam.st === 'guide') L.sam.st = 'sit';
+    say(L.got >= 5 ? 'All 5 fuses! Take them to the FUSE BOX! 🔴' : 'Got a fuse! ' + (5 - L.got) + ' more to find!', '#ffd740');
+  }
+  // 🔴 the fuse box
+  if (L.got >= 5 && !L.placed && dist(P.x, P.y, L.box.x, L.box.y) < 58) { L.placed = true; L.lit = 0.001; stuckT = 0; sfx.fuse(); say('Click, click, click... LIGHTS ON! 💡', '#fff59d', 200); }
+  if (L.placed && !L.litDone) {
+    L.lit = Math.min(1, L.lit + 1 / 90);
+    if (L.lit >= 1) {
+      L.litDone = true; sfx.jingle(); setSong('bright');
+      for (const g of L.ph) if (g.st !== 'gone') { g.st = 'gone'; g.goneT = 1e9; burst(g.x, g.y, 18, ['#e1bee7', '#b388ff', '#fff']); floatText(g.x, g.y - 30, 'hee hee!', '#e1bee7'); }
+      sfx.giggle(); burst(L.box.x, L.box.y, 40, ['#fff59d', '#80d8ff', '#ff80ab', '#b9f6ca'], 6);
+      say(L.i === 3 ? 'The roof is lit! Now flip the BIG POWER SWITCH! ⚡' : 'Floor lit up! ⭐ The stairs are open!', '#b9f6ca', 260);
+    }
+  }
+  if (L.litDone && L.i < 3 && L.stairs && dist(P.x, P.y, L.stairs.x, L.stairs.y) < 30) { startFloor(L.i + 1); return; }
+  if (L.litDone && L.i === 3 && L.sw && dist(P.x, P.y, L.sw.x, L.sw.y) < 58) { L.swOn = true; startEnding(); return; }
+  updatePhantoms(); updateSammy();
+  if (P.inv > 0) P.inv--;
+  // 🦉 gentle spooky sounds now and then
+  if (!L.litDone && --hootT <= 0) { hootT = 900 + Math.floor(Math.random() * 900); (Math.random() < 0.5 ? sfx.hoot : sfx.whoosh)(); }
+  if (press.esc || inBox(BTN_PAUSE)) { state = 'title'; setSong('title'); floorSel = L.i; }
+}
+// ---------- 👻 Phantom Robos ----------
+function moveToward(g, x, y, sp) {
+  const d = dist(g.x, g.y, x, y); if (d < 1) return true;
+  const vx = (x - g.x) / d * Math.min(sp, d), vy = (y - g.y) / d * Math.min(sp, d);
+  g.x += vx; g.y += vy; if (Math.abs(vx) > 0.1) g.face = vx > 0 ? 1 : -1;
+  return d <= sp;
+}
+function followPath(g, gx, gy, sp) {               // walk the grid path toward (gx, gy), re-planning now and then
+  if (!g.path || g.pathT-- <= 0) { g.path = bfs(tc(g.x), tc(g.y), tc(gx), tc(gy)) || []; g.pathT = 20; }
+  if (g.path.length > 1 || (g.path.length === 1 && dist(g.x, g.y, gx, gy) > T)) {
+    const [nx, ny] = g.path[0]; if (moveToward(g, mid(nx), mid(ny), sp)) g.path.shift();
+  } else moveToward(g, gx, gy, sp);
+}
+function updatePhantoms() {
+  const sp = easy ? 0.8 : 1.25, notice = easy ? 190 : 240;
+  for (const g of L.ph) {
+    g.bob += 0.06;
+    if (g.st === 'gone') {
+      if (g.goneT-- <= 0 && dist(P.x, P.y, g.hx, g.hy) > 300) { g.st = 'wander'; g.x = g.hx; g.y = g.hy; g.eye = 0; g.frz = 0; g.path = null; }
+      continue;
+    }
+    const d = dist(g.x, g.y, P.x, P.y);
+    // 🔦 caught in the flashlight: freeze... then giggle and shimmer away!
+    if (inBeam(g.x, g.y)) {
+      if (g.st !== 'frozen') { g.prev = g.st; g.st = 'frozen'; floatText(g.x, g.y - 34, 'eep!', '#e1bee7'); }
+      g.frz += boostT > 0 ? 3 : 1;
+      if (g.frz >= 40) {
+        g.st = 'gone'; g.goneT = easy ? 1200 : 720; sfx.giggle();
+        burst(g.x, g.y, 26, ['#e1bee7', '#b388ff', '#ffffff', '#80ffea'], 3.5);
+        floatText(g.x, g.y - 30, 'hee hee hee!', '#e1bee7');
+        if (!tipShown.giggle) { tipShown.giggle = 1; say('The light made it giggle away! 😄', '#e1bee7'); }
+      }
+      continue;
+    } else if (g.st === 'frozen') { g.frz = Math.max(0, g.frz - 1); if (g.frz <= 0) { g.st = 'wander'; g.path = null; } else continue; }
+    const sees = !P.hidden && d < notice && los(g.x, g.y, P.x, P.y);
+    if (g.st === 'wander') {
+      g.eye += (0.3 - g.eye) * 0.05;
+      if (moveToward(g, g.tx, g.ty, sp * 0.6) || g.t++ > 240) {          // drift to a nearby open tile
+        g.t = 0;
+        for (let k = 0; k < 10; k++) {
+          const nx = tc(g.hx) + Math.floor(Math.random() * 7) - 3, ny = tc(g.hy) + Math.floor(Math.random() * 5) - 2;
+          if (!solidAt(nx, ny) && los(g.x, g.y, mid(nx), mid(ny))) { g.tx = mid(nx); g.ty = mid(ny); break; }
+        }
+      }
+      if (sees) { g.st = 'peek'; g.t = 0; sfx.ooo(); }
+    } else if (g.st === 'curious') {                 // heard a creak: float over to look
+      g.eye += (1 - g.eye) * 0.1;
+      followPath(g, g.tx, g.ty, sp);
+      if (sees) { g.st = 'peek'; g.t = 0; sfx.ooo(); }
+      else if (dist(g.x, g.y, g.tx, g.ty) < 20 || g.t++ > 420) { g.st = 'wander'; g.t = 0; g.tx = g.x; g.ty = g.y; }
+    } else if (g.st === 'peek') {                    // 👀 eyes glow first... (a fair warning!)
+      g.eye = Math.min(1, g.eye + 0.05);
+      if (++g.t > (easy ? 90 : 60)) { g.st = 'chase'; g.t = 0; g.path = null; }
+    } else if (g.st === 'chase') {
+      g.eye = 1;
+      followPath(g, P.x, P.y, sp);
+      if (P.hidden || d > 400) { g.st = 'wander'; g.t = 0; g.tx = g.x; g.ty = g.y; g.path = null; if (P.hidden) floatText(g.x, g.y - 30, 'huh? where\'d it go?', '#e1bee7'); }
+    }
+    // 🤖 a little tap = back to the last checkpoint (no harm done!)
+    if (!P.hidden && P.inv <= 0 && d < 24 && state === 'play') { caught(); return; }
+  }
+}
+function caught() {
+  state = 'caught'; caughtT = 0; sfx.boop();
+  burst(P.x, P.y, 20, ['#e1bee7', '#fff'], 3);
+}
+function afterCaught() {
+  P.x = ckpt.x; P.y = ckpt.y; P.inv = 120; P.hidden = false; boostT = 0; battery = Math.max(battery, 40);
+  for (const g of L.ph) if (g.st !== 'gone') { g.st = 'wander'; g.x = g.hx; g.y = g.hy; g.tx = g.hx; g.ty = g.hy; g.eye = 0.3; g.frz = 0; g.path = null; }
+  updateCam(true); state = 'play';
+  say('Back at your checkpoint. You keep your fuses! 🔌', '#b3e5fc');
+}
+
+// ---------- 🐱 Sammy, the glow-in-the-dark kitty helper ----------
+function updateSammy() {
+  const S = L.sam; if (!S) return;
+  if (!P.hidden) stuckT++;
+  const wait = easy ? 900 : 1500;
+  if (S.st === 'sit' && stuckT > wait) {               // stuck? Sammy pops over and shows the way
+    const tg = nearestTarget();
+    if (tg) {
+      let best = null;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1], [0, 0]]) { const nx = tc(P.x) + dx, ny = tc(P.y) + dy; if (!solidAt(nx, ny)) { best = [nx, ny]; break; } }
+      S.x = mid(best[0]); S.y = mid(best[1]); S.st = 'guide'; const gx = tg.tx !== undefined ? tg.tx : tc(tg.x), gy = tg.ty !== undefined ? tg.ty : tc(tg.y);
+      S.path = bfs(best[0], best[1], gx, gy) || []; if (solidAt(gx, gy)) S.path.pop();
+      S.meowT = 0; burst(S.x, S.y, 16, ['#ccff90', '#fff59d']); say('Meow! Sammy will show you the way! 🐾', '#ccff90');
+    }
+    stuckT = 0;
+  }
+  if (S.st === 'guide') {
+    if (S.meowT-- <= 0) { sfx.meow(); S.meowT = 170; floatText(S.x, S.y - 28, 'meow!', '#ccff90'); }
+    if (S.path.length && dist(S.x, S.y, P.x, P.y) < 170) {
+      const [nx, ny] = S.path[0];
+      const ox = S.x; if (moveToward(S, mid(nx), mid(ny), 2.4)) S.path.shift();
+      S.face = S.x > ox ? 1 : S.x < ox ? -1 : S.face; S.walk++;
+      if (S.walk % 14 === 0) paws.push({ x: S.x + (S.walk % 28 ? 5 : -5), y: S.y + 8, life: 420 });
+    }
+    if (!S.path.length) { S.st = 'wait'; S.t = 0; }
+  } else if (S.st === 'wait') {
+    if (S.meowT-- <= 0) { sfx.meow(); S.meowT = 200; floatText(S.x, S.y - 28, 'meow! here!', '#ccff90'); }
+    if (dist(S.x, S.y, P.x, P.y) < 60 || ++S.t > 900) { S.st = 'sit'; stuckT = 0; }
+  }
+  for (const p of paws) p.life--;
+  paws = paws.filter(p => p.life > 0);
+}
+
+// ---------- ⚡ The ending: the BIG Factory power switch ----------
+function startEnding() {
+  state = 'ending'; endT = 0; sfx.power();
+  save.done = true; save.floor = 3; save.best = 3; writeSave();
+  trophy('lightsOut'); sticker('lightsOut');
+}
+const PARTY = [];
+function updateEnding() {
+  endT++;
+  if (endT === 60) setSong('party');
+  if (endT > 90 && endT % 6 === 0) for (let i = 0; i < 2; i++) parts.push({ x: Math.random() * W, y: -10, vx: Math.random() - 0.5, vy: 1.5 + Math.random() * 2, life: 400, col: ['#ff80ab', '#80d8ff', '#ffff8d', '#b9f6ca', '#ea80fc'][i + endT % 3], r: 4, above: true, confetti: true });
+  if (endT > 200 && (press.light || press.enter || tap)) { state = 'win'; stT = 0; }
+}
+
+// ---------- 🏠 Title screen ----------
+function titleButtons() {
+  return { start: [W / 2 - 150, 268, 300, 66], prev: [W / 2 - 250, 352, 60, 52], next: [W / 2 + 190, 352, 60, 52],
+           easy: [W / 2 - 250, 420, 300, 54], music: [W / 2 + 70, 420, 180, 54] };
+}
+function updateTitle() {
+  const B = titleButtons();
+  if (press.l || inBox(B.prev)) { floorSel = (floorSel + save.best) % (save.best + 1); sfx.click(); }
+  if (press.r || inBox(B.next)) { floorSel = (floorSel + 1) % (save.best + 1); sfx.click(); }
+  if (press.hide || inBox(B.easy)) { easy = !easy; save.easy = easy; writeSave(); sfx.click(); }
+  if (press.m || inBox(B.music)) { toggleMusic(); sfx.click(); }
+  if (press.light || press.enter || inBox(B.start)) { sfx.fuse(); startFloor(floorSel, true); }
+}
+
+// ---------- Main loop ----------
+function update() {
+  frame++; stT++;
+  if (msg && --msg.t <= 0) msg = null;
+  if (state === 'title') { setSong('title'); updateTitle(); }
+  else if (state === 'intro') {
+    introT++;
+    if (introT > 30 && (press.light || press.enter || tap || introT > 260)) { state = 'play'; stT = 0; say(L.i === 0 ? 'Find 5 fuses 🔌 Shine your light on Phantom Robos!' : 'Find 5 fuses on ' + L.F.name + '! 🔌'); }
+  }
+  else if (state === 'play') { updatePlay(); }
+  else if (state === 'caught') { caughtT++; if (caughtT > 75) afterCaught(); }
+  else if (state === 'ending') updateEnding();
+  else if (state === 'win') { if (stT > 40 && (press.light || press.enter || tap)) { state = 'title'; floorSel = 0; setSong('title'); } }
+  if (L && state !== 'title') updateCam(false);
+  for (const p of parts) { p.x += p.vx; p.y += p.vy; if (!p.confetti) { p.vx *= 0.95; p.vy *= 0.95; } p.life--; }
+  parts = parts.filter(p => p.life > 0);
+  for (const f of floats) { f.y -= 0.6; f.life--; }
+  floats = floats.filter(f => f.life > 0);
+  for (const k in press) press[k] = false;
+  tap = null;
+}
+
+// ---------- Drawing helpers ----------
+function roundRect(x, y, w, h, r, fill) {
+  ctx.fillStyle = fill; ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, Math.max(0, w), Math.max(0, h), r); else ctx.rect(x, y, Math.max(0, w), Math.max(0, h));
+  ctx.fill();
+}
+function text(str, x, y, size, color = '#fff', align = 'center') {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`;
+  ctx.textAlign = align; ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = Math.max(3, size / 6);
+  ctx.strokeText(str, x, y); ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, 7); ctx.fill(); }
+function ellipse(x, y, rx, ry, fill, rot = 0) { ctx.fillStyle = fill; ctx.beginPath(); ctx.ellipse(x, y, Math.max(0, rx), Math.max(0, ry), rot, 0, 7); ctx.fill(); }
+const PAL_ROBO = { head: '#ffffff', body: '#f5f7ff', visor: '#111827', eye: '#40c4ff', legs: '#3d5afe', pod: '#2979ff' };
+function star(x, y, r, col) { ctx.fillStyle = col; ctx.beginPath(); for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r * 0.45 : r; ctx.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); } ctx.fill(); }
+// 🤖 Robo (white round robot, dark visor, blue eyes, blue ear pods) holding his flashlight
+function drawRobo(x, y, ang, face, walk, s = 1) {
+  const w = 28 * s, h = 36 * s, bob = walk ? Math.sin(walk * 0.3) * 1.5 : 0;
+  x -= w / 2; y = y - h / 2 - 4 + bob;
+  ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(x + w / 2, y + h + 2 - bob, w * 0.55, 5 * s, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = PAL_ROBO.legs; ctx.fillRect(x + 4 * s, y + h - 7 * s, 7 * s, 7 * s); ctx.fillRect(x + w - 11 * s, y + h - 7 * s, 7 * s, 7 * s);
+  roundRect(x + 2 * s, y + h * 0.5, w - 4 * s, h * 0.4, 6 * s, PAL_ROBO.body);
+  circle(x + w / 2, y + h * 0.7, 3 * s, PAL_ROBO.pod);
+  roundRect(x - 5 * s, y + h * 0.3 - 3 * s, 6 * s, 9 * s, 3 * s, PAL_ROBO.pod);
+  roundRect(x + w - 1 * s, y + h * 0.3 - 3 * s, 6 * s, 9 * s, 3 * s, PAL_ROBO.pod);
+  roundRect(x - 2 * s, y, w + 4 * s, h * 0.55, 12 * s, PAL_ROBO.head);
+  roundRect(x + 2 * s, y + 4 * s, w - 4 * s, h * 0.55 - 9 * s, 9 * s, PAL_ROBO.visor);
+  const lx = Math.cos(ang) * 3 * s, ly = Math.sin(ang) * 2 * s;
+  const ex = x + w / 2 + lx, ey = y + h * 0.27 + ly, blink = frame % 200 < 6 ? 1 : 4.5 * s;
+  ctx.fillStyle = PAL_ROBO.eye; ctx.beginPath();
+  ctx.ellipse(ex - 6 * s, ey, 3.3 * s, Math.max(0.5, blink), 0, 0, 7); ctx.ellipse(ex + 6 * s, ey, 3.3 * s, Math.max(0.5, blink), 0, 0, 7); ctx.fill();
+  if (ang !== null) {                                  // 🔦 the flashlight
+    const hx = x + w / 2 + Math.cos(ang) * 14 * s, hy = y + h * 0.66 + Math.sin(ang) * 8 * s;
+    ctx.save(); ctx.translate(hx, hy); ctx.rotate(ang);
+    roundRect(-7 * s, -4 * s, 14 * s, 8 * s, 3 * s, '#ffb300'); roundRect(5 * s, -5.5 * s, 5 * s, 11 * s, 2 * s, '#ffe082');
+    ctx.restore();
+  }
+}
+// 👻 Phantom Robo: a ghostly see-through Robo with a wavy tail (cute, not scary!)
+function drawPhantom(g, alpha) {
+  if (alpha <= 0.01) return;
+  const x = g.x, y = g.y + Math.sin(g.bob) * 4, shake = g.st === 'frozen' ? Math.sin(frame * 1.7) * 1.5 : 0;
+  ctx.save(); ctx.globalAlpha = alpha; ctx.translate(x + shake, y);
+  ctx.fillStyle = 'rgba(225,215,255,.85)';
+  ctx.beginPath(); ctx.arc(0, -8, 17, Math.PI, 0); ctx.lineTo(17, 12);
+  for (let i = 0; i <= 6; i++) { const wx = 17 - i * (34 / 6); ctx.lineTo(wx, 12 + (i % 2 ? 6 : 0) + Math.sin(frame * 0.15 + i) * 2); }
+  ctx.closePath(); ctx.fill();
+  roundRect(-22, -12, 6, 10, 3, 'rgba(179,136,255,.8)'); roundRect(16, -12, 6, 10, 3, 'rgba(179,136,255,.8)');
+  roundRect(-13, -20, 26, 15, 7, 'rgba(40,20,80,.85)');
+  ctx.fillStyle = '#80ffea';
+  const ex = g.face * 2;
+  ctx.beginPath(); ctx.ellipse(ex - 5, -13, 3, g.st === 'frozen' ? 1.5 : 3.5, 0, 0, 7); ctx.ellipse(ex + 5, -13, 3, g.st === 'frozen' ? 1.5 : 3.5, 0, 0, 7); ctx.fill();
+  if (g.st === 'frozen') {                             // a giggly little smile + shimmer
+    ctx.strokeStyle = '#7c4dff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0, 2, 5, 0.2, Math.PI - 0.2); ctx.stroke();
+    for (let i = 0; i < 3; i++) star(Math.sin(frame * 0.2 + i * 2) * 20, -20 + i * 12, 3, '#fff');
+  } else { ctx.fillStyle = 'rgba(124,77,255,.8)'; ctx.beginPath(); ctx.ellipse(0, 3, 3, 2.5, 0, 0, 7); ctx.fill(); }
+  ctx.restore();
+}
+// glowing eyes that show in the dark BEFORE the Phantom does
+function drawPhantomEyes(g) {
+  if (g.st === 'gone' || g.eye < 0.05) return;
+  const y = g.y + Math.sin(g.bob) * 4 - 13, ex = g.x + g.face * 2, a = g.eye * (0.75 + 0.25 * Math.sin(frame * 0.12));
+  ctx.save(); ctx.globalAlpha = a;
+  circle(ex - 5, y, 9, 'rgba(128,255,234,.18)'); circle(ex + 5, y, 9, 'rgba(128,255,234,.18)');
+  ctx.fillStyle = '#a7fff0';
+  const blink = (frame + (g.hx | 0)) % 160 < 5 ? 0.6 : 3.2;
+  ctx.beginPath(); ctx.ellipse(ex - 5, y, 2.8, blink, 0, 0, 7); ctx.ellipse(ex + 5, y, 2.8, blink, 0, 0, 7); ctx.fill();
+  ctx.restore();
+}
+// 🐱 Sammy: brown tabby with brown eyes — glow-in-the-dark!
+function drawSammy(S, s = 1) {
+  const x = S.x, y = S.y, f = S.face || 1, step = S.st === 'guide' ? Math.sin(S.walk * 0.4) * 2 : 0;
+  ctx.save(); ctx.translate(x, y); ctx.scale(f * s, s);
+  const g = ctx.createRadialGradient(0, 0, 4, 0, 0, 34); g.addColorStop(0, 'rgba(204,255,144,.55)'); g.addColorStop(1, 'rgba(204,255,144,0)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, 34, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#8d6e63'; ctx.lineWidth = 5; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(-12, 6); ctx.quadraticCurveTo(-24, 0, -20, -12 + Math.sin(frame * 0.1) * 3); ctx.stroke();
+  ellipse(0, 6, 14, 9, '#a1785a');
+  ctx.fillStyle = '#6d4c41'; for (let i = -1; i <= 1; i++) ctx.fillRect(-3 + i * 6, -1, 2.5, 9);
+  ctx.fillStyle = '#8d6e63'; ctx.fillRect(-10, 11 + step, 5, 6); ctx.fillRect(6, 11 - step, 5, 6);
+  circle(12, -4, 10, '#a1785a');
+  ctx.fillStyle = '#a1785a';
+  ctx.beginPath(); ctx.moveTo(4, -9); ctx.lineTo(6, -20); ctx.lineTo(12, -12); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(14, -12); ctx.lineTo(20, -19); ctx.lineTo(21, -8); ctx.fill();
+  ctx.fillStyle = '#6d4c41'; ctx.fillRect(10, -13, 2, 5); ctx.fillRect(14, -13, 2, 5);
+  circle(9, -4, 2.6, '#6b3e1f'); circle(16, -4, 2.6, '#6b3e1f');                 // brown eyes
+  circle(9.6, -4.6, 0.9, '#fff'); circle(16.6, -4.6, 0.9, '#fff');
+  circle(12.5, 0, 1.4, '#f48fb1');
+  ctx.restore();
+}
+
+// ---------- 🏭 The world ----------
+function drawDeco(kind, x, y) {
+  if (kind === 'bench') {                              // 🔧 workbench with tools
+    roundRect(x + 2, y + 6, T - 4, T - 12, 4, '#8d6e63'); ctx.fillStyle = '#5d4037'; ctx.fillRect(x + 4, y + T - 8, 5, 6); ctx.fillRect(x + T - 9, y + T - 8, 5, 6);
+    ctx.fillStyle = '#90a4ae'; ctx.fillRect(x + 8, y + 12, 14, 4); circle(x + 28, y + 18, 4, '#ef5350'); ctx.fillStyle = '#ffca28'; ctx.fillRect(x + 10, y + 20, 4, 10);
+  } else if (kind === 'toys') {                        // 🧸 toy blocks
+    const cols = ['#ef5350', '#42a5f5', '#ffee58', '#66bb6a'], k = (x / T + y / T) % 4;
+    roundRect(x + 3, y + 14, 17, 17, 3, cols[k]); roundRect(x + 20, y + 14, 17, 17, 3, cols[(k + 1) % 4]); roundRect(x + 11, y + 0, 17, 15, 3, cols[(k + 2) % 4]);
+    text(['A', 'B', 'C', '1'][k], x + 12, y + 28, 12, '#fff'); text('★', x + 20, y + 13, 11, '#fff');
+  } else if (kind === 'boiler') {                      // 🔥 big round boiler + pipes
+    ctx.fillStyle = '#78909c'; ctx.fillRect(x, y + 4, T, 6); ctx.fillRect(x + 16, y, 7, T);
+    circle(x + T / 2, y + T / 2 + 2, 16, '#90a4ae'); circle(x + T / 2, y + T / 2 + 2, 10, '#607d8b'); circle(x + T / 2, y + T / 2 + 2, 4, '#ff7043');
+  } else {                                             // 🔭 telescope on a tripod
+    ctx.strokeStyle = '#5c6bc0'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x + 20, y + 20); ctx.lineTo(x + 8, y + 38); ctx.moveTo(x + 20, y + 20); ctx.lineTo(x + 32, y + 38); ctx.stroke();
+    ctx.save(); ctx.translate(x + 20, y + 18); ctx.rotate(-0.6); roundRect(-16, -6, 32, 12, 5, '#e8eaf6'); roundRect(12, -8, 6, 16, 3, '#ffd54f'); ctx.restore();
+  }
+}
+function drawHideSpot(kind, x, y) {
+  if (kind === 'bench') { roundRect(x + 1, y + 4, T - 2, 10, 3, '#a1887f'); ctx.fillStyle = '#6d4c41'; ctx.fillRect(x + 3, y + 14, 5, T - 16); ctx.fillRect(x + T - 8, y + 14, 5, T - 16); }
+  else if (kind === 'toys') { ctx.fillStyle = '#f48fb1'; ctx.beginPath(); ctx.moveTo(x + 1, y + T - 2); ctx.lineTo(x + T / 2, y + 3); ctx.lineTo(x + T - 1, y + T - 2); ctx.fill(); ctx.fillStyle = '#ffffff55'; ctx.fillRect(x + 8, y + 22, 24, 3); }
+  else if (kind === 'boiler') { roundRect(x + 2, y + 2, T - 4, T - 4, 3, '#a1887f'); ctx.strokeStyle = '#6d4c41'; ctx.lineWidth = 2; ctx.strokeRect(x + 5, y + 5, T - 10, T - 10); ctx.beginPath(); ctx.moveTo(x + 5, y + 5); ctx.lineTo(x + T - 5, y + T - 5); ctx.stroke(); }
+  else { roundRect(x + 1, y + 10, T - 2, 9, 4, '#7986cb'); ctx.fillStyle = '#3949ab'; ctx.fillRect(x + 4, y + 19, 5, T - 21); ctx.fillRect(x + T - 9, y + 19, 5, T - 21); star(x + T / 2, y + 14, 4, '#fff59d'); }
+}
+function drawWorld() {
+  const F = L.F;
+  const x0 = Math.max(0, tc(cam.x)), x1 = Math.min(COLS - 1, tc(cam.x + W)), y0 = Math.max(0, tc(cam.y)), y1 = Math.min(ROWS - 1, tc(cam.y + H));
+  for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) {
+    const c = L.grid[ty][tx], x = tx * T, y = ty * T;
+    if (c === '#') {
+      ctx.fillStyle = F.wallB; ctx.fillRect(x, y, T, T);
+      ctx.fillStyle = 'rgba(255,255,255,.15)'; ctx.fillRect(x, y, T, 5);
+      ctx.fillStyle = 'rgba(0,0,0,.15)'; ctx.fillRect(x + ((ty % 2) ? 0 : T / 2), y + 18, 2, 12);
+      continue;
+    }
+    ctx.fillStyle = (tx + ty) % 2 ? F.floorB : shade(F.floorB); ctx.fillRect(x, y, T, T);
+    if (c === 'c') {                                   // creaky boards: cracked planks
+      ctx.fillStyle = '#bcaaa4'; ctx.fillRect(x + 2, y + 4, T - 4, 9); ctx.fillRect(x + 2, y + 16, T - 4, 9); ctx.fillRect(x + 2, y + 28, T - 4, 9);
+      ctx.strokeStyle = '#6d4c41'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x + 8, y + 6); ctx.lineTo(x + 14, y + 11); ctx.lineTo(x + 20, y + 7); ctx.moveTo(x + 22, y + 30); ctx.lineTo(x + 30, y + 35); ctx.stroke();
+    } else if (c === 'o') drawDeco(F.deco, x, y);
+    else if (c === 'D') drawHideSpot(F.deco, x, y);
+  }
+  // 🔋 batteries
+  for (const b of L.bats) if (b.t <= 0) { roundRect(b.x - 7, b.y - 12, 14, 24, 3, '#76ff03'); roundRect(b.x - 7, b.y - 12, 14, 8, 3, '#424242'); roundRect(b.x - 3, b.y - 15, 6, 4, 1, '#bdbdbd'); text('+', b.x, b.y + 9, 12, '#1b5e20'); }
+  // 🔌 fuses
+  for (const f of L.fuses) if (!f.got) { const y = f.y + Math.sin(frame * 0.08 + f.tw) * 2; roundRect(f.x - 6, y - 12, 12, 24, 4, 'rgba(255,248,225,.9)'); roundRect(f.x - 7, y - 13, 14, 6, 2, '#ffc107'); roundRect(f.x - 7, y + 7, 14, 6, 2, '#ffc107'); ctx.strokeStyle = '#ff6e40'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(f.x - 3, y - 6); ctx.lineTo(f.x + 3, y - 2); ctx.lineTo(f.x - 3, y + 2); ctx.lineTo(f.x + 3, y + 6); ctx.stroke(); }
+  // 🔴 fuse box
+  if (L.box) { const b = L.box; roundRect(b.x - 18, b.y - 18, 36, 36, 5, '#9e9e9e'); roundRect(b.x - 14, b.y - 14, 28, 22, 3, '#616161');
+    for (let i = 0; i < 5; i++) roundRect(b.x - 12 + i * 5, b.y - 11, 4, 14, 1, i < (L.placed ? 5 : 0) ? '#ffd740' : '#424242');
+    circle(b.x, b.y + 13, 3.5, L.litDone ? '#00e676' : frame % 40 < 20 ? '#ff1744' : '#b71c1c'); }
+  // 🪜 stairs
+  if (L.stairs) { const s = L.stairs; for (let i = 0; i < 4; i++) roundRect(s.x - 18, s.y - 18 + i * 9, 36, 8, 2, L.litDone ? ['#fff59d', '#ffee58', '#fdd835', '#fbc02d'][i] : '#616161');
+    if (!L.litDone) { roundRect(s.x - 20, s.y - 4, 40, 8, 3, '#ffb300'); } else text('⬆', s.x, s.y + 6 + Math.sin(frame * 0.15) * 3, 20, '#fff'); }
+  // ⚡ the BIG power switch
+  if (L.sw) { const s = L.sw; roundRect(s.x - 19, s.y - 19, 38, 38, 6, '#d32f2f'); roundRect(s.x - 13, s.y - 13, 26, 26, 4, '#212121');
+    ctx.strokeStyle = '#eeeeee'; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(s.x, s.y + 6); ctx.lineTo(s.x + (L.swOn ? 0 : -8), s.y - 10); ctx.stroke(); circle(s.x + (L.swOn ? 0 : -8), s.y - 10, 5, '#ffeb3b');
+    text('POWER', s.x, s.y - 24, 11, L.litDone ? '#ffeb3b' : '#ffab91'); }
+}
+function shade(hex) { const n = parseInt(hex.slice(1), 16); const r = Math.max(0, (n >> 16) - 14), g = Math.max(0, ((n >> 8) & 255) - 14), b = Math.max(0, (n & 255) - 14); return 'rgb(' + r + ',' + g + ',' + b + ')'; }
+
+// ---------- 🌑 The dark (a cut-out overlay — no filters, works on iPad) ----------
+let DK = null, dctx = null;
+function darkLayer() {
+  if (!DK) { DK = document.createElement('canvas'); DK.width = W; DK.height = H; dctx = DK.getContext('2d'); }
+  return dctx;
+}
+function cutLight(d, x, y, r, a = 1) {                 // punch a soft round hole in the dark
+  if (r <= 0) return;
+  const g = d.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, 'rgba(0,0,0,' + a + ')'); g.addColorStop(0.6, 'rgba(0,0,0,' + a * 0.75 + ')'); g.addColorStop(1, 'rgba(0,0,0,0)');
+  d.fillStyle = g; d.beginPath(); d.arc(x, y, r, 0, 7); d.fill();
+}
+function drawDark() {
+  const darkA = (easy ? 0.84 : 0.95) * (1 - L.lit);
+  if (darkA <= 0.01) return;
+  const d = darkLayer(), px = P.x - cam.x, py = P.y - cam.y, B = beamInfo();
+  d.globalCompositeOperation = 'source-over'; d.clearRect(0, 0, W, H);
+  d.fillStyle = 'rgba(6,8,26,' + darkA + ')'; d.fillRect(0, 0, W, H);
+  d.globalCompositeOperation = 'destination-out';
+  cutLight(d, px, py, battery > 0 ? 80 : 60, 0.95);
+  if (B.on) {                                          // 🔦 the flashlight cone
+    const g = d.createRadialGradient(px, py, 10, px, py, B.range);
+    g.addColorStop(0, 'rgba(0,0,0,1)'); g.addColorStop(0.7, 'rgba(0,0,0,.92)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    d.fillStyle = g; d.beginPath(); d.moveTo(px, py); d.arc(px, py, B.range, P.ang - B.half, P.ang + B.half); d.closePath(); d.fill();
+  }
+  if (L.sam) cutLight(d, L.sam.x - cam.x, L.sam.y - cam.y, 46, 0.7);
+  if (L.box) cutLight(d, L.box.x - cam.x, L.box.y - cam.y, L.got >= 5 ? 70 : 30, 0.5);
+  if (L.stairs) cutLight(d, L.stairs.x - cam.x, L.stairs.y - cam.y, 26, 0.35);
+  if (L.sw) cutLight(d, L.sw.x - cam.x, L.sw.y - cam.y, 34, 0.4);
+  for (const f of L.fuses) if (!f.got) cutLight(d, f.x - cam.x, f.y - cam.y, 22, easy ? 0.6 : 0.35);   // fuses glow a tiny bit
+  for (const p of parts) cutLight(d, p.x - cam.x, p.y - cam.y, 10, 0.5);
+  d.globalCompositeOperation = 'source-over';
+  ctx.drawImage(DK, 0, 0);
+  if (B.on) {                                          // a warm yellow tint inside the beam
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    const g = ctx.createRadialGradient(px, py, 10, px, py, B.range);
+    g.addColorStop(0, B.boost ? 'rgba(255,240,170,.28)' : 'rgba(255,220,130,.16)'); g.addColorStop(1, 'rgba(255,200,100,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(px, py); ctx.arc(px, py, B.range, P.ang - B.half, P.ang + B.half); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+}
+function drawScene() {
+  ctx.save(); ctx.translate(-Math.round(cam.x), -Math.round(cam.y));
+  drawWorld();
+  for (const g of L.ph) if (g.st !== 'gone') drawPhantom(g, easy ? 0.95 : 0.85);
+  if (P.hidden) { ctx.globalAlpha = 0.45; drawRobo(P.x, P.y, null, P.face, 0, 0.8); ctx.globalAlpha = 1; }
+  else if (!(P.inv > 0 && frame % 8 < 4) && state !== 'caught') drawRobo(P.x, P.y, battery > 0 ? P.ang : P.ang, P.face, P.moving ? P.walk : 0);
+  ctx.restore();
+  drawDark();
+  ctx.save(); ctx.translate(-Math.round(cam.x), -Math.round(cam.y));
+  // things that glow in the dark
+  for (const p of paws) { ctx.globalAlpha = Math.min(1, p.life / 120) * 0.8; circle(p.x, p.y, 3.5, '#ccff90'); circle(p.x - 3, p.y - 4, 1.6, '#ccff90'); circle(p.x + 3, p.y - 4, 1.6, '#ccff90'); circle(p.x, p.y - 5.5, 1.6, '#ccff90'); }
+  ctx.globalAlpha = 1;
+  if (L.lit < 1) for (const g of L.ph) drawPhantomEyes(g);
+  if (L.sam) drawSammy(L.sam, 0.9);
+  if (!L.litDone) for (const f of L.fuses) if (!f.got && (frame + f.tw * 7) % 150 < 14) star(f.x + 8, f.y - 12, 4, 'rgba(255,236,140,.9)');
+  if (L.got >= 5 && !L.placed) { const a = 0.5 + 0.5 * Math.sin(frame * 0.15); ctx.globalAlpha = a; text('⬇', L.box.x, L.box.y - 26, 24, '#ff5252'); ctx.globalAlpha = 1; }
+  if (L.litDone && L.i === 3 && L.sw) { ctx.globalAlpha = 0.5 + 0.5 * Math.sin(frame * 0.15); text('⬇', L.sw.x, L.sw.y - 34, 26, '#ffeb3b'); ctx.globalAlpha = 1; }
+  if (P.hidden) text('🤫', P.x, P.y - 30, 20);
+  else if (tileAt(tc(P.x), tc(P.y)) === 'D' && !L.litDone) text('HIDE ✋', P.x, P.y - 32, 14, '#b3e5fc');
+  for (const p of parts) { ctx.globalAlpha = Math.min(1, p.life / 30); if (p.confetti) { ctx.fillStyle = p.col; ctx.fillRect(p.x, p.y, 6, 9); } else circle(p.x, p.y, p.r, p.col); }
+  ctx.globalAlpha = 1;
+  for (const f of floats) { ctx.globalAlpha = Math.min(1, f.life / 25); text(f.txt, f.x, f.y, 16, f.col); }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+  if (L.lit > 0 && L.lit < 1) { ctx.fillStyle = 'rgba(255,255,220,' + (Math.sin(L.lit * Math.PI) * 0.35) + ')'; ctx.fillRect(0, 0, W, H); }
+}
+
+// ---------- HUD ----------
+function drawHUD() {
+  roundRect(8, 8, 300, 44, 12, 'rgba(10,12,40,.75)');
+  text(L.F.icon + ' ' + L.F.name, 18, 28, 16, '#fff', 'left');
+  for (let i = 0; i < 5; i++) { const x = 22 + i * 20, y = 42; roundRect(x - 5, y - 6, 10, 12, 3, i < L.got ? '#ffd740' : 'rgba(255,255,255,.18)'); }
+  text(L.got + '/5 fuses', 130, 46, 13, '#ffd740', 'left');
+  // 🔋 battery meter
+  roundRect(320, 8, 190, 44, 12, 'rgba(10,12,40,.75)');
+  text('🔋', 340, 38, 20);
+  roundRect(360, 19, 132, 22, 6, '#263238');
+  const bc = battery > 50 ? '#76ff03' : battery > 20 ? '#ffd600' : '#ff5252';
+  roundRect(363, 22, Math.max(0, 126 * battery / 100), 16, 4, bc);
+  roundRect(492, 25, 6, 10, 2, '#90a4ae');
+  if (battery <= 0 && frame % 40 < 28) text('Find a battery!', 425, 70, 15, '#ff8a80');
+  roundRect(BTN_PAUSE[0], BTN_PAUSE[1], BTN_PAUSE[2], BTN_PAUSE[3], 10, 'rgba(10,12,40,.75)'); text('🏠', BTN_PAUSE[0] + 24, 36, 20);
+  if (easy) text('😊 Not so spooky', W - 70, 36, 13, '#b9f6ca', 'right');
+  roundRect(8, H - 34, W - 16, 28, 10, 'rgba(10,12,40,.6)');
+  text('Arrows = walk   •   LIGHT (Space) = super beam   •   HIDE (X) = hide under a ' + L.F.hideName + '   •   Phantoms hate light!', W / 2, H - 15, 13, '#cfd8dc');
+  if (msg) { const a = Math.min(1, msg.t / 20); ctx.globalAlpha = a; roundRect(W / 2 - 330, 62, 660, 42, 14, 'rgba(10,12,40,.85)'); text(msg.txt, W / 2, 90, 20, msg.col); ctx.globalAlpha = 1; }
+  if (stickerNew > 0) { stickerNew--; text('⭐ New sticker for your Sticker Book!', W / 2, 130, 18, '#ffd740'); }
+}
+function drawCaught() {
+  const k = Math.min(1, caughtT / 30);
+  ctx.fillStyle = 'rgba(40,20,80,' + k * 0.55 + ')'; ctx.fillRect(0, 0, W, H);
+  roundRect(W / 2 - 260, H / 2 - 70, 520, 140, 22, 'rgba(255,255,255,.95)');
+  text('👻 Boop! A Phantom Robo tagged you!', W / 2, H / 2 - 20, 26, '#7c4dff');
+  text('Back to your checkpoint — try again!', W / 2, H / 2 + 20, 20, '#37474f');
+  text('Tip: shine your light on them first! 🔦', W / 2, H / 2 + 50, 16, '#607d8b');
+}
+function drawIntro() {
+  ctx.fillStyle = 'rgba(6,8,26,.82)'; ctx.fillRect(0, 0, W, H);
+  const F = L.F;
+  text('Floor ' + (L.i + 1) + ' of 4', W / 2, 110, 22, '#b3e5fc');
+  text(F.icon + ' ' + F.name + ' ' + F.icon, W / 2, 170, 46, '#fff59d');
+  text('The power is out! Find 5 fuses 🔌 and bring them to the fuse box 🔴', W / 2, 235, 20, '#fff');
+  text('🔦 Your flashlight makes Phantom Robos freeze and giggle away!', W / 2, 275, 18, '#e1bee7');
+  text('👀 Glowing eyes in the dark = a Phantom is peeking!  🪵 Creaky floors make noise!', W / 2, 308, 17, '#ffcc80');
+  text('🤫 Stand on a ' + F.hideName + ' and press HIDE to hide.   🐱 Stuck? Sammy will help!', W / 2, 341, 17, '#ccff90');
+  if (L.i === 3) text('⚡ Up here is the BIG FACTORY POWER SWITCH!', W / 2, 380, 20, '#ffeb3b');
+  if (frame % 50 < 34) text('Press LIGHT or tap to start!', W / 2, 440, 24, '#80d8ff');
+}
+
+// ---------- 🌙 Title, ending and win screens ----------
+const STARS = []; for (let i = 0; i < 70; i++) STARS.push([(i * 137.5) % W, (i * 71.3) % 230, 0.6 + (i % 3) * 0.6, i]);
+function drawFactory(litFloors, k) {                   // the Game Factory building at night (litFloors 0..4)
+  const bx = 250, by = 130, bw = 460, fh = 75;
+  roundRect(bx - 10, by - 10, bw + 20, fh * 4 + 20, 10, '#1c1f3a');
+  ctx.fillStyle = '#1c1f3a'; ctx.fillRect(bx + 40, by - 70, 50, 70); ctx.fillRect(bx + bw - 120, by - 50, 40, 50);   // chimneys
+  ctx.beginPath(); ctx.arc(bx + bw / 2, by - 10, 60, Math.PI, 0); ctx.fill();                                         // observatory dome
+  for (let f = 0; f < 4; f++) {
+    const y = by + (3 - f) * fh, lit = f < litFloors;
+    for (let w = 0; w < 6; w++) {
+      const wx = bx + 22 + w * 74, on = lit || (k && f === litFloors && w < k * 6);
+      roundRect(wx, y + 14, 50, 44, 6, on ? ['#fff59d', '#ffe082', '#b3e5fc', '#f8bbd0'][f] : '#0b0d20');
+      if (!on && (frame + w * 37 + f * 91) % 260 < 40) {                      // 👀 someone is peeking from a dark window!
+        circle(wx + 19, y + 34, 3, '#a7fff0'); circle(wx + 31, y + 34, 3, '#a7fff0');
+      }
+    }
+  }
+  ctx.fillStyle = litFloors >= 4 ? '#fff59d' : '#0b0d20'; ctx.beginPath(); ctx.arc(bx + bw / 2, by - 10, 44, Math.PI, 0); ctx.fill();
+  text('GAME FACTORY', bx + bw / 2, by + fh * 4 + 30, 22, litFloors >= 4 ? '#ffd740' : '#5c6bc0');
+}
+function drawNight(bright) {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, bright ? '#3949ab' : '#070a1f'); g.addColorStop(1, bright ? '#7e57c2' : '#1a1036');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  for (const s of STARS) { ctx.globalAlpha = 0.5 + 0.5 * Math.sin(frame * 0.04 + s[3]); circle(s[0], s[1], s[2], '#fff'); }
+  ctx.globalAlpha = 1;
+  circle(840, 70, 36, '#fff8e1'); circle(826, 62, 7, '#ffecb3'); circle(852, 82, 5, '#ffecb3');
+}
+function drawTitle() {
+  drawNight(false);
+  drawFactory(0, 0);
+  // the sweeping flashlight beam
+  const a = -0.9 + Math.sin(frame * 0.015) * 0.6, rx = 120, ry = 470;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  const g = ctx.createRadialGradient(rx, ry, 10, rx, ry, 520); g.addColorStop(0, 'rgba(255,230,140,.35)'); g.addColorStop(1, 'rgba(255,230,140,0)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(rx, ry); ctx.arc(rx, ry, 520, a - 0.22, a + 0.22); ctx.closePath(); ctx.fill(); ctx.restore();
+  drawRobo(rx, ry, a, 1, 0, 1.6);
+  drawSammy({ x: 860, y: 470, face: -1, st: 'sit', walk: 0 }, 1.5);
+  roundRect(W / 2 - 280, 18, 560, 92, 24, 'rgba(10,12,40,.7)');
+  text('🔦 Lights Out!', W / 2, 82, 60, '#fff59d');
+  const B = titleButtons();
+  roundRect(...B.start.slice(0, 4), 18, '#ffb300'); text(save.done || save.floor ? '▶ PLAY' : '▶ START', W / 2, B.start[1] + 45, 32, '#3e2723');
+  roundRect(B.prev[0], B.prev[1], B.prev[2], B.prev[3], 12, '#3949ab'); text('◀', B.prev[0] + 30, B.prev[1] + 36, 24);
+  roundRect(B.next[0], B.next[1], B.next[2], B.next[3], 12, '#3949ab'); text('▶', B.next[0] + 30, B.next[1] + 36, 24);
+  roundRect(W / 2 - 180, 352, 360, 52, 12, 'rgba(10,12,40,.8)');
+  text('Floor ' + (floorSel + 1) + ': ' + FLOORS[floorSel].icon + ' ' + FLOORS[floorSel].name, W / 2, 386, 19, '#fff');
+  roundRect(B.easy[0], B.easy[1], B.easy[2], B.easy[3], 12, easy ? '#43a047' : '#5e35b1'); text(easy ? '😊 Not so spooky: ON' : '👻 Not so spooky: OFF', B.easy[0] + 150, B.easy[1] + 35, 20);
+  roundRect(B.music[0], B.music[1], B.music[2], B.music[3], 12, '#00838f'); text(musicOn ? '🎵 Music ON' : '🔇 Music OFF', B.music[0] + 90, B.music[1] + 35, 20);
+  text('Arrows = walk • LIGHT = super beam • HIDE = hide • X = not so spooky', W / 2, 500, 15, '#b3e5fc');
+  if (save.done) text('🏆 You turned the power back on!', W / 2, 130, 18, '#ffd740');
+}
+function drawEnding() {
+  const lf = Math.min(4, Math.floor(Math.max(0, endT - 50) / 30)), part = Math.max(0, endT - 50) % 30 / 30;
+  drawNight(endT > 170);
+  drawFactory(lf, lf < 4 ? part : 0);
+  if (endT < 60) { ctx.fillStyle = 'rgba(255,255,255,' + (endT % 20 < 10 ? 0.15 : 0) + ')'; ctx.fillRect(0, 0, W, H); text('⚡ CLICK! ⚡', W / 2, 260, 60, '#ffeb3b'); }
+  if (endT > 170) {                                    // 🎉 the Phantom Robos come out with their night-lights
+    for (let i = 0; i < 6; i++) {
+      const t = endT - 170 - i * 12; if (t < 0) continue;
+      const x = 90 + i * 160 + Math.sin(frame * 0.05 + i) * 20, y = 430 - Math.min(1, t / 60) * 40 + Math.sin(frame * 0.12 + i * 2) * 10;
+      drawPhantom({ x, y, bob: frame * 0.1 + i, face: i % 2 ? 1 : -1, st: 'frozen' }, 0.95);
+      circle(x + 22, y + 2, 12, 'rgba(255,245,157,.35)'); circle(x + 22, y + 2, 7, ['#fff59d', '#80d8ff', '#ff80ab', '#b9f6ca', '#ea80fc', '#ffcc80'][i]);   // little night-light
+    }
+    drawRobo(470, 470, -Math.PI / 2, 1, frame, 1.3);
+    drawSammy({ x: 545, y: 478, face: -1, st: 'guide', walk: frame }, 1.2);
+    roundRect(W / 2 - 400, 14, 800, 96, 20, 'rgba(255,255,255,.92)');
+    text('The Phantom Robos just wanted a', W / 2, 52, 26, '#5e35b1');
+    text('🌙 NIGHT-LIGHT PARTY! 🎉', W / 2, 94, 36, '#e65100');
+  }
+  for (const p of parts) if (p.confetti) { ctx.fillStyle = p.col; ctx.fillRect(p.x, p.y, 6, 9); }
+  if (endT > 200 && frame % 50 < 34) text('Press LIGHT or tap!', W / 2, 515, 18, '#fff');
+}
+function drawWin() {
+  drawNight(true); drawFactory(4, 0);
+  roundRect(W / 2 - 330, 150, 660, 230, 26, 'rgba(255,255,255,.95)');
+  text('🏆 YOU DID IT! 🏆', W / 2, 210, 46, '#ff6f00');
+  text('The whole Game Factory has power again!', W / 2, 256, 24, '#37474f');
+  text('Trophy: 💡 Power Back On!', W / 2, 300, 22, '#5e35b1');
+  text('Robo, Sammy and the Phantom Robos say thank you! 🤖🐱👻', W / 2, 340, 19, '#00838f');
+  if (stT > 40 && frame % 50 < 34) text('Press LIGHT or tap to play again', W / 2, 440, 22, '#fff');
+}
+function draw() {
+  if (state === 'title') { drawTitle(); return; }
+  if (state === 'ending') { drawEnding(); return; }
+  if (state === 'win') { drawWin(); return; }
+  drawScene(); drawHUD();
+  if (state === 'intro') drawIntro();
+  if (state === 'caught') drawCaught();
+}
+function loop() {
+  update(); draw(); playMusic();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>

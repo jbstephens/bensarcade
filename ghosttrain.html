@@ -1,0 +1,1232 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>👻 Ghost Train Ride</title>
+<script>TOUCHPAD = { dpad: true, south: [' ', 'LANTERN'] };</script>
+<script src="touchpad.js?v=9"></script>
+<style>
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: #05060f; display: flex;
+    align-items: center; justify-content: center; overflow: hidden;
+  }
+  canvas {
+    width: min(100vw, calc(100vh * 960 / 520));
+    height: auto; display: block; border-radius: 12px;
+    box-shadow: 0 10px 40px rgba(0,0,0,.5);
+  }
+</style>
+<canvas id="game" width="960" height="520"></canvas>
+<script>
+// 👻 GHOST TRAIN RIDE
+// A spooky-fun ride through the haunted side of the Game Factory in a creaky little cart.
+// Robo rides in front, you are the camera. At each of the 5 forks pick the LEFT or RIGHT tunnel.
+// Things pop out (a shimmer warns you first): shine your LANTERN (Space / tap) to spook them back!
+// Lean LEFT / RIGHT to grab glowing ghost tokens. At the end, flash Phantom Robo 3 times and he becomes your friend.
+// 4 different endings + a Map of every ride you've taken.
+const C = document.getElementById('game'), ctx = C.getContext('2d');
+const W = 960, H = 520, CX = 480, HZ = 215;
+
+// ---------- Saves, trophies, stickers ----------
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }
+let stickerNew = 0;
+function sticker(id) { try { const s = JSON.parse(localStorage.getItem('gfStickers') || '{}'); if (!s[id]) { s[id] = 1; localStorage.setItem('gfStickers', JSON.stringify(s)); stickerNew = 150; } } catch (_) {} }   // for the Sticker Book in the Game Factory book
+
+let save = { rides: 0, best: 0, tokens: 0, endings: {}, rooms: {}, paths: {}, easy: false, music: true };
+function loadSave() {
+  try { const s = JSON.parse(localStorage.getItem('ghostTrain') || 'null'); if (s && typeof s === 'object') save = Object.assign(save, s); } catch (_) {}
+  save.endings = save.endings || {}; save.rooms = save.rooms || {}; save.paths = save.paths || {};
+}
+function writeSave() { try { localStorage.setItem('ghostTrain', JSON.stringify(save)); } catch (_) {} }
+loadSave();
+
+// ---------- The ride map ----------
+// 8 rooms (2 per fork for forks 1-4), then fork 5 picks where the big finale happens.
+const ROOMS = {
+  portrait: { name: 'Portrait Hall', icon: '🖼️', wall: '#3b2350', floor: '#2a1630', trim: '#d4a14a', glow: '#ffcc80' },
+  library:  { name: 'Flickering Library', icon: '📚', wall: '#3a2a1c', floor: '#24170f', trim: '#a1683a', glow: '#ffd54f' },
+  kitchen:  { name: 'Cobweb Kitchen', icon: '🍲', wall: '#22333a', floor: '#3b3b46', trim: '#90a4ae', glow: '#b2ff59' },
+  mirror:   { name: 'Mirror Room', icon: '🪞', wall: '#1d2b4f', floor: '#141c36', trim: '#b3e5fc', glow: '#80d8ff' },
+  ballroom: { name: 'Ghost Ballroom', icon: '💃', wall: '#3e1f47', floor: '#2b2140', trim: '#f8bbd0', glow: '#ea80fc' },
+  garden:   { name: 'Moonlit Stone Garden', icon: '🌙', wall: '#0e2240', floor: '#15301f', trim: '#7e8fa6', glow: '#fff59d' },
+  organ:    { name: 'The Organ Loft', icon: '🎹', wall: '#2c1d3d', floor: '#1e1426', trim: '#e0b84f', glow: '#ffab40' },
+  workshop: { name: "Phantom Robo's Workshop", icon: '⚙️', wall: '#1f2a33', floor: '#1a1f24', trim: '#4dd0e1', glow: '#84ffff' },
+  entrance: { name: 'The Creaky Entrance', icon: '🚂', wall: '#2a1d3a', floor: '#1b1424', trim: '#8d6e63', glow: '#ffcc80' },
+  roof:     { name: 'The Moon Roof', icon: '🌕', wall: '#0b1d3f', floor: '#3a2f4a', trim: '#b39ddb', glow: '#fff9c4' },
+  cellar:   { name: 'The Secret Cellar Station', icon: '🕯️', wall: '#33201a', floor: '#22150f', trim: '#ff8a65', glow: '#ffab91' },
+};
+const FORKS = [
+  ['portrait', 'library'],
+  ['kitchen', 'mirror'],
+  ['ballroom', 'garden'],
+  ['organ', 'workshop'],
+  ['roof', 'cellar'],
+];
+const FORK_LABEL = [null, null, null, null, ['Up the Big Hill', 'Down the Twisty Slide']];
+// Endings come from fork 4 (organ / workshop) + fork 5 (roof / cellar)
+const ENDINGS = {
+  'organ-roof':     { name: 'Moonlight Concert', icon: '🎆', text: ['Phantom Robo plays the giant organ on the roof', 'while the friendly ghosts make fireworks!'] },
+  'organ-cellar':   { name: 'Spooky Sing-Along', icon: '🎤', text: ['Everybody sings "Boo-Boo-Bee-Doo"', 'around the candles in the secret cellar!'] },
+  'workshop-roof':  { name: 'Ghost Rocket', icon: '🚀', text: ['Phantom Robo turns the cart into a glowing rocket', 'and you zoom right past the moon!'] },
+  'workshop-cellar':{ name: 'Glow Cookie Party', icon: '🍪', text: ['Phantom Robo bakes glow-in-the-dark cookies', 'and Sammy the cat comes for a snack!'] },
+};
+const ENDING_IDS = Object.keys(ENDINGS);
+
+// ---------- Drawing helpers ----------
+function roundRect(x, y, w, h, r, fill) {
+  ctx.fillStyle = fill; ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, Math.max(0, w), Math.max(0, h), r); else ctx.rect(x, y, Math.max(0, w), Math.max(0, h));
+  ctx.fill();
+}
+function text(str, x, y, size, color = '#fff', align = 'center') {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`;
+  ctx.textAlign = align; ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = Math.max(3, size / 6);
+  ctx.strokeText(str, x, y); ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function emoji(str, x, y, size) { ctx.font = `${size}px "Apple Color Emoji","Segoe UI Emoji",sans-serif`; ctx.textAlign = 'center'; ctx.fillStyle = '#fff'; ctx.fillText(str, x, y); }
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, 7); ctx.fill(); }
+function ellipse(x, y, rx, ry, fill, rot = 0) { ctx.fillStyle = fill; ctx.beginPath(); ctx.ellipse(x, y, Math.max(0, rx), Math.max(0, ry), rot, 0, 7); ctx.fill(); }
+function sparkle(x, y, r, color) {
+  ctx.fillStyle = color; ctx.beginPath();
+  ctx.moveTo(x, y - r); ctx.lineTo(x + r * 0.25, y - r * 0.25); ctx.lineTo(x + r, y); ctx.lineTo(x + r * 0.25, y + r * 0.25);
+  ctx.lineTo(x, y + r); ctx.lineTo(x - r * 0.25, y + r * 0.25); ctx.lineTo(x - r, y); ctx.lineTo(x - r * 0.25, y - r * 0.25); ctx.fill();
+}
+function button(b, label, color, size = 26) {
+  const hover = 0;
+  roundRect(b.x, b.y + 5, b.w, b.h, 16, 'rgba(0,0,0,.4)');
+  roundRect(b.x, b.y, b.w, b.h, 16, color);
+  roundRect(b.x + 6, b.y + 5, b.w - 12, b.h * 0.35, 12, 'rgba(255,255,255,.18)');
+  text(label, b.x + b.w / 2, b.y + b.h / 2 + size * 0.36 + hover, size);
+}
+// 3D-ish projection: world x (-1 left wall .. 1 right wall), y (-1 ceiling .. 0.8 floor), d = distance ahead
+let camX = 0, bob = 0;
+const sOf = d => 1 / (1 + Math.max(-0.6, d));
+const px = (x, d) => CX + (x - camX * 0.35) * 520 * sOf(d);
+const py = (y, d) => HZ + y * 300 * sOf(d) + bob;
+
+// ---------- Sound ----------
+let actx = null, master = null, musicBus = null, sfxBus = null, delayIn = null, noiseBuf = null;
+let musicOn = save.music !== false;
+let MUSIC_LOG = null;                                  // tests set this to an array to see every scheduled note
+const midi = n => 440 * Math.pow(2, (n - 69) / 12);
+function setupAudio() {
+  master = actx.createGain(); master.gain.value = 0.9;
+  if (actx.createDynamicsCompressor) {
+    const comp = actx.createDynamicsCompressor();
+    comp.threshold.value = -14; comp.ratio.value = 4; comp.attack.value = 0.005; comp.release.value = 0.2;
+    master.connect(comp); comp.connect(actx.destination);
+  } else master.connect(actx.destination);
+  musicBus = actx.createGain(); musicBus.gain.value = musicOn ? 0.55 : 0; musicBus.connect(master);
+  sfxBus = actx.createGain(); sfxBus.gain.value = 0.8; sfxBus.connect(master);
+  // a spooky echo for the theremin lead
+  delayIn = actx.createGain(); delayIn.gain.value = 0.3;
+  const dl = actx.createDelay(2); dl.delayTime.value = 0.375;
+  const fb = actx.createGain(); fb.gain.value = 0.38;
+  const dlp = actx.createBiquadFilter(); dlp.type = 'lowpass'; dlp.frequency.value = 2200;
+  delayIn.connect(dl); dl.connect(dlp); dlp.connect(fb); fb.connect(dl); dlp.connect(musicBus);
+  noiseBuf = actx.createBuffer(1, actx.sampleRate, actx.sampleRate);
+  const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+}
+function wakeAudio() {
+  if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); setupAudio(); } catch (_) { actx = null; } }
+  else if (actx.state === 'suspended' && actx.resume) actx.resume();
+}
+function toggleMusic() {
+  musicOn = !musicOn; save.music = musicOn; writeSave();
+  if (actx && musicBus) { const t = actx.currentTime; musicBus.gain.cancelScheduledValues(t); musicBus.gain.setValueAtTime(musicBus.gain.value, t); musicBus.gain.linearRampToValueAtTime(musicOn ? 0.55 : 0, t + 0.25); }
+  nextT = 0;
+}
+function envGain(t, a, peak, sus, dur, rel, out) {    // smooth envelope, no clicks
+  const g = actx.createGain(), hold = t + Math.max(a + 0.002, dur);
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(peak, t + a);
+  if (sus < 1) g.gain.setTargetAtTime(peak * sus, t + a, Math.max(0.03, dur * 0.35));
+  g.gain.setTargetAtTime(0, hold, rel / 4);
+  g.connect(out);
+  return g;
+}
+function osc(type, f, t, end, detune = 0) {
+  const o = actx.createOscillator(); o.type = type; o.frequency.setValueAtTime(f, t);
+  if (detune) o.detune.setValueAtTime(detune, t);
+  o.start(t); o.stop(end + 0.05); return o;
+}
+function lowpass(f, q, t) { const b = actx.createBiquadFilter(); b.type = 'lowpass'; b.frequency.setValueAtTime(f, t); b.Q.value = q; return b; }
+function noiseHit(t, type, freq, q, vol, decay, out) {
+  const s = actx.createBufferSource(); s.buffer = noiseBuf;
+  const fl = actx.createBiquadFilter(); fl.type = type; fl.frequency.value = freq; fl.Q.value = q;
+  const g = actx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.002); g.gain.exponentialRampToValueAtTime(0.001, t + decay);
+  s.connect(fl); fl.connect(g); g.connect(out); s.start(t); s.stop(t + decay + 0.05);
+}
+// 👻 THEREMIN LEAD: sine + soft triangle, slides into each note, wobbly vibrato, echo
+function thereminVoice(m, prev, t, dur, vol, out) {
+  const f = midi(m), end = t + dur + 0.3;
+  const g = envGain(t, 0.04, vol, 0.85, dur, 0.18, out);
+  const o1 = osc('sine', prev ? midi(prev) : f, t, end), o2 = osc('triangle', prev ? midi(prev) : f, t, end, 4);
+  if (prev) { o1.frequency.exponentialRampToValueAtTime(f, t + 0.06); o2.frequency.exponentialRampToValueAtTime(f, t + 0.06); }
+  const mix = actx.createGain(); mix.gain.value = 0.55; o1.connect(g); o2.connect(mix); mix.connect(g);
+  const lfo = osc('sine', 6.2, t, end), lg = actx.createGain();
+  lg.gain.setValueAtTime(0, t); lg.gain.linearRampToValueAtTime(f * (dur > 0.3 ? 0.018 : 0.006), t + 0.3);
+  lfo.connect(lg); lg.connect(o1.frequency); lg.connect(o2.frequency);
+  if (delayIn) g.connect(delayIn);
+}
+// 🎹 PIPE ORGAN pad: sine stack (8', 4', 2 2/3')
+function organVoice(notes, t, dur, vol, out) {
+  for (const m of notes) {
+    const f = midi(m), end = t + dur + 0.4;
+    const g = envGain(t, 0.05, vol, 0.9, dur, 0.25, out);
+    osc('sine', f, t, end).connect(g);
+    for (const [k, v] of [[2, 0.45], [3, 0.2], [4, 0.12]]) { const h = actx.createGain(); h.gain.value = v; osc('sine', f * k, t, end).connect(h); h.connect(g); }
+  }
+}
+// 🎵 MUSIC BOX twinkle
+function boxVoice(m, t, vol, out) {
+  const f = midi(m), g = envGain(t, 0.003, vol, 0.2, 0.25, 0.4, out);
+  osc('sine', f, t, t + 0.9).connect(g);
+  const h = actx.createGain(); h.gain.value = 0.25; osc('sine', f * 4.01, t, t + 0.5).connect(h); h.connect(g);
+}
+// 🎸 PIZZICATO BASS
+function bassVoice(m, t, dur, vol, out) {
+  const f = midi(m), g = envGain(t, 0.005, vol, 0.5, dur, 0.08, out);
+  const lp = lowpass(1400, 4, t); lp.frequency.setTargetAtTime(240, t + 0.01, 0.07); lp.connect(g);
+  osc('sawtooth', f, t, t + dur + 0.1).connect(lp);
+  const sg = actx.createGain(); sg.gain.value = 0.7; osc('triangle', f, t, t + dur + 0.1).connect(sg); sg.connect(g);
+}
+// 🥁 DRUMS: soft kick, brushy snare, tick-tock hats, wood block
+function drumHit(kind, t, vol, out) {
+  if (kind === 'k') {
+    const o = osc('sine', 130, t, t + 0.35); o.frequency.exponentialRampToValueAtTime(45, t + 0.12);
+    const g = actx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.003); g.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+    o.connect(g); g.connect(out);
+  } else if (kind === 's') noiseHit(t, 'bandpass', 2600, 0.8, vol * 0.7, 0.18, out);
+  else if (kind === 'h') noiseHit(t, 'highpass', 8000, 1, vol * 0.6, 0.035, out);
+  else if (kind === 'w') {                             // wood block "tock"
+    const o = osc('sine', 880, t, t + 0.1), g = actx.createGain();
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.002); g.gain.exponentialRampToValueAtTime(0.001, t + 0.08); o.connect(g); g.connect(out);
+  }
+}
+
+// ---------- SONGS (MIDI numbers, one per 8th note, 0 = rest) ----------
+// 🎶 "Ghost Train Galop" in D minor: a creepy-cute theremin tune over a pipe organ, pizzicato bass and a tick-tock beat
+const GALOP = [
+  62, 0, 65, 69, 74, 0, 73, 74,   70, 0, 69, 67, 69, 0, 0, 0,
+  67, 0, 70, 74, 77, 0, 76, 74,   73, 0, 74, 76, 69, 0, 0, 0,
+  62, 0, 65, 69, 74, 0, 73, 74,   77, 0, 76, 74, 72, 0, 70, 69,
+  67, 70, 69, 67, 65, 64, 62, 64, 62, 0, 69, 0, 62, 0, 0, 0,
+  72, 0, 72, 74, 72, 0, 69, 0,    70, 0, 70, 72, 70, 0, 67, 0,
+  69, 0, 69, 70, 69, 0, 65, 0,    64, 65, 67, 69, 70, 72, 73, 0,
+  74, 0, 0, 73, 74, 0, 77, 0,     76, 0, 74, 73, 74, 0, 70, 0,
+  69, 0, 67, 65, 64, 0, 61, 64,   62, 0, 0, 0, 0, 0, 0, 0,
+];
+// chords: one or two per bar ([root pitch class, 'm' minor / 'M' major / '7' dominant 7th])
+const GALOP_CH = [
+  [[2, 'm']], [[10, 'M'], [9, 'M']], [[7, 'm']], [[9, '7']], [[2, 'm']], [[5, 'M'], [0, 'M']], [[7, 'm'], [9, '7']], [[2, 'm']],
+  [[5, 'M']], [[0, 'M'], [7, 'm']], [[2, 'm']], [[9, '7']], [[2, 'm']], [[7, 'm']], [[9, '7']], [[2, 'm']],
+];
+// 🤖👻 "Phantom Robo's Boogie": faster and bouncier for the big finale
+const PHANTOM = [
+  74, 0, 74, 0, 73, 0, 74, 0,   77, 0, 74, 0, 70, 0, 0, 0,
+  72, 0, 72, 0, 71, 0, 72, 0,   76, 0, 72, 0, 69, 0, 0, 0,
+  74, 0, 77, 0, 81, 0, 80, 81,  82, 0, 81, 79, 77, 0, 76, 0,
+  74, 76, 77, 79, 81, 0, 73, 0, 74, 0, 69, 0, 62, 0, 0, 0,
+];
+const PHANTOM_CH = [[[2, 'm']], [[10, 'M']], [[0, 'M']], [[9, 'M']], [[2, 'm']], [[7, 'm']], [[9, '7']], [[2, 'm']]];
+// 🌟 the happy ending: the Galop turns MAJOR because everyone is friends now
+const HAPPY = GALOP.slice(0, 64).map(n => ({ 65: 66, 77: 78, 70: 71, 72: 73 })[n] || n);
+const HAPPY_CH = [[[2, 'M']], [[7, 'M'], [9, 'M']], [[7, 'M']], [[9, '7']], [[2, 'M']], [[11, 'm'], [9, 'M']], [[7, 'M'], [9, '7']], [[2, 'M']]];
+const SONGS = {
+  title:   { mel: GALOP, ch: GALOP_CH, bpm: 112, drums: 0, box: true },
+  ride:    { mel: GALOP, ch: GALOP_CH, bpm: 126, drums: 1, box: false },
+  phantom: { mel: PHANTOM, ch: PHANTOM_CH, bpm: 144, drums: 2, box: false },
+  happy:   { mel: HAPPY, ch: HAPPY_CH, bpm: 120, drums: 1, box: true },
+};
+let song = 'title', songPos = 0, nextT = 0;
+function playSong(name) { if (song !== name) { song = name; songPos = 0; nextT = 0; } }
+function chordNotes(c, base) {
+  const r = base + ((c[0] - base) % 12 + 12) % 12;
+  return c[1] === 'm' ? [r, r + 3, r + 7] : c[1] === '7' ? [r, r + 4, r + 7, r + 10] : [r, r + 4, r + 7];
+}
+function scheduleStep(S, pos, t) {
+  const n = S.mel.length, i = pos % n, bar = Math.floor(i / 8), k = i % 8, e = 60 / S.bpm / 2;
+  const chs = S.ch[bar % S.ch.length], c = chs.length > 1 && k >= 4 ? chs[1] : chs[0];
+  const out = musicBus, log = MUSIC_LOG;
+  const m = S.mel[i];
+  if (m) {
+    let len = 1; while (len < 3 && !S.mel[(i + len) % n]) len++;
+    let prev = 0; for (let j = 1; j < 3; j++) { const p = S.mel[(i - j + n) % n]; if (p) { prev = p; break; } }
+    thereminVoice(m, Math.abs(prev - m) <= 7 ? prev : 0, t, len * e * 0.9, 0.13, out);
+    if (log) log.push({ t, m, track: 'lead' });
+  }
+  if (k === 0 || (k === 4 && chs.length > 1)) {
+    organVoice(chordNotes(c, 55), t, (chs.length > 1 ? 4 : 8) * e * 0.95, 0.035, out);
+    if (log) log.push({ t, m: c[0], track: 'organ' });
+  }
+  const root = chordNotes(c, 38)[0];
+  if (k === 0 || k === 4) bassVoice(k === 0 ? root : root + 7, t, e * 1.6, 0.16, out);
+  if (S.drums === 2 && (k === 2 || k === 6)) bassVoice(root + 12, t, e * 0.8, 0.1, out);
+  if (S.drums) {
+    if (k === 0 || k === 4) drumHit('k', t, 0.32, out);
+    if (k === 2 || k === 6) drumHit('s', t, 0.18, out);
+    if (k % 2 === 1) drumHit('h', t, 0.12, out);
+    if (k === 7 && bar % 2 === 1) drumHit('w', t, 0.12, out);
+  } else if (k === 0 || k === 4) drumHit('w', t, 0.08, out);   // tick... tock...
+  if ((S.box || bar >= 8) && k % 2 === 1) {
+    const cn = chordNotes(c, 74); boxVoice(cn[(k >> 1) % cn.length], t, 0.035, out);
+  }
+}
+function playMusic() {
+  if (!actx || !musicBus || !musicOn) return;
+  const S = SONGS[song];
+  if (nextT < actx.currentTime) nextT = actx.currentTime + 0.05;
+  while (nextT < actx.currentTime + 0.18) { scheduleStep(S, songPos, nextT); nextT += 60 / S.bpm / 2; songPos++; }
+}
+
+// ---------- Sound effects (spooky-fun, never too loud) ----------
+function tone(f, at, dur, type, vol, slideTo) {
+  if (!actx) return;
+  const t = actx.currentTime + at, g = envGain(t, 0.01, vol, 0.7, dur, 0.08, sfxBus);
+  const o = osc(type, f, t, t + dur + 0.1); if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+  o.connect(g);
+}
+function noiseSfx(at, type, f, q, vol, dec) { if (actx && noiseBuf) noiseHit(actx.currentTime + at, type, f, q, vol, dec, sfxBus); }
+const sfx = {
+  clack:   () => { noiseSfx(0, 'bandpass', 900, 3, 0.16, 0.05); noiseSfx(0.11, 'bandpass', 700, 3, 0.13, 0.05); },
+  creak:   () => { if (!actx) return; const t = actx.currentTime, g = envGain(t, 0.15, 0.05, 0.9, 0.9, 0.3, sfxBus), lp = lowpass(700, 9, t);
+                   lp.connect(g); const o = osc('sawtooth', 90, t, t + 1.2); o.frequency.linearRampToValueAtTime(140, t + 0.5); o.frequency.linearRampToValueAtTime(75, t + 1); o.connect(lp); },
+  hoot:    () => { tone(520, 0, 0.25, 'sine', 0.08, 470); tone(520, 0.35, 0.45, 'sine', 0.08, 430); },
+  whoosh:  () => { if (!actx || !noiseBuf) return; const t = actx.currentTime, s = actx.createBufferSource(); s.buffer = noiseBuf;
+                   const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 2; bp.frequency.setValueAtTime(300, t); bp.frequency.exponentialRampToValueAtTime(2500, t + 0.5);
+                   const g = envGain(t, 0.2, 0.2, 0.8, 0.5, 0.3, sfxBus); s.connect(bp); bp.connect(g); s.start(t); s.stop(t + 1); },
+  shimmer: () => [1568, 1976, 2349, 1976].forEach((f, i) => tone(f, i * 0.07, 0.15, 'sine', 0.035)),
+  boo:     () => { tone(330, 0, 0.5, 'sine', 0.1, 200); tone(495, 0, 0.5, 'triangle', 0.04, 300); },
+  giggle:  () => [880, 1046, 880, 1175, 1318].forEach((f, i) => tone(f, i * 0.06, 0.06, 'triangle', 0.07)),
+  lantern: () => { tone(600, 0, 0.18, 'sine', 0.09, 1800); noiseSfx(0, 'highpass', 5000, 1, 0.07, 0.2); },
+  token:   () => { tone(1318, 0, 0.12, 'sine', 0.09); tone(1976, 0.06, 0.2, 'sine', 0.07); },
+  fork:    () => [392, 330].forEach((f, i) => tone(f, i * 0.14, 0.12, 'square', 0.04)),
+  click:   () => tone(700, 0, 0.06, 'square', 0.05),
+  laugh:   () => [0, 1, 2].forEach(i => { tone(300 - i * 20, i * 0.22, 0.14, 'triangle', 0.12, 220 - i * 20); }),
+  win:     () => [587, 740, 880, 1175, 880, 1175].forEach((f, i) => tone(f, i * 0.12, 0.2, 'square', 0.07)),
+};
+
+// ---------- Input ----------
+const keys = { left: false, right: false };
+const press = { l: false, r: false, u: false, d: false, space: false, enter: false, esc: false };
+let tap = null;
+addEventListener('keydown', e => {
+  wakeAudio();
+  const k = e.key, rep = e.repeat;
+  if (k === 'ArrowLeft' || k === 'a' || k === 'A') { keys.left = true; if (!rep) press.l = true; }
+  if (k === 'ArrowRight' || k === 'd' || k === 'D') { keys.right = true; if (!rep) press.r = true; }
+  if ((k === 'ArrowUp' || k === 'w' || k === 'W') && !rep) press.u = true;
+  if ((k === 'ArrowDown' || k === 's' || k === 'S') && !rep) press.d = true;
+  if ((k === ' ' || k === 'x' || k === 'X') && !rep) press.space = true;
+  if (k === ' ' && e.preventDefault) e.preventDefault();
+  if (k === 'Enter' && !rep) press.enter = true;
+  if (k === 'Escape') press.esc = true;
+  if ((k === 'm' || k === 'M') && !rep) toggleMusic();
+});
+addEventListener('keyup', e => {
+  const k = e.key;
+  if (k === 'ArrowLeft' || k === 'a' || k === 'A') keys.left = false;
+  if (k === 'ArrowRight' || k === 'd' || k === 'D') keys.right = false;
+});
+C.addEventListener('mousedown', e => {                 // touchpad.js turns finger taps into mouse events
+  wakeAudio();
+  const r = C.getBoundingClientRect();
+  tap = { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height };
+});
+const inBox = (t, b) => t && t.x >= b.x && t.x <= b.x + b.w && t.y >= b.y && t.y <= b.y + b.h;
+const MUSIC_BTN = { x: 16, y: 64, w: 54, h: 42 };
+const BACK_BTN = { x: 16, y: 12, w: 110, h: 44 };
+
+// ---------- Game state ----------
+let state = 'title', frame = 0, sel = 0, msg = null;
+let ride = null;                                       // the current ride
+let dist = 0, speed = 0, decor = [], tokens = [], pops = [], floaters = [], parts = [];
+let lanternT = 0, lanternCool = 0, roboTurn = 0, roboLean = 0, flick = 1, fade = 0;
+let fork = null, phantom = null, ending = null, lastClack = 0;
+const easy = () => !!save.easy;
+const SHIM = () => easy() ? 95 : 70;                   // shimmer warning time (frames)
+const OUTW = () => easy() ? 120 : 85;                  // how long a pop-out waits for your lantern
+const ROOM_LEN = 860, ENTRY_LEN = 620;
+
+const CRITTERS = {
+  entrance: [['bat', 'Flappy Bat']],
+  portrait: [['painting', 'Sir Wobblesworth'], ['painting', 'Lady Giggleface']],
+  library:  [['book', 'Flappy Book'], ['ghost', 'Librarian Ghost']],
+  kitchen:  [['jelly', 'Jelly Ghost'], ['bat', 'Cobweb Bat']],
+  mirror:   [['mirror', 'Silly Reflection'], ['ghost', 'Copycat Ghost']],
+  ballroom: [['ghost', 'Dancing Ghost'], ['ghost', 'Waltzing Ghost']],
+  garden:   [['pumpkin', 'Pumpkin Pop'], ['owl', 'Hooty Owl']],
+  organ:    [['note', 'Note Ghost'], ['ghost', 'Choir Ghost']],
+  workshop: [['windup', 'Wind-Up Bat'], ['ghost', 'Gear Ghost']],
+};
+
+function startRide() {
+  ride = { leg: 0, room: 'entrance', t: 0, len: ENTRY_LEN, path: [], score: 0, tokens: 0, spooked: 0, popsSeen: 0, combo: 0 };
+  dist = 0; speed = 0.02; decor = []; tokens = []; pops = []; floaters = []; parts = [];
+  fork = null; phantom = null; ending = null; fade = 1;
+  for (let d = 0.5; d < 8; d += 1.1) addDecor(d);
+  state = 'ride'; playSong('ride'); sfx.creak();
+  banner(ROOMS.entrance.name);
+}
+function enterRoom(key) {
+  ride.room = key; ride.t = 0; ride.len = ROOM_LEN; ride.leg++;
+  save.rooms[key] = 1; writeSave();
+  decor = []; tokens = []; pops = []; fade = 1;
+  for (let d = 0.5; d < 8; d += 1.1) addDecor(d);
+  state = 'ride'; banner(ROOMS[key].icon + ' ' + ROOMS[key].name);
+  ride.hoot = key === 'garden' ? 60 : (key === 'library' || key === 'portrait' ? 200 : 0);
+}
+function banner(s) { msg = { s, t: 170 }; }
+function addDecor(d) {
+  const side = decor.length % 2 ? 1 : -1;
+  decor.push({ d, side, v: Math.floor(Math.random() * 4), seed: Math.random() });
+}
+function popTimes() { return easy() ? [200, 560] : [170, 420, 680]; }
+function spawnPop() {
+  const list = CRITTERS[ride.room] || CRITTERS.entrance, c = list[ride.popsSeen % list.length];
+  const lane = [-0.55, 0.55, 0][ride.popsSeen % 3];
+  pops.push({ kind: c[0], name: c[1], x: lane, y: -0.15, d: 2.2, phase: 'shimmer', t: 0 });
+  ride.popsSeen++; sfx.shimmer();
+}
+function spawnTokens() {
+  const lane = [-0.5, 0, 0.5][Math.floor(Math.random() * 3)];
+  for (let i = 0; i < 3; i++) tokens.push({ x: lane, y: 0.15, d: 7.5 + i * 0.7, got: false });
+}
+function lightLantern() {
+  if (lanternCool > 0) return false;
+  lanternT = 22; lanternCool = easy() ? 22 : 34; sfx.lantern();
+  for (let i = 0; i < 10; i++) parts.push({ x: 820, y: 330, vx: (Math.random() - 0.7) * 8, vy: (Math.random() - 0.6) * 6, life: 30, c: '#fff59d' });
+  return true;
+}
+function spookedPop(p) {
+  p.phase = 'spooked'; p.t = 0; ride.spooked++; ride.combo++;
+  const pts = 100 + (ride.combo - 1) * 25; ride.score += pts;
+  floaters.push({ s: '+' + pts + ' Spooked back!', x: px(p.x, p.d), y: py(p.y, p.d) - 60, t: 70, c: '#fff59d' });
+  roboTurn = 60; sfx.giggle();
+}
+function startFork() {
+  fork = { i: ride.leg, t: 0, choice: -1, ct: 0 };
+  state = 'fork'; sfx.fork(); sfx.creak();
+}
+function chooseFork(c) {
+  if (fork.choice >= 0) return;
+  fork.choice = c; fork.ct = 0; sfx.whoosh(); sfx.click();
+}
+function startPhantom(key) {
+  ride.room = key; ride.leg++; save.rooms[key] = 1; writeSave();
+  decor = []; tokens = []; pops = []; fade = 1;
+  for (let d = 0.5; d < 8; d += 1.1) addDecor(d);
+  phantom = { phase: 'intro', pt: 0, hits: 0, x: 0, wob: 0 };
+  state = 'phantom'; playSong('phantom'); banner(ROOMS[key].icon + ' ' + ROOMS[key].name);
+}
+function finishRide() {
+  const key = FORKS[3][ride.path[3]] + '-' + FORKS[4][ride.path[4]];
+  const fresh = !save.endings[key];
+  save.rides++; save.best = Math.max(save.best, ride.score); save.tokens += ride.tokens;
+  save.endings[key] = 1; save.paths[ride.path.join('')] = 1; writeSave();
+  trophy('ghostTrain');
+  if (ENDING_IDS.every(k => save.endings[k])) sticker('ghostTrainAll');
+  ending = { key, fresh, t: 0 };
+  state = 'ending'; sel = 0; sfx.win(); playSong('happy');
+}
+function goTitle() { state = 'title'; sel = 0; playSong('title'); camX = 0; }
+let mapFrom = 'title';
+
+// ---------- Update ----------
+function moveWorld() {
+  dist += speed;
+  for (const o of decor) o.d -= speed;
+  if (decor.length && decor[0].d < -0.6) { decor.shift(); addDecor(decor[decor.length - 1].d + 1.1); }
+  if (Math.floor(dist / 2.6) !== lastClack && speed > 0.01) { lastClack = Math.floor(dist / 2.6); sfx.clack(); }
+  bob = speed > 0.01 ? Math.sin(dist * 7) * 1.5 : 0;
+}
+function tapOnToken(t) {
+  for (const k of tokens) if (!k.got && k.d < 6 && Math.hypot(t.x - px(k.x, k.d), t.y - py(k.y, k.d)) < 30 + 60 * sOf(k.d)) { getToken(k); return true; }
+  return false;
+}
+function getToken(k) {
+  k.got = true; ride.tokens++; ride.score += 10; sfx.token();
+  floaters.push({ s: '+10', x: px(k.x, k.d), y: py(k.y, k.d) - 30, t: 40, c: '#b9f6ca' });
+  for (let i = 0; i < 6; i++) parts.push({ x: px(k.x, k.d), y: py(k.y, k.d), vx: (Math.random() - 0.5) * 6, vy: (Math.random() - 0.5) * 6, life: 26, c: '#b9f6ca' });
+}
+function updateRide() {
+  const lean = keys.left ? -1 : keys.right ? 1 : 0;
+  camX += (lean - camX) * 0.12; roboLean += (lean - roboLean) * 0.15;
+  speed += ((ride.leg ? 0.065 : 0.055) - speed) * 0.03;
+  moveWorld();
+  ride.t++;
+  if (ride.hoot && --ride.hoot === 0) sfx.hoot();
+  if (frame % 420 === 200) sfx.creak();
+  if (popTimes().includes(ride.t)) spawnPop();
+  if (ride.t % 125 === 60 && ride.t < ride.len - 220) spawnTokens();
+  for (const k of tokens) {
+    k.d -= speed;
+    if (!k.got && k.d < 0.6 && k.d > 0.2 && Math.abs(k.x - camX * 0.5) < 0.3) getToken(k);
+  }
+  tokens = tokens.filter(k => k.d > -0.3);
+  let fired = false;
+  if (press.space) fired = lightLantern();
+  if (tap && !inBox(tap, BACK_BTN) && !inBox(tap, MUSIC_BTN) && !tapOnToken(tap)) fired = lightLantern();
+  for (const p of pops) {
+    p.t++;
+    if (p.phase === 'shimmer') {
+      if (fired && p.t > SHIM() - 20) { spookedPop(p); fired = false; }
+      else if (p.t >= SHIM()) { p.phase = 'out'; p.t = 0; sfx.boo(); }
+    } else if (p.phase === 'out') {
+      if (fired) { spookedPop(p); fired = false; }
+      else if (p.t >= OUTW()) {
+        p.phase = 'gone'; p.t = 0; ride.combo = 0;
+        floaters.push({ s: 'Hee hee! Boo!', x: px(p.x, p.d), y: py(p.y, p.d) - 70, t: 60, c: '#e1bee7' });
+      }
+    }
+  }
+  pops = pops.filter(p => !((p.phase === 'spooked' || p.phase === 'gone') && p.t > 50));
+  if (ride.t >= ride.len && !pops.length) startFork();
+}
+function updateFork() {
+  fork.t++;
+  speed *= 0.95; moveWorld();
+  if (fork.choice < 0) {
+    camX *= 0.9;
+    if (press.l) chooseFork(0); else if (press.r) chooseFork(1);
+    else if (tap && !inBox(tap, BACK_BTN) && !inBox(tap, MUSIC_BTN)) chooseFork(tap.x < W / 2 ? 0 : 1);
+  } else {
+    fork.ct++;
+    camX += ((fork.choice ? 2.2 : -2.2) - camX) * 0.08;
+    if (fork.ct > 30) fade = Math.min(1, (fork.ct - 30) / 20);
+    if (fork.ct >= 52) {
+      ride.path.push(fork.choice); camX = 0; speed = 0.05;
+      if (fork.i < 4) enterRoom(FORKS[fork.i][fork.choice]); else startPhantom(FORKS[4][fork.choice]);
+    }
+  }
+}
+const PH_LINES = {
+  intro: "Whoooo! Who's riding MY ghost train?",
+  hover: 'Get ready... watch for the shimmer!',
+  eek: ['Eek! So bright! Hee hee!', 'Whoa! Again?! Ha!', 'Okay okay...'],
+  miss: 'Boo! Hee hee! Try again!',
+  friend: "HA HA HA! You got me! Let's be friends!",
+};
+function updatePhantom() {
+  const P = phantom;
+  P.pt++; P.wob += 0.05;
+  speed += (0.012 - speed) * 0.05; moveWorld();
+  camX *= 0.9;
+  let fired = false;
+  if (press.space) fired = lightLantern();
+  if (tap && !inBox(tap, BACK_BTN) && !inBox(tap, MUSIC_BTN)) fired = lightLantern();
+  if (P.phase === 'intro' && P.pt > 170) { P.phase = 'hover'; P.pt = 0; }
+  else if (P.phase === 'hover' && P.pt > 70) { P.phase = 'shimmer'; P.pt = 0; sfx.shimmer(); P.x = [0, -0.35, 0.35][P.hits % 3]; }
+  else if (P.phase === 'shimmer') {
+    if (fired && P.pt > SHIM() - 20) hitPhantom();
+    else if (P.pt >= SHIM()) { P.phase = 'boo'; P.pt = 0; sfx.boo(); }
+  } else if (P.phase === 'boo') {
+    if (fired) hitPhantom();
+    else if (P.pt >= OUTW()) { P.phase = 'miss'; P.pt = 0; ride.combo = 0; sfx.giggle(); }
+  } else if (P.phase === 'miss' && P.pt > 80) { P.phase = 'hover'; P.pt = 0; }
+  else if (P.phase === 'eek' && P.pt > 75) {
+    if (P.hits >= 3) { P.phase = 'friend'; P.pt = 0; sfx.laugh(); playSong('happy'); ride.score += 500; roboTurn = 200;
+      floaters.push({ s: '+500 New friend!', x: CX, y: 120, t: 120, c: '#fff59d' }); }
+    else { P.phase = 'hover'; P.pt = 0; }
+  } else if (P.phase === 'friend' && P.pt > 280) finishRide();
+}
+function hitPhantom() {
+  const P = phantom;
+  P.hits++; P.phase = 'eek'; P.pt = 0; ride.combo++; ride.score += 200; roboTurn = 60;
+  floaters.push({ s: '+200 Lantern flash ' + P.hits + '/3!', x: CX, y: 110, t: 70, c: '#fff59d' });
+  if (P.hits >= 3) sfx.laugh(); else sfx.giggle();
+}
+// menu buttons
+const TITLE_BTNS = [
+  { x: 330, y: 300, w: 300, h: 64, id: 'ride' },
+  { x: 300, y: 378, w: 360, h: 52, id: 'easy' },
+  { x: 330, y: 442, w: 300, h: 52, id: 'map' },
+];
+const END_BTNS = [
+  { x: 250, y: 440, w: 220, h: 56, id: 'again' },
+  { x: 490, y: 440, w: 220, h: 56, id: 'map' },
+];
+function menuPick(id) {
+  sfx.click();
+  if (id === 'ride') startRide();
+  else if (id === 'easy') { save.easy = !save.easy; writeSave(); }
+  else if (id === 'map') { mapFrom = state; state = 'map'; }
+  else if (id === 'again') startRide();
+}
+function update() {
+  frame++;
+  flick = 0.85 + Math.sin(frame * 0.21) * 0.05 + Math.sin(frame * 0.53) * 0.04 + (Math.random() < 0.03 ? -0.12 : 0);
+  if (lanternT > 0) lanternT--;
+  if (lanternCool > 0) lanternCool--;
+  if (roboTurn > 0) roboTurn--;
+  if (msg && --msg.t <= 0) msg = null;
+  if (stickerNew > 0) stickerNew--;
+  if (fade > 0 && !(state === 'fork' && fork && fork.choice >= 0)) fade = Math.max(0, fade - 0.04);
+  for (const f of floaters) { f.t--; f.y -= 0.7; }
+  floaters = floaters.filter(f => f.t > 0);
+  for (const p of parts) { p.x += p.vx; p.y += p.vy; p.vy += 0.15; p.life--; }
+  parts = parts.filter(p => p.life > 0);
+  if (tap && inBox(tap, MUSIC_BTN)) { toggleMusic(); tap = null; }
+  if ((press.esc || (tap && inBox(tap, BACK_BTN))) && state !== 'title') {
+    if (state === 'map') state = mapFrom; else goTitle();
+    tap = null;
+  } else if (state === 'title') {
+    if (press.u) { sel = (sel + 2) % 3; sfx.click(); }
+    if (press.d) { sel = (sel + 1) % 3; sfx.click(); }
+    if (press.space || press.enter) menuPick(TITLE_BTNS[sel].id);
+    else if (tap) { const b = TITLE_BTNS.find(b => inBox(tap, b)); if (b) menuPick(b.id); }
+  } else if (state === 'ride') updateRide();
+  else if (state === 'fork') updateFork();
+  else if (state === 'phantom') updatePhantom();
+  else if (state === 'ending') {
+    ending.t++;
+    if (press.l || press.r) { sel = 1 - sel; sfx.click(); }
+    if ((press.space || press.enter) && ending.t > 40) menuPick(END_BTNS[sel].id);
+    else if (tap && ending.t > 20) { const b = END_BTNS.find(b => inBox(tap, b)); if (b) menuPick(b.id); }
+  } else if (state === 'map') {
+    if (press.space || press.enter || (tap && inBox(tap, { x: 380, y: 460, w: 200, h: 50 }))) { sfx.click(); state = mapFrom; }
+  }
+  for (const k in press) press[k] = false;
+  tap = null;
+}
+
+// ---------- Drawing: the haunted rooms ----------
+const FAR = 8;
+function poly(pts, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); for (const p of pts.slice(1)) ctx.lineTo(p[0], p[1]); ctx.closePath(); ctx.fill(); }
+const isOut = key => key === 'garden' || key === 'roof';
+function drawSky(seed) {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, easy() ? '#283f7a' : '#0b1030'); g.addColorStop(1, easy() ? '#5c4d8f' : '#2a1d4f');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  for (let i = 0; i < 50; i++) {
+    const x = (i * 197 + seed) % W, y = (i * 83) % 230, tw = 0.5 + 0.5 * Math.sin(frame * 0.05 + i);
+    circle(x, y, 1 + (i % 3) * 0.6, `rgba(255,255,255,${0.35 + tw * 0.5})`);
+  }
+  circle(760, 80, 58, 'rgba(255,249,196,.18)'); circle(760, 80, 44, '#fff9c4');
+  circle(744, 70, 8, 'rgba(200,190,140,.5)'); circle(775, 95, 6, 'rgba(200,190,140,.5)');
+}
+function drawRoom(key) {
+  const R = ROOMS[key], out = isOut(key);
+  if (out) drawSky(key === 'roof' ? 31 : 7);
+  else { ctx.fillStyle = R.wall; ctx.fillRect(0, 0, W, H); }
+  const N = -0.5;
+  // back of the tunnel (far away = dark)
+  if (!out) poly([[px(-1, FAR), py(-1, FAR)], [px(1, FAR), py(-1, FAR)], [px(1, FAR), py(0.8, FAR)], [px(-1, FAR), py(0.8, FAR)]], '#07040d');
+  else poly([[0, py(0.8, FAR) - 30], [W, py(0.8, FAR) - 30], [W, py(0.8, FAR)], [0, py(0.8, FAR)]], key === 'roof' ? '#1b1236' : '#0f2a1a');
+  // floor
+  poly([[px(-2.5, N), py(0.8, N)], [px(2.5, N), py(0.8, N)], [px(2.5, FAR), py(0.8, FAR)], [px(-2.5, FAR), py(0.8, FAR)]], R.floor);
+  if (!out) {
+    poly([[px(-1, N), py(-1, N)], [px(1, N), py(-1, N)], [px(1, FAR), py(-1, FAR)], [px(-1, FAR), py(-1, FAR)]], 'rgba(0,0,0,.35)');   // ceiling
+    for (const s of [-1, 1]) {
+      poly([[px(s, N), py(-1, N)], [px(s, FAR), py(-1, FAR)], [px(s, FAR), py(0.8, FAR)], [px(s, N), py(0.8, N)]], R.wall);
+      poly([[px(s, N), py(0.45, N)], [px(s, FAR), py(0.45, FAR)], [px(s, FAR), py(0.8, FAR)], [px(s, N), py(0.8, N)]], 'rgba(0,0,0,.25)');   // wainscot
+    }
+  } else {
+    for (const s of [-1, 1]) poly([[px(s * 1.1, N), py(0.2, N)], [px(s * 1.1, FAR), py(0.5, FAR)], [px(s * 1.1, FAR), py(0.8, FAR)], [px(s * 1.1, N), py(0.8, N)]], key === 'roof' ? '#4a3a63' : '#1e4d2b');
+  }
+  // ribs (arches) rushing past
+  for (let k = 0; k < 6; k++) {
+    const d = k * 1.6 - (dist % 1.6) + 0.2, s = sOf(d);
+    if (d < -0.4) continue;
+    ctx.strokeStyle = R.trim; ctx.lineWidth = Math.max(1, 14 * s); ctx.globalAlpha = 0.85;
+    if (!out) { ctx.beginPath(); ctx.moveTo(px(-1, d), py(0.8, d)); ctx.lineTo(px(-1, d), py(-0.75, d)); ctx.quadraticCurveTo(px(0, d), py(-1.25, d), px(1, d), py(-0.75, d)); ctx.lineTo(px(1, d), py(0.8, d)); ctx.stroke(); }
+    else for (const sx of [-1.05, 1.05]) {               // little lamp posts outside
+      ctx.beginPath(); ctx.moveTo(px(sx, d), py(0.8, d)); ctx.lineTo(px(sx, d), py(-0.4, d)); ctx.stroke();
+      circle(px(sx, d), py(-0.45, d), 18 * s * flick, R.glow);
+    }
+    ctx.globalAlpha = 1;
+  }
+  // the track: two rails + wooden ties
+  for (let k = 0; k < 18; k++) {
+    const d = k * 0.5 - (dist % 0.5) - 0.3; if (d < N) continue;
+    const s = sOf(d); ctx.fillStyle = '#4e342e';
+    ctx.fillRect(px(-0.34, d), py(0.8, d) - 6 * s, px(0.34, d) - px(-0.34, d), 12 * s);
+  }
+  ctx.strokeStyle = '#b0bec5'; ctx.lineWidth = 3;
+  for (const rx of [-0.22, 0.22]) { ctx.beginPath(); ctx.moveTo(px(rx, N), py(0.8, N)); ctx.lineTo(px(rx, FAR), py(0.8, FAR)); ctx.stroke(); }
+  // decorations, far ones first
+  for (let i = decor.length - 1; i >= 0; i--) drawDecor(key, decor[i]);
+  if (key === 'ballroom') drawDancers();
+  if (key === 'garden' || key === 'roof') for (let i = 0; i < 14; i++) {   // fireflies
+    const x = (Math.sin(frame * 0.01 + i * 2.1) * 0.5 + 0.5) * W, y = 160 + Math.sin(frame * 0.02 + i) * 90 + i * 8;
+    circle(x, y, 2.5 + Math.sin(frame * 0.1 + i), 'rgba(255,245,157,.85)');
+  }
+}
+function drawDancers() {                                // friendly ghosts waltzing in the middle of the ballroom
+  for (let i = 0; i < 4; i++) {
+    const a = frame * 0.025 + i * Math.PI / 2, d = 4.6 + Math.sin(a) * 1.2, x = Math.cos(a) * 0.45, s = sOf(d);
+    drawGhost(px(x, d), py(0.05 + Math.sin(frame * 0.1 + i) * 0.04, d), s * 1.1, ['#fce4ec', '#e1f5fe', '#f3e5f5', '#fffde7'][i], 'happy', i % 2 ? 'bow' : 'flower');
+  }
+}
+const FACE_COLORS = ['#ab47bc', '#a1887f', '#e0e0e0', '#ffb74d'];
+function drawDecor(key, o) {
+  const d = o.d; if (d < -0.45 || d > FAR) return;
+  const s = sOf(d), side = o.side, x = px(side * 0.97, d), sq = 0.6;
+  const wy = y => py(y, d);
+  if (key === 'portrait' || key === 'entrance') {
+    if (key === 'entrance' && o.v % 2) {                // wall lamps
+      roundRect(x - 10 * s, wy(-0.35), 20 * s, 40 * s, 4, '#5d4037'); circle(x, wy(-0.38), 26 * s * flick, 'rgba(255,204,128,.35)'); circle(x, wy(-0.38), 11 * s, '#ffcc80');
+      return;
+    }
+    const fw = 150 * s * sq, fh = 170 * s, fy = wy(-0.62);
+    roundRect(x - fw / 2 - 8 * s, fy - 8 * s, fw + 16 * s, fh + 16 * s, 6 * s, '#d4a14a');
+    roundRect(x - fw / 2, fy, fw, fh, 4 * s, '#2b1b3a');
+    // a funny portrait: purple goo king, a tabby cat, a ghost or a pumpkin person. Their EYES FOLLOW YOU!
+    const c = FACE_COLORS[o.v], cx = x, cy = fy + fh * 0.55;
+    ellipse(cx, cy, fw * 0.36, fh * 0.32, c);
+    if (o.v === 0) { ctx.fillStyle = '#ffd54f'; ctx.beginPath(); ctx.moveTo(cx - fw * 0.25, cy - fh * 0.26); for (let i = 0; i <= 4; i++) ctx.lineTo(cx - fw * 0.25 + i * fw * 0.125, cy - fh * (i % 2 ? 0.34 : 0.44)); ctx.lineTo(cx + fw * 0.25, cy - fh * 0.26); ctx.fill(); }
+    if (o.v === 1) { for (const e of [-1, 1]) { ctx.fillStyle = c; ctx.beginPath(); ctx.moveTo(cx + e * fw * 0.32, cy - fh * 0.1); ctx.lineTo(cx + e * fw * 0.3, cy - fh * 0.42); ctx.lineTo(cx + e * fw * 0.08, cy - fh * 0.25); ctx.fill(); } }
+    const look = Math.max(-1, Math.min(1, -side * (0.4 + 1.2 / (d + 1)) - camX * 0.3));
+    for (const e of [-1, 1]) {
+      ellipse(cx + e * fw * 0.14, cy - fh * 0.06, fw * 0.1, fh * 0.07, '#fff');
+      circle(cx + e * fw * 0.14 + look * fw * 0.05, cy - fh * 0.06, fw * 0.05, o.v === 1 ? '#6d4c41' : '#1a1a2e');
+    }
+    ctx.strokeStyle = '#3e2723'; ctx.lineWidth = Math.max(1, 3 * s); ctx.beginPath(); ctx.arc(cx, cy + fh * 0.08, fw * 0.12, 0.2, Math.PI - 0.2); ctx.stroke();
+  } else if (key === 'library') {
+    const bw = 170 * s * sq, bh = 330 * s, by = wy(-0.8);
+    roundRect(x - bw / 2, by, bw, bh, 3, '#5d4037');
+    const cols = ['#e57373', '#64b5f6', '#81c784', '#ffd54f', '#ba68c8', '#4db6ac'];
+    for (let r = 0; r < 4; r++) {
+      ctx.fillStyle = '#3e2723'; ctx.fillRect(x - bw / 2 + 4 * s, by + r * bh / 4 + bh / 4 - 6 * s, bw - 8 * s, 6 * s);
+      for (let b = 0; b < 6; b++) { ctx.fillStyle = cols[(b + r + o.v) % 6]; ctx.fillRect(x - bw / 2 + 6 * s + b * (bw - 12 * s) / 6, by + r * bh / 4 + 10 * s, (bw - 14 * s) / 6 - 1, bh / 4 - 18 * s); }
+    }
+    const fl = Math.sin(frame * 0.3 + o.seed * 9) * 3 * s;   // flickering candle on top
+    roundRect(x - 5 * s, by - 26 * s, 10 * s, 26 * s, 2, '#fff8e1');
+    ellipse(x, by - 34 * s + fl * 0.3, 7 * s, 13 * s + fl, '#ffb300'); ellipse(x, by - 31 * s, 3 * s, 6 * s, '#fff59d');
+    circle(x, by - 34 * s, 40 * s * flick, 'rgba(255,213,79,.15)');
+  } else if (key === 'kitchen') {
+    const sy = wy(0.25), sw = 150 * s * sq;
+    roundRect(x - sw / 2, sy, sw, 120 * s, 6 * s, '#455a64');      // old stove
+    roundRect(x - sw * 0.4, sy - 50 * s, sw * 0.8, 52 * s, 10 * s, '#37474f');   // pot
+    ellipse(x, sy - 50 * s, sw * 0.4, 9 * s, '#76ff03');
+    for (let i = 0; i < 3; i++) { const t = (frame * 0.02 + i * 0.33 + o.seed) % 1; circle(x + Math.sin(i * 3 + frame * 0.05) * sw * 0.2, sy - 55 * s - t * 50 * s, 6 * s * (1 - t), 'rgba(178,255,89,.7)'); }
+    ctx.strokeStyle = 'rgba(236,239,241,.55)'; ctx.lineWidth = 1;     // cobweb in the top corner
+    const wx = x, wyy = wy(-0.95), r = 110 * s;
+    for (let a = 0; a < 5; a++) { const an = Math.PI / 2 + (side > 0 ? 1 : -1) * 0 + a * Math.PI / 10 * -side; ctx.beginPath(); ctx.moveTo(wx, wyy); ctx.lineTo(wx - side * Math.cos(a * 0.35) * r, wyy + Math.sin(a * 0.35) * r); ctx.stroke(); }
+    for (let k = 1; k < 4; k++) { ctx.beginPath(); for (let a = 0; a < 5; a++) { const xx = wx - side * Math.cos(a * 0.35) * r * k / 4, yy = wyy + Math.sin(a * 0.35) * r * k / 4; a ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy); } ctx.stroke(); }
+  } else if (key === 'mirror') {
+    const mw = 130 * s * sq, mh = 230 * s, my = wy(-0.7) + mh / 2;
+    ellipse(x, my, mw / 2 + 9 * s, mh / 2 + 9 * s, '#cfd8dc');
+    const g = ctx.createLinearGradient(x - mw / 2, my - mh / 2, x + mw / 2, my + mh / 2);
+    g.addColorStop(0, '#90caf9'); g.addColorStop(0.5, '#e3f2fd'); g.addColorStop(1, '#5c6bc0');
+    ellipse(x, my, mw / 2, mh / 2, g);
+    // a wobbly, silly reflection of Robo
+    const wob = Math.sin(frame * 0.08 + o.seed * 6) * 0.25;
+    ctx.save(); ctx.translate(x, my); ctx.scale(1 + wob, 1 - wob);
+    roundRect(-mw * 0.32, -mh * 0.12, mw * 0.64, mh * 0.24, 10 * s, '#fff');
+    roundRect(-mw * 0.26, -mh * 0.08, mw * 0.52, mh * 0.15, 8 * s, '#111827');
+    circle(-mw * 0.1, -mh * 0.01, 4 * s, '#40c4ff'); circle(mw * 0.12, -mh * 0.01, 6 * s, '#40c4ff');
+    ctx.restore();
+    ellipse(x - mw * 0.2, my - mh * 0.3, mw * 0.08, mh * 0.12, 'rgba(255,255,255,.5)', 0.3);
+  } else if (key === 'ballroom') {
+    const cw = 120 * s * sq;
+    poly([[x - cw / 2, wy(-1)], [x + cw / 2, wy(-1)], [x + cw * 0.3, wy(0.8)], [x - cw * 0.3, wy(0.8)]], o.v % 2 ? '#ad1457' : '#6a1b9a');
+    ctx.strokeStyle = 'rgba(255,255,255,.15)'; ctx.lineWidth = Math.max(1, 3 * s);
+    for (let i = -1; i <= 1; i++) { ctx.beginPath(); ctx.moveTo(x + i * cw * 0.2, wy(-1)); ctx.lineTo(x + i * cw * 0.15, wy(0.8)); ctx.stroke(); }
+    if (o.v === 0) {                                     // chandelier
+      const chx = px(0, d), chy = py(-0.75, d);
+      ctx.strokeStyle = '#ffd54f'; ctx.lineWidth = Math.max(1, 3 * s); ctx.beginPath(); ctx.moveTo(chx, py(-1.1, d)); ctx.lineTo(chx, chy); ctx.stroke();
+      ellipse(chx, chy, 70 * s, 14 * s, '#ffd54f');
+      for (let i = -2; i <= 2; i++) circle(chx + i * 30 * s, chy - 12 * s, 7 * s * flick, '#fff59d');
+    }
+  } else drawDecor2(key, o, d, s, side, x, wy);
+}
+function drawDecor2(key, o, d, s, side, x, wy) {
+  const sq = 0.6;
+  if (key === 'garden') {
+    const gx = px(side * 0.85, d), gy = wy(0.8);
+    if (o.v === 0) {                                     // a pumpkin with a friendly face
+      ellipse(gx, gy - 30 * s, 48 * s, 34 * s, '#ef6c00'); ellipse(gx, gy - 30 * s, 20 * s, 34 * s, '#f57c00');
+      roundRect(gx - 5 * s, gy - 72 * s, 10 * s, 14 * s, 3, '#33691e');
+      circle(gx - 14 * s, gy - 36 * s, 6 * s, '#ffee58'); circle(gx + 14 * s, gy - 36 * s, 6 * s, '#ffee58');
+      ctx.strokeStyle = '#ffee58'; ctx.lineWidth = Math.max(1, 4 * s); ctx.beginPath(); ctx.arc(gx, gy - 28 * s, 16 * s, 0.3, Math.PI - 0.3); ctx.stroke();
+    } else if (o.v === 1) {                              // a big round bush
+      circle(gx, gy - 50 * s, 60 * s, '#1b5e20'); circle(gx - 40 * s, gy - 30 * s, 40 * s, '#2e7d32'); circle(gx + 40 * s, gy - 30 * s, 40 * s, '#2e7d32');
+    } else {                                             // mossy garden stones
+      ellipse(gx, gy - 40 * s, 40 * s, 50 * s, '#78909c'); ellipse(gx - 10 * s, gy - 55 * s, 12 * s, 10 * s, 'rgba(255,255,255,.18)');
+      ellipse(gx + 18 * s, gy - 10 * s, 28 * s, 14 * s, '#689f38');
+      ellipse(gx + 55 * s * -side, gy - 18 * s, 22 * s, 20 * s, '#90a4ae');
+    }
+  } else if (key === 'organ') {
+    for (let i = 0; i < 5; i++) {                        // shiny organ pipes
+      const ph = (0.6 + 0.25 * Math.sin(i * 1.7 + o.v)), pw = 22 * s * sq, ppx = x + (i - 2) * pw * 1.15;
+      const top = py(0.8 - ph * 1.6, d);
+      const g = ctx.createLinearGradient(ppx - pw / 2, 0, ppx + pw / 2, 0);
+      g.addColorStop(0, '#a17a2c'); g.addColorStop(0.5, '#ffe082'); g.addColorStop(1, '#8d6e1f');
+      roundRect(ppx - pw / 2, top, pw, wy(0.8) - top, 3, g);
+      ellipse(ppx, top + 30 * s, pw * 0.35, 6 * s, '#3e2723');
+    }
+    const t = (frame * 0.01 + o.seed) % 1;              // floating music notes
+    text(o.v % 2 ? '♪' : '♫', x - side * 60 * s, wy(-0.5) - t * 80 * s, Math.max(8, 50 * s), '#ffab40');
+  } else if (key === 'workshop') {
+    const gx = x, gy = wy(-0.35), r = 60 * s, a = frame * 0.02 * (o.v % 2 ? 1 : -1);
+    ctx.fillStyle = o.v % 2 ? '#78909c' : '#4dd0e1';
+    ctx.beginPath();
+    for (let i = 0; i < 16; i++) { const an = a + i * Math.PI / 8, rr = i % 2 ? r : r * 0.78; ctx.lineTo(gx + Math.cos(an) * rr * sq, gy + Math.sin(an) * rr); }
+    ctx.closePath(); ctx.fill(); ellipse(gx, gy, r * 0.3 * sq, r * 0.3, '#263238');
+    const ty = wy(0.15);                                 // a glowing tube of ghost goo
+    roundRect(gx - 14 * s, ty, 28 * s, 90 * s, 12 * s, 'rgba(132,255,255,.35)');
+    roundRect(gx - 10 * s, ty + 40 * s + Math.sin(frame * 0.05 + o.seed * 9) * 10 * s, 20 * s, 44 * s, 8 * s, '#84ffff');
+  } else if (key === 'roof') {
+    const cx = px(side * 0.9, d), cy = wy(0.8);
+    roundRect(cx - 30 * s, cy - 140 * s, 60 * s, 140 * s, 4, '#6d4c41');   // chimneys
+    roundRect(cx - 38 * s, cy - 150 * s, 76 * s, 18 * s, 4, '#5d4037');
+    for (let i = 0; i < 3; i++) { const t = (frame * 0.01 + i / 3 + o.seed) % 1; circle(cx + Math.sin(t * 6) * 10 * s, cy - 160 * s - t * 90 * s, (8 + t * 14) * s, `rgba(207,216,220,${0.4 * (1 - t)})`); }
+  } else if (key === 'cellar') {
+    const bx = x, by = wy(0.8);
+    ellipse(bx, by - 55 * s, 50 * s * sq, 60 * s, '#6d4c41');     // barrels
+    ctx.fillStyle = '#3e2723'; ctx.fillRect(bx - 50 * s * sq, by - 85 * s, 100 * s * sq, 6 * s); ctx.fillRect(bx - 50 * s * sq, by - 30 * s, 100 * s * sq, 6 * s);
+    for (let i = 0; i < 3; i++) {                        // candles
+      const cx = bx + (i - 1) * 18 * s, cy = by - 120 * s;
+      roundRect(cx - 4 * s, cy, 8 * s, 22 * s, 2, '#fff8e1');
+      ellipse(cx, cy - 7 * s, 4 * s, (8 + Math.sin(frame * 0.3 + i) * 2) * s, '#ffab40');
+    }
+    circle(bx, by - 125 * s, 50 * s * flick, 'rgba(255,171,64,.12)');
+  }
+}
+// ---------- Darkness + lantern light ----------
+function drawDark() {
+  const lvl = (easy() ? 0.42 : 0.74) * (1.9 - flick) / 1.05 * (1 - lanternT / 30);
+  const lx = CX + 120, ly = 260;
+  const r1 = 110 + 60 * flick + lanternT * 14, r2 = 600 + lanternT * 20;
+  const g = ctx.createRadialGradient(lx, ly, Math.max(0, r1), lx, ly, Math.max(r1 + 1, r2));
+  g.addColorStop(0, 'rgba(10,2,24,0)'); g.addColorStop(1, `rgba(10,2,24,${Math.max(0, Math.min(0.95, lvl))})`);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = `rgba(10,2,24,${Math.max(0, lvl * 0.35)})`; ctx.fillRect(0, 0, W, H);
+  if (lanternT > 0) { ctx.fillStyle = `rgba(255,248,200,${lanternT / 22 * 0.4})`; ctx.fillRect(0, 0, W, H); }
+}
+
+// ---------- Drawing: cute spooky critters ----------
+function faceEyes(x, y, sc, mood, col = '#1a1a2e') {
+  if (mood === 'eek') {                                  // squeezed-shut >< eyes
+    ctx.strokeStyle = col; ctx.lineWidth = Math.max(1, 5 * sc);
+    for (const e of [-1, 1]) { ctx.beginPath(); ctx.moveTo(x + e * 22 * sc - 8 * sc, y - 7 * sc); ctx.lineTo(x + e * 22 * sc + 6 * sc * e, y); ctx.lineTo(x + e * 22 * sc - 8 * sc, y + 7 * sc); ctx.stroke(); }
+  } else if (mood === 'happy') {
+    ctx.strokeStyle = col; ctx.lineWidth = Math.max(1, 5 * sc);
+    for (const e of [-1, 1]) { ctx.beginPath(); ctx.arc(x + e * 20 * sc, y + 3 * sc, 9 * sc, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+  } else {
+    for (const e of [-1, 1]) { ellipse(x + e * 20 * sc, y, 9 * sc, 13 * sc, col); circle(x + e * 20 * sc - 3 * sc, y - 5 * sc, 3.5 * sc, '#fff'); }
+  }
+}
+function faceMouth(x, y, sc, mood, col = '#1a1a2e') {
+  if (mood === 'boo') { ellipse(x, y, 11 * sc, 14 * sc, col); ellipse(x, y + 6 * sc, 6 * sc, 5 * sc, '#f48fb1'); }
+  else if (mood === 'eek') ellipse(x, y, 6 * sc, 5 * sc, col);
+  else { ctx.strokeStyle = col; ctx.lineWidth = Math.max(1, 4 * sc); ctx.beginPath(); ctx.arc(x, y - 4 * sc, 12 * sc, 0.25, Math.PI - 0.25); ctx.stroke(); }
+}
+function drawGhost(x, y, sc, color, mood, acc) {
+  const wv = frame * 0.15;
+  ctx.fillStyle = color; ctx.beginPath();
+  ctx.arc(x, y - 20 * sc, 55 * sc, Math.PI, 0);
+  ctx.lineTo(x + 55 * sc, y + 50 * sc);
+  for (let i = 0; i <= 5; i++) { const xx = x + 55 * sc - i * 22 * sc; ctx.quadraticCurveTo(xx - 5.5 * sc, y + (i % 2 ? 38 : 62) * sc + Math.sin(wv + i) * 5 * sc, xx - 11 * sc, y + 50 * sc); }
+  ctx.closePath(); ctx.fill();
+  const up = mood === 'boo' ? -1 : 1;                   // little arms (up high for BOO!)
+  for (const e of [-1, 1]) ellipse(x + e * 60 * sc, y + (up < 0 ? -30 : 12) * sc, 14 * sc, 22 * sc, color, e * (up < 0 ? -0.6 : 0.5));
+  ellipse(x - 30 * sc, y + 4 * sc, 9 * sc, 6 * sc, 'rgba(244,143,177,.6)'); ellipse(x + 30 * sc, y + 4 * sc, 9 * sc, 6 * sc, 'rgba(244,143,177,.6)');
+  faceEyes(x, y - 18 * sc, sc, mood); faceMouth(x, y + 14 * sc, sc, mood);
+  if (acc === 'bow') { ctx.fillStyle = '#e91e63'; ctx.beginPath(); ctx.moveTo(x, y + 36 * sc); ctx.lineTo(x - 18 * sc, y + 26 * sc); ctx.lineTo(x - 18 * sc, y + 46 * sc); ctx.lineTo(x + 18 * sc, y + 26 * sc); ctx.lineTo(x + 18 * sc, y + 46 * sc); ctx.closePath(); ctx.fill(); }
+  if (acc === 'flower') { for (let i = 0; i < 5; i++) circle(x + 34 * sc + Math.cos(i * 1.26) * 8 * sc, y - 58 * sc + Math.sin(i * 1.26) * 8 * sc, 6 * sc, '#f06292'); circle(x + 34 * sc, y - 58 * sc, 5 * sc, '#ffeb3b'); }
+  if (acc === 'glasses') { ctx.strokeStyle = '#5d4037'; ctx.lineWidth = Math.max(1, 3 * sc); for (const e of [-1, 1]) { ctx.beginPath(); ctx.arc(x + e * 20 * sc, y - 18 * sc, 15 * sc, 0, 7); ctx.stroke(); } }
+  if (acc === 'chef') { roundRect(x - 30 * sc, y - 100 * sc, 60 * sc, 30 * sc, 6 * sc, '#fff'); circle(x - 18 * sc, y - 104 * sc, 18 * sc, '#fff'); circle(x + 18 * sc, y - 104 * sc, 18 * sc, '#fff'); circle(x, y - 112 * sc, 20 * sc, '#fff'); }
+}
+function drawBat(x, y, sc, mood, robot) {
+  const flap = Math.sin(frame * 0.5) * 0.5;
+  const body = robot ? '#90a4ae' : '#7e57c2', wing = robot ? '#607d8b' : '#5e35b1';
+  for (const e of [-1, 1]) {
+    ctx.fillStyle = wing; ctx.beginPath(); ctx.moveTo(x + e * 30 * sc, y);
+    ctx.lineTo(x + e * 110 * sc, y - (40 + flap * 40) * sc); ctx.lineTo(x + e * 95 * sc, y + 10 * sc);
+    ctx.lineTo(x + e * 75 * sc, y - 5 * sc); ctx.lineTo(x + e * 60 * sc, y + 20 * sc); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x + e * 18 * sc, y - 40 * sc); ctx.lineTo(x + e * 34 * sc, y - 72 * sc); ctx.lineTo(x + e * 38 * sc, y - 32 * sc); ctx.fillStyle = body; ctx.fill();
+  }
+  circle(x, y, 45 * sc, body);
+  faceEyes(x, y - 8 * sc, sc * 0.9, mood === 'boo' ? 'peek' : mood, '#fff');
+  if (mood !== 'eek' && mood !== 'happy') for (const e of [-1, 1]) circle(x + e * 18 * sc, y - 8 * sc, 5 * sc, '#1a1a2e');
+  faceMouth(x, y + 20 * sc, sc * 0.8, mood, '#311b92');
+  if (robot) { ctx.strokeStyle = '#ffd54f'; ctx.lineWidth = Math.max(1, 5 * sc); ctx.beginPath(); ctx.moveTo(x, y - 45 * sc); ctx.lineTo(x, y - 65 * sc); ctx.moveTo(x - 14 * sc, y - 65 * sc); ctx.lineTo(x + 14 * sc, y - 65 * sc); ctx.stroke(); }
+}
+function drawCritter(kind, x, y, sc, mood) {
+  if (kind === 'ghost') drawGhost(x, y, sc, ROOM_GHOST[ride ? ride.room : 'ballroom'] || '#f5f5ff', mood, GHOST_ACC[ride ? ride.room : ''] || '');
+  else if (kind === 'painting') {
+    roundRect(x - 85 * sc, y - 90 * sc, 170 * sc, 190 * sc, 8 * sc, '#d4a14a'); roundRect(x - 70 * sc, y - 75 * sc, 140 * sc, 160 * sc, 6 * sc, '#2b1b3a');
+    drawGhost(x, y + (mood === 'boo' ? -10 : 10) * sc, sc * 0.95, '#ede7f6', mood, 'glasses');
+  } else if (kind === 'book') {
+    const f = Math.sin(frame * 0.35) * 0.4;
+    for (const e of [-1, 1]) { ctx.save(); ctx.translate(x, y); ctx.rotate(e * (0.3 + f)); roundRect(e > 0 ? 0 : -90 * sc, -55 * sc, 90 * sc, 110 * sc, 6 * sc, '#c62828'); roundRect(e > 0 ? 4 * sc : -86 * sc, -50 * sc, 82 * sc, 100 * sc, 4 * sc, '#fff8e1'); ctx.restore(); }
+    for (let i = 0; i < 3; i++) { ctx.fillStyle = '#bdbdbd'; ctx.fillRect(x - 70 * sc + i * 8 * sc, y - 20 * sc + i * 16 * sc, 50 * sc, 3 * sc); }
+    faceEyes(x, y - 70 * sc, sc * 0.8, mood); faceMouth(x, y + 70 * sc, sc * 0.8, mood);
+  } else if (kind === 'jelly') {
+    const w = 1 + Math.sin(frame * 0.2) * 0.08;
+    roundRect(x - 75 * sc, y + 40 * sc, 150 * sc, 60 * sc, 12 * sc, '#37474f');
+    ellipse(x, y, 60 * sc * w, 65 * sc / w, 'rgba(118,255,3,.85)'); ellipse(x - 20 * sc, y - 30 * sc, 14 * sc, 9 * sc, 'rgba(255,255,255,.6)');
+    faceEyes(x, y - 10 * sc, sc, mood); faceMouth(x, y + 22 * sc, sc, mood); roundRect(x - 26 * sc, y - 92 * sc, 52 * sc, 26 * sc, 6 * sc, '#fff'); circle(x - 16 * sc, y - 96 * sc, 16 * sc, '#fff'); circle(x + 16 * sc, y - 96 * sc, 16 * sc, '#fff'); circle(x, y - 104 * sc, 18 * sc, '#fff');
+  } else if (kind === 'mirror') {
+    ellipse(x, y, 75 * sc, 105 * sc, '#cfd8dc'); ellipse(x, y, 64 * sc, 94 * sc, '#bbdefb');
+    roundRect(x - 45 * sc, y - 40 * sc, 90 * sc, 64 * sc, 22 * sc, '#fff'); roundRect(x - 37 * sc, y - 33 * sc, 74 * sc, 44 * sc, 16 * sc, '#111827');
+    if (mood === 'eek') faceEyes(x, y - 12 * sc, sc * 0.7, 'eek', '#40c4ff'); else { circle(x - 15 * sc, y - 12 * sc, 7 * sc, '#40c4ff'); circle(x + 15 * sc, y - 12 * sc, 10 * sc, '#40c4ff'); }
+    ellipse(x, y + 40 * sc, 16 * sc, mood === 'boo' ? 16 * sc : 8 * sc, '#ff80ab');   // silly tongue
+  } else if (kind === 'bat' || kind === 'windup') drawBat(x, y, sc, mood, kind === 'windup');
+  else if (kind === 'pumpkin') {
+    ellipse(x, y, 85 * sc, 62 * sc, '#ef6c00'); ellipse(x, y, 35 * sc, 62 * sc, '#f57c00');
+    roundRect(x - 8 * sc, y - 82 * sc, 16 * sc, 26 * sc, 4 * sc, '#33691e');
+    const g = mood === 'eek' ? '#fff59d' : '#ffee58';
+    faceEyes(x, y - 14 * sc, sc, mood === 'boo' ? 'peek' : mood, g); faceMouth(x, y + 22 * sc, sc * 1.2, mood, g);
+  } else if (kind === 'owl') {
+    ellipse(x, y, 60 * sc, 75 * sc, '#8d6e63'); ellipse(x, y + 18 * sc, 40 * sc, 48 * sc, '#d7ccc8');
+    for (const e of [-1, 1]) { circle(x + e * 24 * sc, y - 28 * sc, 22 * sc, '#fff'); if (mood !== 'eek') circle(x + e * 24 * sc, y - 28 * sc, 10 * sc, '#3e2723'); }
+    if (mood === 'eek') faceEyes(x, y - 28 * sc, sc, 'eek');
+    ctx.fillStyle = '#ffa000'; ctx.beginPath(); ctx.moveTo(x - 8 * sc, y - 10 * sc); ctx.lineTo(x + 8 * sc, y - 10 * sc); ctx.lineTo(x, y + (mood === 'boo' ? 10 : 2) * sc); ctx.fill();
+  } else if (kind === 'note') {
+    ctx.fillStyle = '#3949ab'; ctx.fillRect(x + 30 * sc, y - 120 * sc, 14 * sc, 120 * sc);
+    ctx.beginPath(); ctx.moveTo(x + 44 * sc, y - 120 * sc); ctx.quadraticCurveTo(x + 90 * sc, y - 90 * sc, x + 70 * sc, y - 50 * sc); ctx.lineTo(x + 44 * sc, y - 90 * sc); ctx.fill();
+    ellipse(x, y, 55 * sc, 42 * sc, '#5c6bc0', -0.3);
+    faceEyes(x, y - 6 * sc, sc * 0.75, mood, '#fff'); faceMouth(x, y + 18 * sc, sc * 0.7, mood, '#fff');
+  }
+}
+const ROOM_GHOST = { library: '#fff8e1', mirror: '#e1f5fe', ballroom: '#fce4ec', organ: '#ede7f6', workshop: '#e0f7fa' };
+const GHOST_ACC = { library: 'glasses', ballroom: 'bow', organ: 'flower', mirror: '', workshop: '' };
+
+// ---------- Drawing: pop-outs, tokens, Phantom Robo ----------
+function drawPops() {
+  for (const p of pops) {
+    const sx = px(p.x, p.d), sy = py(p.y, p.d), sc = sOf(p.d) * 3;
+    if (p.phase === 'shimmer') {
+      const k = p.t / SHIM(), ready = p.t > SHIM() - 20;
+      ctx.globalAlpha = 0.12 + 0.3 * k;
+      drawCritter(p.kind, sx + Math.sin(frame * 0.4) * 4, sy + 20 * (1 - k), sc * (0.7 + 0.2 * k), 'peek');
+      ctx.globalAlpha = 1;
+      for (let i = 0; i < 7; i++) { const a = frame * 0.08 + i * 0.9, r = 120 * sc * (1 - k * 0.45); sparkle(sx + Math.cos(a) * r, sy + Math.sin(a) * r * 0.8, 8 + 4 * Math.sin(frame * 0.3 + i), ready ? '#fff59d' : '#e1bee7'); }
+      ctx.strokeStyle = ready ? 'rgba(255,245,157,.9)' : 'rgba(225,190,231,.6)'; ctx.lineWidth = 5;
+      ctx.beginPath(); ctx.arc(sx, sy, Math.max(4, 150 * sc * (1 - k * 0.6)), 0, 7); ctx.stroke();
+      text(ready ? '🏮 NOW!' : '✨ something is coming...', sx, sy - 130 * sc, ready ? 30 : 20, ready ? '#fff59d' : '#e1bee7');
+    } else if (p.phase === 'out') {
+      const b = Math.min(1, p.t / 7), wob = 1 + Math.sin(p.t * 0.5) * 0.04;
+      circle(sx, sy, 130 * sc, 'rgba(234,128,252,.12)');
+      drawCritter(p.kind, sx, sy, sc * b * wob, 'boo');
+      text('BOO!', sx + 70 * sc, sy - 110 * sc, 34, '#ea80fc');
+      text('🏮 LANTERN!', sx, sy + 105 * sc, 24, frame % 20 < 10 ? '#fff59d' : '#fff');
+    } else if (p.phase === 'spooked') {
+      const k = p.t / 50;
+      ctx.save(); ctx.globalAlpha = Math.max(0, 1 - k); ctx.translate(sx + k * 200 * Math.sign(p.x || 1), sy - k * 160); ctx.rotate(k * 6);
+      drawCritter(p.kind, 0, 0, sc * (1 - k * 0.6), 'eek'); ctx.restore();
+      text('Eek! Hee hee!', sx, sy - 120 * sc - k * 30, 26, '#fff59d');
+    } else if (p.phase === 'gone') {
+      const k = p.t / 50;
+      ctx.globalAlpha = Math.max(0, 1 - k); drawCritter(p.kind, sx, sy - k * 120, sc * (1 - k * 0.3), 'happy'); ctx.globalAlpha = 1;
+    }
+  }
+}
+function drawTokens() {
+  for (const k of tokens) {
+    if (k.got || k.d > FAR || k.d < -0.25) continue;
+    const s = sOf(k.d), x = px(k.x, k.d), y = py(k.y, k.d) + Math.sin(frame * 0.1 + k.d * 3) * 8 * s;
+    circle(x, y, 70 * s, 'rgba(185,246,202,.18)');
+    circle(x, y, 44 * s, '#b9f6ca'); circle(x, y, 36 * s, '#69f0ae');
+    ctx.save(); ctx.translate(x, y + 4 * s); drawGhost(0, 0, 0.42 * s, '#fff', 'happy'); ctx.restore();
+  }
+}
+function drawPhantomRobo(x, y, sc, mood, friendly, alpha = 1) {
+  ctx.save(); ctx.globalAlpha = alpha; ctx.translate(x, y);
+  const head = friendly ? '#fffde7' : 'rgba(230,220,255,.92)', body = friendly ? '#fff8e1' : 'rgba(210,195,255,.8)', pod = friendly ? '#2979ff' : '#b388ff';
+  circle(0, 0, 150 * sc, friendly ? 'rgba(255,245,157,.15)' : 'rgba(179,136,255,.15)');
+  // ghostly tail instead of legs
+  ctx.fillStyle = body; ctx.beginPath(); ctx.moveTo(-50 * sc, 20 * sc);
+  ctx.quadraticCurveTo(-60 * sc, 90 * sc, -20 * sc + Math.sin(frame * 0.1) * 12 * sc, 130 * sc);
+  ctx.quadraticCurveTo(10 * sc, 100 * sc, 20 * sc, 120 * sc + Math.sin(frame * 0.1 + 1) * 8 * sc);
+  ctx.quadraticCurveTo(60 * sc, 80 * sc, 50 * sc, 20 * sc); ctx.closePath(); ctx.fill();
+  roundRect(-55 * sc, 0, 110 * sc, 70 * sc, 20 * sc, body);
+  const up = mood === 'boo', wave = friendly ? Math.sin(frame * 0.2) * 0.5 : 0;
+  ellipse(-72 * sc, (up ? -40 : 30) * sc, 14 * sc, 30 * sc, body, up ? 0.5 : -0.3);
+  ellipse(72 * sc, (up || friendly ? -40 : 30) * sc, 14 * sc, 30 * sc, body, up || friendly ? -0.5 + wave : 0.3);
+  roundRect(-78 * sc, -62 * sc, 16 * sc, 40 * sc, 6 * sc, pod); roundRect(62 * sc, -62 * sc, 16 * sc, 40 * sc, 6 * sc, pod);
+  roundRect(-66 * sc, -100 * sc, 132 * sc, 100 * sc, 34 * sc, head);
+  roundRect(-54 * sc, -88 * sc, 108 * sc, 70 * sc, 26 * sc, friendly ? '#111827' : '#2a1747');
+  const eye = friendly ? '#40c4ff' : '#e040fb';
+  if (mood === 'eek') faceEyes(0, -55 * sc, sc, 'eek', eye);
+  else if (friendly || mood === 'happy') faceEyes(0, -52 * sc, sc, 'happy', eye);
+  else { circle(-20 * sc, -55 * sc, 14 * sc, eye + '55'); circle(20 * sc, -55 * sc, 14 * sc, eye + '55'); ellipse(-20 * sc, -55 * sc, 8 * sc, 10 * sc, eye); ellipse(20 * sc, -55 * sc, 8 * sc, 10 * sc, eye); }
+  if (mood === 'boo') ellipse(0, -30 * sc, 10 * sc, 9 * sc, eye);
+  else { ctx.strokeStyle = eye; ctx.lineWidth = Math.max(1, 4 * sc); ctx.beginPath(); ctx.arc(0, -36 * sc, 12 * sc, 0.3, Math.PI - 0.3); ctx.stroke(); }
+  if (friendly) { ellipse(-44 * sc, -30 * sc, 9 * sc, 5 * sc, 'rgba(244,143,177,.8)'); ellipse(44 * sc, -30 * sc, 9 * sc, 5 * sc, 'rgba(244,143,177,.8)'); }
+  ctx.restore();
+}
+function drawPhantomScene() {
+  const P = phantom; if (!P) return;
+  const bobY = Math.sin(P.wob * 2) * 14, sc = sOf(2.2) * 3.3;
+  const x = px(P.x, 2.2), y = py(-0.25, 2.2) + bobY;
+  let mood = 'peek', alpha = 0.6, say = '';
+  if (P.phase === 'intro') { alpha = Math.min(1, P.pt / 60); say = PH_LINES.intro; }
+  else if (P.phase === 'hover') { alpha = 0.55; say = PH_LINES.hover; }
+  else if (P.phase === 'shimmer') {
+    const k = P.pt / SHIM(), ready = P.pt > SHIM() - 20; alpha = 0.5 + 0.3 * k;
+    for (let i = 0; i < 8; i++) { const a = frame * 0.08 + i * 0.8, r = 170 * sc * (1 - k * 0.4); sparkle(x + Math.cos(a) * r, y + Math.sin(a) * r * 0.8, 10, ready ? '#fff59d' : '#e1bee7'); }
+    say = ready ? '🏮 NOW!' : 'Whooo... (he is getting ready!)';
+  } else if (P.phase === 'boo') { mood = 'boo'; alpha = 1; say = 'BOO! 🏮 Lantern, quick!'; }
+  else if (P.phase === 'eek') { mood = 'eek'; alpha = 1; say = PH_LINES.eek[Math.min(2, P.hits - 1)]; }
+  else if (P.phase === 'miss') { mood = 'happy'; alpha = 0.8; say = PH_LINES.miss; }
+  else if (P.phase === 'friend') { mood = 'happy'; alpha = 1; say = PH_LINES.friend; }
+  const sz = P.phase === 'boo' ? sc * (1 + Math.min(1, P.pt / 6) * 0.25) : sc;
+  if (P.phase === 'eek') { ctx.save(); ctx.translate(x, y); ctx.rotate(Math.sin(P.pt * 0.4) * 0.3 * (1 - P.pt / 75)); drawPhantomRobo(0, 0, sz, mood, false, alpha); ctx.restore(); }
+  else drawPhantomRobo(x, y, sz, mood, P.phase === 'friend', alpha);
+  if (P.phase === 'friend') for (let i = 0; i < 6; i++) text('💜', x + Math.cos(frame * 0.05 + i) * 200 * sc, y - 60 + Math.sin(frame * 0.07 + i * 2) * 120 * sc, 26);
+  roundRect(CX - 300, 92, 600, 46, 22, 'rgba(30,10,50,.75)');
+  text(say, CX, 124, 24, P.phase === 'friend' ? '#fff59d' : '#e1bee7');
+  for (let i = 0; i < 3; i++) { ctx.globalAlpha = i < P.hits ? 1 : 0.3; emoji('🏮', CX - 50 + i * 50, 182, 34); }
+  ctx.globalAlpha = 1;
+}
+
+// ---------- Drawing: the cart, Robo and the lantern ----------
+function drawCart() {
+  const sh = Math.sin(frame * 0.5) * (speed > 0.02 ? 1.2 : 0), rx = CX + roboLean * 22;
+  // Robo sits in the front (we see the back of his head... until he turns around to cheer!)
+  ctx.save(); ctx.translate(rx, 470 + sh); ctx.rotate(roboLean * 0.12);
+  roundRect(-55, -70, 110, 80, 22, '#f5f7ff');
+  roundRect(-78, -150, 156, 104, 40, '#ffffff');
+  roundRect(-88, -120, 16, 40, 6, '#2979ff'); roundRect(72, -120, 16, 40, 6, '#2979ff');
+  if (roboTurn > 0) {
+    roundRect(-64, -138, 128, 74, 28, '#111827');
+    ctx.strokeStyle = '#40c4ff'; ctx.lineWidth = 6;
+    for (const e of [-1, 1]) { ctx.beginPath(); ctx.arc(e * 26, -96, 12, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+    ctx.beginPath(); ctx.arc(0, -86, 14, 0.3, Math.PI - 0.3); ctx.stroke();
+    text(phantom && phantom.phase === 'friend' ? 'Best ride EVER!' : 'Yay! Great spooking!', 0, -165, 22, '#b3e5fc');
+  } else {
+    ctx.fillStyle = 'rgba(0,0,0,.06)'; ctx.fillRect(-30, -128, 60, 6); ctx.fillRect(-30, -114, 60, 6);   // little vents on the back of his head
+    ellipse(-40, -128, 14, 8, 'rgba(255,255,255,.9)');
+  }
+  ctx.restore();
+  // the cart
+  poly([[140, 452 + sh], [820, 452 + sh], [880, 530], [80, 530]], '#7b1f2b');
+  roundRect(126, 438 + sh, 708, 22, 11, '#d4a14a');
+  for (let i = 0; i < 9; i++) circle(170 + i * 78, 449 + sh, 4, '#8d6e2f');
+  text('👻 GHOST TRAIN 👻', CX, 505 + sh, 22, '#ffe082');
+  // the lantern on its hook
+  ctx.strokeStyle = '#3e2723'; ctx.lineWidth = 8; ctx.beginPath(); ctx.moveTo(780, 450 + sh); ctx.lineTo(780, 300); ctx.quadraticCurveTo(780, 280, 820, 282); ctx.stroke();
+  const lx = 822, ly = 318 + sh + Math.sin(frame * 0.07) * 3, ready = lanternCool === 0;
+  const glow = (ready ? 46 : 30) * flick + lanternT * 6;
+  circle(lx, ly + 20, Math.max(0, glow + 30), 'rgba(255,224,130,.15)'); circle(lx, ly + 20, Math.max(0, glow), 'rgba(255,224,130,.3)');
+  ctx.strokeStyle = '#3e2723'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(lx, 284); ctx.lineTo(lx, ly); ctx.stroke();
+  roundRect(lx - 22, ly - 4, 44, 12, 5, '#5d4037');
+  roundRect(lx - 18, ly + 6, 36, 40, 6, ready ? '#ffe57f' : '#a1887f');
+  ellipse(lx, ly + 28, 6, 10 + Math.sin(frame * 0.4) * 2, ready ? '#ff9100' : '#6d4c41');
+  roundRect(lx - 22, ly + 44, 44, 10, 5, '#5d4037');
+  if (!ready) { roundRect(lx - 30, ly + 62, 60, 8, 4, 'rgba(0,0,0,.5)'); roundRect(lx - 30, ly + 62, 60 * (1 - lanternCool / (easy() ? 22 : 34)), 8, 4, '#ffe57f'); }
+}
+function drawParts() {
+  for (const p of parts) { ctx.globalAlpha = Math.max(0, p.life / 30); sparkle(p.x, p.y, 7, p.c); }
+  ctx.globalAlpha = 1;
+  for (const f of floaters) { ctx.globalAlpha = Math.min(1, f.t / 20); text(f.s, f.x, f.y, 26, f.c); }
+  ctx.globalAlpha = 1;
+}
+function drawTopButtons() {
+  roundRect(BACK_BTN.x, BACK_BTN.y, BACK_BTN.w, BACK_BTN.h, 14, 'rgba(0,0,0,.45)'); text('◀ Back', BACK_BTN.x + BACK_BTN.w / 2, BACK_BTN.y + 30, 20);
+  roundRect(MUSIC_BTN.x, MUSIC_BTN.y, MUSIC_BTN.w, MUSIC_BTN.h, 14, 'rgba(0,0,0,.45)'); emoji(musicOn ? '🎵' : '🔇', MUSIC_BTN.x + MUSIC_BTN.w / 2, MUSIC_BTN.y + 31, 24);
+}
+function drawHUD() {
+  drawTopButtons();
+  roundRect(W - 250, 12, 234, 44, 14, 'rgba(0,0,0,.45)');
+  text('⭐ ' + ride.score + '   👻 ' + ride.tokens, W - 133, 42, 24, '#fff59d');
+  if (state === 'ride' || state === 'fork') {
+    const legs = 6, done = ride.leg;                    // ride progress dots
+    for (let i = 0; i < legs; i++) circle(W - 210 + i * 36, 72, 8, i < done ? '#b9f6ca' : i === done ? '#fff59d' : 'rgba(255,255,255,.25)');
+  }
+  if (msg) {
+    const a = Math.min(1, msg.t / 30);
+    ctx.globalAlpha = a; roundRect(CX - 228, 20, 456, 56, 20, 'rgba(40,10,60,.7)'); text(msg.s, CX, 58, msg.s.length > 22 ? 24 : 30, ROOMS[ride.room] ? ROOMS[ride.room].glow : '#fff'); ctx.globalAlpha = 1;
+  }
+  if (state === 'ride' && (ride.leg === 0 || ride.t < 200)) text('◀ ▶ lean to grab ghost tokens   •   SPACE or tap = 🏮 lantern', CX, 104, 18, '#e1bee7');
+  if (stickerNew > 0) text('🌟 New sticker for your Sticker Book!', CX, 150, 22, '#fff59d');
+}
+
+// ---------- Drawing: the fork (pick a tunnel!) ----------
+function drawFork() {
+  const fd = Math.max(1.9, 7 - fork.t * 0.09), s = sOf(fd), i = fork.i;
+  const L = px(-1.05, fd), R = px(1.05, fd), T = py(-1.1, fd), B = py(0.8, fd);
+  roundRect(L, T, R - L, B - T, 0, '#5d4037');
+  ctx.fillStyle = 'rgba(0,0,0,.25)';
+  for (let r = 0; r < 12; r++) for (let c = 0; c < 10; c++) { const bw = (R - L) / 10, bh = (B - T) / 12; ctx.fillRect(L + c * bw + (r % 2 ? bw / 2 : 0), T + r * bh, bw - 3, 2); ctx.fillRect(L + c * bw + (r % 2 ? bw / 2 : 0), T + r * bh, 2, bh); }
+  for (let c = 0; c < 2; c++) {
+    const key = FORKS[i][c], Rm = ROOMS[key], tx = c ? 0.5 : -0.5, chosen = fork.choice === c;
+    const ax = px(tx, fd), aw = 0.75 * 520 * s / 2, top = py(-0.3, fd);
+    ctx.fillStyle = '#0a0612'; ctx.beginPath(); ctx.moveTo(ax - aw, B); ctx.lineTo(ax - aw, top); ctx.arc(ax, top, aw, Math.PI, 0); ctx.lineTo(ax + aw, B); ctx.closePath(); ctx.fill();
+    const g = ctx.createRadialGradient(ax, top + 40 * s, 5, ax, top + 40 * s, Math.max(6, aw));
+    g.addColorStop(0, Rm.glow); g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.globalAlpha = 0.35 + 0.15 * Math.sin(frame * 0.1 + c * 2); ctx.fillStyle = g; ctx.fill(); ctx.globalAlpha = 1;
+    ctx.strokeStyle = chosen ? '#fff59d' : Rm.trim; ctx.lineWidth = Math.max(2, 18 * s); ctx.stroke();
+    // a sign over each tunnel
+    const label = FORK_LABEL[i] ? FORK_LABEL[i][c] : Rm.name, sy = B - 104;
+    const swd = Math.max(200, 330 * s * 1.5);
+    roundRect(ax - swd / 2, sy, swd, 92, 16, chosen ? '#6a1b9a' : 'rgba(30,10,50,.85)');
+    emoji(Rm.icon, ax, sy + 40, 34);
+    text(label, ax, sy + 78, label.length > 18 ? 19 : 22, Rm.glow);
+    if (!save.rooms[key]) text('NEW!', ax + swd / 2 - 30, sy + 10, 18, '#ff80ab');
+  }
+  // the track splits to both tunnels
+  ctx.strokeStyle = '#b0bec5'; ctx.lineWidth = 3;
+  for (const tx of [-0.5, 0.5]) for (const rx of [-0.22, 0.22]) { ctx.beginPath(); ctx.moveTo(px(rx, -0.4), py(0.8, -0.4)); ctx.quadraticCurveTo(px(rx, fd * 0.5), py(0.8, fd * 0.5), px(tx + rx * 0.6, fd), py(0.8, fd)); ctx.stroke(); }
+  if (fork.choice < 0) {
+    const p = Math.sin(frame * 0.15) * 8;
+    text(i === 4 ? 'Last fork! Where should the big finale be?' : 'Pick a tunnel!', CX, 106, 30, '#fff59d');
+    roundRect(30 - p, 230, 130, 80, 20, 'rgba(106,27,154,.85)'); text('◀ LEFT', 95 - p, 280, 26);
+    roundRect(W - 160 + p, 230, 130, 80, 20, 'rgba(106,27,154,.85)'); text('RIGHT ▶', W - 95 + p, 280, 26);
+  }
+}
+
+// ---------- Drawing: title, ending, map ----------
+function drawRoboFront(x, y, sc, happy) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(sc, sc);
+  ctx.fillStyle = '#3d5afe'; ctx.fillRect(-11, 20, 8, 8); ctx.fillRect(3, 20, 8, 8);
+  roundRect(-14, 0, 28, 22, 6, '#f5f7ff'); circle(0, 12, 3, '#2979ff');
+  roundRect(-21, -18, 6, 10, 3, '#2979ff'); roundRect(15, -18, 6, 10, 3, '#2979ff');
+  roundRect(-17, -26, 34, 26, 12, '#ffffff'); roundRect(-13, -22, 26, 17, 9, '#111827');
+  if (happy) { ctx.strokeStyle = '#40c4ff'; ctx.lineWidth = 2; for (const e of [-1, 1]) { ctx.beginPath(); ctx.arc(e * 6, -12, 3, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); } }
+  else { ellipse(-6, -14, 3, 4, '#40c4ff'); ellipse(6, -14, 3, 4, '#40c4ff'); }
+  ctx.restore();
+}
+function drawTitle() {
+  drawSky(3);
+  // the haunted side of the Game Factory
+  roundRect(600, 170, 280, 200, 6, '#1c1233'); poly([[590, 172], [740, 100], [890, 172]], '#2a1747');
+  roundRect(820, 90, 30, 70, 4, '#1c1233');
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 4; c++) roundRect(625 + c * 64, 195 + r * 55, 34, 34, 6, (r + c + Math.floor(frame / 50)) % 5 ? '#ffcc80' : '#4a3a63');
+  ellipse(250, 470, 420, 150, '#1b1236'); ellipse(780, 500, 400, 130, '#140d2a');
+  // the little ghost train going round and round
+  ctx.strokeStyle = '#8d6e63'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(0, 268); ctx.lineTo(W, 268); ctx.stroke();
+  for (let x = (frame * -2) % 40; x < W; x += 40) { ctx.fillStyle = '#4e342e'; ctx.fillRect(x, 268, 24, 8); }
+  const cx = ((frame * 1.6) % 1200) - 120;
+  drawRoboFront(cx + 10, 216, 1.4, true);
+  roundRect(cx - 40, 226, 110, 36, 10, '#7b1f2b'); roundRect(cx - 44, 222, 118, 10, 5, '#d4a14a');
+  circle(cx - 18, 264, 10, '#333'); circle(cx + 48, 264, 10, '#333');
+  ctx.strokeStyle = '#3e2723'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(cx + 64, 226); ctx.lineTo(cx + 64, 188); ctx.stroke();
+  circle(cx + 64, 194, 18 * flick, 'rgba(255,224,130,.35)'); roundRect(cx + 57, 188, 14, 18, 4, '#ffe57f');
+  for (let i = 0; i < 3; i++) drawGhost(120 + i * 340 + Math.sin(frame * 0.02 + i) * 40, 200 + Math.sin(frame * 0.05 + i * 2) * 20, 0.38, '#f3e5f5', i === 1 ? 'happy' : 'peek', ['bow', '', 'flower'][i]);
+  text('👻 Ghost Train Ride', CX, 100, 62, '#e1bee7');
+  text('A spooky-fun ride through the haunted Game Factory!', CX, 145, 22, '#fff9c4');
+  const labels = ['🚂 RIDE!', '😊 Not so spooky: ' + (save.easy ? 'ON' : 'OFF'), '🗺️ Map of Rides'];
+  const cols = ['#7b1fa2', save.easy ? '#00897b' : '#455a64', '#1565c0'];
+  TITLE_BTNS.forEach((b, i) => {
+    if (sel === i) roundRect(b.x - 6, b.y - 6, b.w + 12, b.h + 12, 20, '#fff59d');
+    button(b, labels[i], cols[i], i ? 22 : 30);
+  });
+  const n = ENDING_IDS.filter(k => save.endings[k]).length;
+  text('Endings found: ' + n + ' / 4', 150, 340, 20, '#b9f6ca');
+  if (save.best) text('Best: ⭐ ' + save.best, 150, 370, 20, '#fff59d');
+  text('↑ ↓ choose  •  SPACE / Enter / tap to go  •  M = music', CX, 512, 16, '#cfd8dc');
+  drawTopButtons();
+  if (!actx && frame % 60 < 40) text('🔊 tap or press a key for sound', W / 2, 180, 16, '#ddd');
+}
+function drawEndingArt(key) {
+  if (key === 'organ-roof') {                         // 🎆 fireworks!
+    for (let i = 0; i < 4; i++) {
+      const t = ((frame + i * 37) % 120) / 120, bx = 150 + ((i * 251) % 660), by = 90 + (i * 57) % 120;
+      for (let k = 0; k < 12; k++) { const a = k * Math.PI / 6; ctx.globalAlpha = 1 - t; sparkle(bx + Math.cos(a) * t * 90, by + Math.sin(a) * t * 90, 7, ['#ff80ab', '#fff59d', '#80d8ff', '#b9f6ca'][i]); }
+    }
+    ctx.globalAlpha = 1;
+  } else if (key === 'organ-cellar') {                // 🎤 sing-along notes
+    for (let i = 0; i < 10; i++) text(i % 2 ? '♪' : '♫', 100 + i * 80, 260 - ((frame * 1.2 + i * 40) % 200), 36, ['#ffab40', '#ea80fc', '#80d8ff'][i % 3]);
+    for (let i = 0; i < 3; i++) drawGhost(560 + i * 110, 300 + Math.sin(frame * 0.1 + i) * 8, 0.45, '#fce4ec', i % 2 ? 'boo' : 'happy', ['bow', 'flower', ''][i]);
+  } else if (key === 'workshop-roof') {               // 🚀 the ghost rocket zooms past the moon
+    const t = (frame % 240) / 240, rx = -100 + t * 1160, ry = 220 - Math.sin(t * Math.PI) * 140;
+    for (let i = 1; i < 12; i++) circle(rx - i * 16, ry + i * 3, 12 - i, `rgba(132,255,255,${0.6 - i * 0.05})`);
+    roundRect(rx - 40, ry - 14, 80, 28, 12, '#7b1f2b'); poly([[rx + 40, ry - 14], [rx + 70, ry], [rx + 40, ry + 14]], '#ffd54f');
+    drawRoboFront(rx - 12, ry - 22, 1, true); drawPhantomRobo(rx + 22, ry - 34, 0.18, 'happy', true);
+  } else if (key === 'workshop-cellar') {             // 🍪 glow cookies + Sammy the cat
+    roundRect(560, 330, 200, 16, 8, '#eceff1');
+    for (let i = 0; i < 5; i++) { circle(590 + i * 35, 322, 16, '#c6ff00'); circle(586 + i * 35, 318, 3, '#5d4037'); circle(596 + i * 35, 326, 3, '#5d4037'); }
+    // Sammy: a brown tabby with brown eyes
+    const sx = 820, sy = 330;
+    ellipse(sx, sy, 46, 36, '#a1887f'); circle(sx, sy - 48, 32, '#a1887f');
+    poly([[sx - 28, sy - 62], [sx - 22, sy - 96], [sx - 6, sy - 74]], '#a1887f'); poly([[sx + 28, sy - 62], [sx + 22, sy - 96], [sx + 6, sy - 74]], '#a1887f');
+    ctx.strokeStyle = '#6d4c41'; ctx.lineWidth = 4; for (const k of [-1, 0, 1]) { ctx.beginPath(); ctx.moveTo(sx + k * 10, sy - 80); ctx.lineTo(sx + k * 10, sy - 66); ctx.stroke(); }
+    circle(sx - 11, sy - 50, 6, '#6d4c41'); circle(sx + 11, sy - 50, 6, '#6d4c41'); circle(sx - 12, sy - 52, 2, '#fff'); circle(sx + 10, sy - 52, 2, '#fff');
+    poly([[sx - 4, sy - 40], [sx + 4, sy - 40], [sx, sy - 35]], '#f48fb1');
+    text('Mmm, crunchy glow cookies!', 700, 410, 18, '#c6ff00');
+  }
+}
+function drawEnding() {
+  const E = ENDINGS[ending.key], fin = ride.room;
+  drawRoom(fin);
+  ctx.fillStyle = 'rgba(10,2,24,.25)'; ctx.fillRect(0, 0, W, H);
+  drawEndingArt(ending.key);
+  drawPhantomRobo(170, 300 + Math.sin(frame * 0.05) * 10, 0.75, 'happy', true);
+  drawRoboFront(320, 360, 2.4, true);
+  roundRect(CX - 300, 16, 600, 196, 24, 'rgba(30,10,50,.82)');
+  text('🎉 THE END: ' + E.icon + ' ' + E.name, CX, 60, 34, '#fff59d');
+  text(E.text[0], CX, 96, 21, '#f3e5f5'); text(E.text[1], CX, 122, 21, '#f3e5f5');
+  text('⭐ ' + ride.score + '    👻 ' + ride.tokens + ' tokens    🏮 spooked back ' + ride.spooked + ' / ' + ride.popsSeen, CX, 160, 20, '#b9f6ca');
+  const n = ENDING_IDS.filter(k => save.endings[k]).length;
+  text('Endings found: ' + n + ' / 4' + (n === 4 ? '  🌟 ALL OF THEM!' : '  (try other tunnels!)'), CX, 192, 19, '#80d8ff');
+  if (ending.fresh && frame % 40 < 30) { ctx.save(); ctx.translate(820, 250); ctx.rotate(0.15); roundRect(-90, -26, 180, 52, 16, '#e91e63'); text('NEW ENDING!', 0, 9, 24, '#fff'); ctx.restore(); }
+  END_BTNS.forEach((b, i) => {
+    if (sel === i) roundRect(b.x - 6, b.y - 6, b.w + 12, b.h + 12, 20, '#fff59d');
+    button(b, i ? '🗺️ Map' : '🚂 Ride Again', i ? '#1565c0' : '#7b1f2b', 24);
+  });
+  drawTopButtons();
+  if (stickerNew > 0) text('🌟 New sticker for your Sticker Book!', CX, 425, 22, '#fff59d');
+}
+const SHORT = { portrait: 'Portraits', library: 'Library', kitchen: 'Kitchen', mirror: 'Mirrors', ballroom: 'Ballroom', garden: 'Stone Garden', organ: 'Organ Loft', workshop: 'Workshop', roof: 'Moon Roof', cellar: 'Cellar' };
+const mapNode = (i, c) => ({ x: 200 + i * 160, y: c ? 300 : 175 });
+function drawMap() {
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#1a1036'); g.addColorStop(1, '#2d1b4e');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  text('🗺️ Map of Rides Taken', CX, 56, 38, '#fff59d');
+  const paths = Object.keys(save.paths);
+  const took = (i, a, b) => paths.some(p => i < 0 ? p[0] === String(b) : p[i] === String(a) && p[i + 1] === String(b));
+  // tracks between the forks (bright = you rode it)
+  const start = { x: 70, y: 238 };
+  for (let i = -1; i < 4; i++) for (let a = 0; a < 2; a++) for (let b = 0; b < 2; b++) {
+    if (i < 0 && a) continue;
+    const p1 = i < 0 ? start : mapNode(i, a), p2 = mapNode(i + 1, b), on = took(i, a, b);
+    ctx.strokeStyle = on ? '#fff59d' : 'rgba(255,255,255,.15)'; ctx.lineWidth = on ? 6 : 3;
+    ctx.setLineDash(on ? [] : [8, 8]); ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  roundRect(start.x - 45, start.y - 34, 90, 68, 16, '#7b1f2b'); emoji('🚂', start.x, start.y + 4, 30); text('Start', start.x, start.y + 28, 16);
+  for (let i = 0; i < 5; i++) for (let c = 0; c < 2; c++) {
+    const key = FORKS[i][c], n = mapNode(i, c), seen = save.rooms[key];
+    roundRect(n.x - 66, n.y - 40, 132, 80, 16, seen ? '#4a2a6e' : 'rgba(255,255,255,.08)');
+    if (seen) { emoji(ROOMS[key].icon, n.x, n.y + 2, 30); text(SHORT[key], n.x, n.y + 30, 17, ROOMS[key].glow); }
+    else text('?', n.x, n.y + 14, 40, 'rgba(255,255,255,.4)');
+  }
+  for (let i = 0; i < 5; i++) text('Fork ' + (i + 1), 200 + i * 160, 118, 16, '#b39ddb');
+  const rooms = Object.keys(ROOMS).filter(k => save.rooms[k] && k !== 'entrance').length;
+  text('Different rides: ' + paths.length + ' / 32     Places seen: ' + rooms + ' / 10', CX, 378, 20, '#b9f6ca');
+  ENDING_IDS.forEach((k, i) => {
+    const E = ENDINGS[k], x = 130 + i * 233, got = save.endings[k];
+    roundRect(x - 105, 396, 210, 52, 14, got ? '#6a1b9a' : 'rgba(255,255,255,.08)');
+    text(got ? E.icon + ' ' + E.name : '❓ ???', x, 430, got ? 18 : 22, got ? '#fff59d' : 'rgba(255,255,255,.4)');
+  });
+  button({ x: 380, y: 460, w: 200, h: 50 }, '◀ Back', '#455a64', 22);
+}
+
+// ---------- Main draw ----------
+function draw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
+  if (state === 'title') drawTitle();
+  else if (state === 'map') drawMap();
+  else if (state === 'ending') drawEnding();
+  else {
+    drawRoom(ride.room);
+    drawTokens();
+    drawDark();
+    if (state === 'fork') drawFork();
+    drawPops();
+    if (state === 'phantom') drawPhantomScene();
+    drawCart();
+    drawParts();
+    drawHUD();
+    if (fade > 0) { ctx.fillStyle = `rgba(5,2,12,${Math.min(1, fade)})`; ctx.fillRect(0, 0, W, H); }
+  }
+}
+
+// ---------- Main loop (steady speed on every screen) ----------
+let last = performance.now(), acc = 0;
+function loop(now) {
+  acc += Math.min(100, now - last); last = now;
+  while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; }
+  playMusic();
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
