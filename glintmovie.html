@@ -1,0 +1,1474 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>🪞 Glint's Story</title>
+<script src="touchpad.js?v=9"></script>
+<style>
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: #1a0f2e; display: flex;
+    align-items: center; justify-content: center; overflow: hidden;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  }
+  canvas {
+    width: min(100vw, calc(100vh * 960 / 520));
+    height: auto; display: block; border-radius: 12px;
+    box-shadow: 0 10px 40px rgba(0,0,0,.5); touch-action: none;
+  }
+</style>
+<canvas id="game" width="960" height="520"></canvas>
+<script>
+// 🪞 GLINT'S STORY — a movie for Ben (made with love)
+// After Robo Jump 9, MIRROR ROBO became GLINT. Glint used to only COPY others... now it wants to be its OWN robot.
+// With Robo, King Gloop, Baby Gloop, Nega-Robo and Chaos Nova, Glint finds its own colors, its own glass-bell sound,
+// its own dance, its own name sign, its favorite thing, its own path through the Mirror Maze... and plays a concert!
+// 8 chapters. Narrator + character voices (speechSynthesis), subtitles, original WebAudio music.
+// Tap / Space = next line. Buttons: previous / pause / next scene, chapters, subtitles, music.
+// Saves where you stopped in localStorage.glintMovie. Trophy 'glintMovie' when you watch it to the end.
+const C = document.getElementById('game'), ctx = C.getContext('2d');
+const W = 960, H = 520, GROUND = 440;
+let frame = 0;
+
+// ---------- Saves + trophy ----------
+const SAVE_KEY = 'glintMovie', TROPHY_ID = 'glintMovie';
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }
+let save = { ch: 0, sc: 0, ln: 0, started: false, subs: true, music: true, done: false };
+function loadSave() {
+  try { const s = JSON.parse(localStorage.getItem(SAVE_KEY) || 'null'); if (s && typeof s === 'object') Object.assign(save, s); } catch (_) {}
+  save.ch = Math.max(0, Math.floor(+save.ch || 0)); save.sc = Math.max(0, Math.floor(+save.sc || 0)); save.ln = Math.max(0, Math.floor(+save.ln || 0));
+}
+function writeSave() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (_) {} }
+loadSave();
+
+// ---------- Drawing helpers ----------
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const ease = t => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+function rrect(x, y, w, h, r) {
+  ctx.beginPath();
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function roundRect(x, y, w, h, r, fill) { ctx.fillStyle = fill; rrect(x, y, Math.max(0, w), Math.max(0, h), r); ctx.fill(); }
+function text(str, x, y, size, color = '#fff', align = 'center', outline = true) {
+  ctx.font = `bold ${size}px "Trebuchet MS", "Chalkboard SE", Arial, sans-serif`;
+  ctx.textAlign = align; ctx.textBaseline = 'alphabetic'; ctx.lineJoin = 'round';
+  if (outline) { ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = Math.max(3, size / 6); ctx.strokeText(str, x, y); }
+  ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function emoji(str, x, y, size) { ctx.font = `${size}px "Apple Color Emoji", "Segoe UI Emoji", sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = '#fff'; ctx.fillText(str, x, y); }
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, 7); ctx.fill(); }
+function ellipse(x, y, rx, ry, fill, rot = 0) { ctx.fillStyle = fill; ctx.beginPath(); ctx.ellipse(x, y, Math.max(0, rx), Math.max(0, ry), rot, 0, 7); ctx.fill(); }
+function glow(x, y, r, col, a = 1) {                  // soft round light (radial gradient, no ctx.filter)
+  r = Math.max(1, r);
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.save(); ctx.globalAlpha = clamp(a, 0, 1); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); ctx.restore();
+}
+function heart(x, y, s, fill = '#ff5c8a') {
+  ctx.fillStyle = fill; ctx.beginPath();
+  ctx.moveTo(x, y + s * 0.35);
+  ctx.bezierCurveTo(x - s * 1.1, y - s * 0.4, x - s * 0.45, y - s * 1.05, x, y - s * 0.45);
+  ctx.bezierCurveTo(x + s * 0.45, y - s * 1.05, x + s * 1.1, y - s * 0.4, x, y + s * 0.35);
+  ctx.fill();
+}
+function star(x, y, r, fill, rot = 0, pts = 5, inner = 0.48) {
+  ctx.fillStyle = fill; ctx.beginPath();
+  for (let i = 0; i < pts * 2; i++) { const a = -Math.PI / 2 + rot + i * Math.PI / pts, rr = i % 2 ? r * inner : r; ctx.lineTo(x + Math.cos(a) * Math.max(0, rr), y + Math.sin(a) * Math.max(0, rr)); }
+  ctx.closePath(); ctx.fill();
+}
+function twinkle(x, y, r, a = 1, col = '#fff8d0') {   // a 4-point sparkle
+  ctx.save(); ctx.globalAlpha = clamp(a, 0, 1); star(x, y, r, col, 0, 4, 0.25); ctx.restore();
+}
+function pawPrint(x, y, r, col) {                     // a little paw print
+  ellipse(x, y + r * 0.25, r * 0.55, r * 0.45, col);
+  for (let i = 0; i < 4; i++) { const a = -2.4 + i * 0.53; ellipse(x + Math.cos(a) * r * 0.8, y + Math.sin(a) * r * 0.75, r * 0.22, r * 0.27, col); }
+}
+function starPaw(x, y, r, t, a = 1) {                 // Tiger's twinkly star paw print: golden glow + paw
+  ctx.save(); ctx.globalAlpha = clamp(a, 0, 1);
+  glow(x, y, r * 3, 'rgba(255,214,90,.75)', 0.7 + Math.sin(t * 0.08 + x) * 0.2);
+  pawPrint(x, y, r, '#ffe27a');
+  twinkle(x + r * 0.9, y - r * 0.9, r * 0.5 * (0.7 + 0.3 * Math.sin(t * 0.15 + y)), 1);
+  ctx.restore();
+}
+function wrapLines(str, maxW, size) {
+  ctx.font = `bold ${size}px "Trebuchet MS", "Chalkboard SE", Arial, sans-serif`;
+  const words = String(str).split(' '), out = []; let cur = '';
+  for (const w of words) { const t = cur ? cur + ' ' + w : w; if (ctx.measureText(t).width > maxW && cur) { out.push(cur); cur = w; } else cur = t; }
+  if (cur) out.push(cur); return out;
+}
+// seeded random for scenery that stays put
+function rng(seed) { let v = (seed >>> 0) || 1; return () => { v = (v * 1664525 + 1013904223) >>> 0; return v / 4294967296; }; }
+const STARS = (() => { const r = rng(7), a = []; for (let i = 0; i < 140; i++) a.push([r() * W, r() * 330, 0.6 + r() * 1.8, r() * 6]); return a; })();
+function starField(t, a = 1, drift = 0) {
+  for (const [x, y, s, p] of STARS) {
+    const xx = ((x - drift * 0.05) % W + W) % W;
+    circle(xx, y, s, `rgba(255,255,240,${clamp(a * (0.55 + 0.45 * Math.sin(t * 0.04 + p)), 0, 1)})`);
+  }
+}
+
+// =====================================================================
+// 🎵 SOUND + MUSIC ENGINE (voices borrowed from Rocky's Outdoor Fun: lead with vibrato + echo, pads, bass, plucks, drums)
+// =====================================================================
+let actx = null, master = null, musicBus = null, sfxBus = null, delayIn = null, delayNode = null, noiseBuf = null;
+let musicOn = save.music !== false;
+const midi = n => 440 * Math.pow(2, (n - 69) / 12);
+function setupAudio() {
+  master = actx.createGain(); master.gain.value = 0.9;
+  if (actx.createDynamicsCompressor) {
+    const comp = actx.createDynamicsCompressor();
+    comp.threshold.value = -14; comp.ratio.value = 4; comp.attack.value = 0.005; comp.release.value = 0.2;
+    master.connect(comp); comp.connect(actx.destination);
+  } else master.connect(actx.destination);
+  musicBus = actx.createGain(); musicBus.gain.value = musicOn ? MUSIC_VOL : 0; musicBus.connect(master);
+  sfxBus = actx.createGain(); sfxBus.gain.value = 0.85; sfxBus.connect(master);
+  // feedback-delay echo for the lead (time is set per song)
+  delayIn = actx.createGain(); delayIn.gain.value = 0.28;
+  delayNode = actx.createDelay(2); delayNode.delayTime.value = 0.32;
+  const fb = actx.createGain(); fb.gain.value = 0.34;
+  const dlp = actx.createBiquadFilter(); dlp.type = 'lowpass'; dlp.frequency.value = 2400;
+  delayIn.connect(delayNode); delayNode.connect(dlp); dlp.connect(fb); fb.connect(delayNode); dlp.connect(musicBus);
+  noiseBuf = actx.createBuffer(1, actx.sampleRate, actx.sampleRate);
+  const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+}
+function envGain(t, a, peak, sus, dur, rel, out) {
+  const g = actx.createGain(), hold = t + Math.max(a + 0.002, dur);
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(peak, t + a);
+  if (sus < 1) g.gain.setTargetAtTime(peak * sus, t + a, Math.max(0.03, dur * 0.35));
+  g.gain.setTargetAtTime(0, hold, rel / 4);           // smooth exponential release, never a jump
+  g.connect(out);
+  return g;
+}
+function osc(type, f, t, end, detune = 0) {
+  const o = actx.createOscillator(); o.type = type; o.frequency.setValueAtTime(f, t);
+  if (detune) o.detune.setValueAtTime(detune, t);
+  o.start(t); o.stop(end + 0.05); return o;
+}
+function lowpass(f, q, t) { const b = actx.createBiquadFilter(); b.type = 'lowpass'; b.frequency.setValueAtTime(f, t); b.Q.value = q; return b; }
+// 🎺 LEAD: detuned oscillators, filter, delayed vibrato on long notes, and an echo send
+function leadVoice(m, t, dur, vol, kind, out, echo = true) {
+  const f = midi(m), end = t + dur + 0.25;
+  let g;
+  if (kind === 'steel' || kind === 'bell') {           // hit-and-ring voices (steel drum, crystal bell)
+    g = envGain(t, 0.004, vol, 0.25, Math.min(dur, 0.6), 0.25, out);
+    const parts = kind === 'steel' ? [[1, 1], [2, 0.35], [3.01, 0.12]] : [[1, 1], [2.01, 0.25], [4.02, 0.12], [5.4, 0.05]];
+    for (const [k, v] of parts) { const pg = actx.createGain(); pg.gain.value = v; osc('sine', f * k, t, end).connect(pg); pg.connect(g); }
+  } else {
+    g = envGain(t, kind === 'flute' || kind === 'glass' ? 0.035 : 0.012, vol, 0.8, dur, 0.12, out);
+    const types = { saw: ['sawtooth', 'sawtooth'], square: ['square', 'square'], brass: ['sawtooth', 'sawtooth'],
+                    flute: ['sine', 'triangle'], glass: ['triangle', 'sine'] }[kind] || ['sawtooth', 'square'];
+    const cut = { saw: 3000, square: 2600, brass: 1400, flute: 4000, glass: 3500 }[kind] || 2800;
+    const lp = lowpass(cut, kind === 'brass' ? 3 : 1.5, t);
+    if (kind === 'brass') { lp.frequency.linearRampToValueAtTime(3600, t + 0.06); lp.frequency.setTargetAtTime(1700, t + 0.08, 0.2); }
+    lp.connect(g);
+    const o1 = osc(types[0], f, t, end, -7), o2 = osc(types[1], kind === 'glass' ? f * 2 : f, t, end, 7);
+    const mix = actx.createGain(); mix.gain.value = kind === 'glass' ? 0.6 : 0.5;
+    o1.connect(mix); o2.connect(mix); mix.connect(lp);
+    if (dur > 0.28) {                                  // vibrato fades in on held notes
+      const lfo = osc('sine', 5.6, t, end), lg = actx.createGain();
+      lg.gain.setValueAtTime(0, t); lg.gain.linearRampToValueAtTime(0, t + 0.12); lg.gain.linearRampToValueAtTime(f * 0.009, t + 0.4);
+      lfo.connect(lg); lg.connect(o1.frequency); lg.connect(o2.frequency);
+    }
+  }
+  if (echo && delayIn) g.connect(delayIn);
+}
+// 🎹 PAD: soft detuned saws (strings), a vowel-filtered "choir", or an organ
+function padVoice(notes, t, dur, vol, kind, out) {
+  for (const m of notes) {
+    const f = midi(m), end = t + dur + 0.6;
+    const g = envGain(t, kind === 'choir' ? 0.35 : 0.22, vol, 0.85, dur, 0.5, out);
+    if (kind === 'organ') {
+      osc('sine', f, t, end).connect(g);
+      const g2 = actx.createGain(); g2.gain.value = 0.4; osc('sine', f * 2, t, end).connect(g2); g2.connect(g);
+    } else if (kind === 'choir') {                     // "aah": two formant filters + slow vibrato
+      const src = actx.createGain(); src.gain.value = 0.5;
+      const o1 = osc('sawtooth', f, t, end, -9), o2 = osc('sawtooth', f, t, end, 9);
+      o1.connect(src); o2.connect(src);
+      for (const [ff, q, v] of [[730, 6, 1], [1090, 7, 0.6], [2440, 8, 0.25]]) {
+        const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = ff; bp.Q.value = q;
+        const bg = actx.createGain(); bg.gain.value = v * 2.2; src.connect(bp); bp.connect(bg); bg.connect(g);
+      }
+      const lfo = osc('sine', 4.8, t, end), lg = actx.createGain(); lg.gain.value = f * 0.006; lfo.connect(lg); lg.connect(o1.frequency); lg.connect(o2.frequency);
+    } else {
+      const lp = lowpass(kind === 'saw' ? 1500 : 1100, 0.7, t); lp.connect(g);
+      osc('sawtooth', f, t, end, -11).connect(lp); osc('sawtooth', f, t, end, 11).connect(lp);
+    }
+  }
+}
+// 🎸 BASS: punchy filter envelope
+function bassVoice(m, t, dur, vol, kind, out) {
+  const f = midi(m), end = t + dur + 0.1;
+  const g = envGain(t, 0.006, vol, 0.7, dur, 0.06, out);
+  const lp = lowpass(kind === 'slap' ? 3200 : 1600, kind === 'slap' ? 8 : 5, t);
+  lp.frequency.setTargetAtTime(kind === 'slap' ? 380 : 260, t + 0.01, kind === 'slap' ? 0.05 : 0.09);
+  lp.connect(g);
+  osc(kind === 'square' ? 'square' : 'sawtooth', f, t, end).connect(lp);
+  const sg = actx.createGain(); sg.gain.value = 0.6; osc(kind === 'sub' ? 'triangle' : 'sine', f, t, end).connect(sg); sg.connect(g);
+}
+// 🎨 COUNTER-MELODY / arpeggio pluck
+function pluckVoice(m, t, dur, vol, kind, out) {
+  const f = midi(m), end = t + dur + 0.2;
+  const g = envGain(t, 0.004, vol, 0.35, dur, 0.12, out);
+  if (kind === 'bell') { osc('sine', f, t, end).connect(g); const g2 = actx.createGain(); g2.gain.value = 0.3; osc('sine', f * 3.01, t, end).connect(g2); g2.connect(g); }
+  else { const lp = lowpass(2600, 1, t); lp.frequency.setTargetAtTime(900, t, 0.08); lp.connect(g); osc(kind === 'square' ? 'square' : 'triangle', f, t, end).connect(lp); osc('sawtooth', f, t, end, 5).connect(lp); }
+}
+function noiseHit(t, type, freq, q, vol, decay, out) {
+  const s = actx.createBufferSource(); s.buffer = noiseBuf;
+  const fl = actx.createBiquadFilter(); fl.type = type; fl.frequency.value = freq; fl.Q.value = q;
+  const g = actx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.002); g.gain.exponentialRampToValueAtTime(0.001, t + decay);
+  s.connect(fl); fl.connect(g); g.connect(out); s.start(t); s.stop(t + decay + 0.05);
+}
+// 🥁 DRUMS
+function drumHit(kind, t, vol, out) {
+  if (kind === 'k') {                                  // kick: a sine that drops in pitch fast
+    const o = osc('sine', 150, t, t + 0.35); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    const g = actx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.003); g.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
+    o.connect(g); g.connect(out);
+  } else if (kind === 's') {                           // snare: noise + a little tone
+    noiseHit(t, 'highpass', 1400, 0.7, vol * 0.8, 0.16, out);
+    const o = osc('triangle', 190, t, t + 0.1), g = actx.createGain();
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol * 0.5, t + 0.002); g.gain.exponentialRampToValueAtTime(0.001, t + 0.09); o.connect(g); g.connect(out);
+  } else if (kind === 'h') noiseHit(t, 'highpass', 7500, 1, vol, 0.04, out);
+  else if (kind === 'o') noiseHit(t, 'highpass', 6500, 1, vol, 0.22, out);
+  else if (kind === 'c') { for (let i = 0; i < 3; i++) noiseHit(t + i * 0.011, 'bandpass', 1500, 2, vol, 0.03 + (i === 2 ? 0.1 : 0), out); }
+  else if (kind === 'x') noiseHit(t, 'highpass', 4000, 0.5, vol, 1.2, out);          // crash cymbal
+  else if (kind === 'r') { const o = osc('sine', 2400, t, t + 0.06), g = actx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.002); g.gain.exponentialRampToValueAtTime(0.001, t + 0.04); o.connect(g); g.connect(out); }
+  else if (kind === 't') {                             // tom
+    const o = osc('sine', 140, t, t + 0.3); o.frequency.exponentialRampToValueAtTime(75, t + 0.25);
+    const g = actx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.003); g.gain.exponentialRampToValueAtTime(0.001, t + 0.28); o.connect(g); g.connect(out);
+  }
+}
+function wakeAudio() {
+  try {
+    if (!actx) { const A = window.AudioContext || window.webkitAudioContext; if (!A) return; actx = new A(); setupAudio(); }
+    if (actx.state === 'suspended' && actx.resume) actx.resume();
+  } catch (_) { actx = null; }
+}
+function note(freq, start, dur, wave = 'square', vol = 0.12, slideTo = null) {
+  if (!actx || !sfxBus) return;
+  const t = actx.currentTime + start;
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type = wave; o.frequency.setValueAtTime(freq, t);
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+  g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.006);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g); g.connect(sfxBus);
+  o.start(t); o.stop(t + dur + 0.02);
+}
+function whooshNoise(start, dur, from, to, vol) {
+  if (!actx || !noiseBuf) return;
+  const t = actx.currentTime + start, s = actx.createBufferSource(); s.buffer = noiseBuf;
+  const f = actx.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = 1.4; f.frequency.setValueAtTime(from, t); f.frequency.exponentialRampToValueAtTime(to, t + dur);
+  const g = actx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + dur * 0.4); g.gain.linearRampToValueAtTime(0, t + dur);
+  s.connect(f); f.connect(g); g.connect(sfxBus); s.start(t); s.stop(t + dur + 0.05);
+}
+// 🔔 GLINT'S OWN SOUND: a sparkly glass bell (inharmonic glass partials + a shimmery high twinkle)
+function glassBell(freq, start, vol = 0.09, dur = 1.6) {
+  [[1, 1], [2.76, 0.32], [5.4, 0.14], [8.93, 0.05]].forEach(([r, v]) => note(freq * r, start, dur / Math.sqrt(r), 'sine', vol * v));
+  note(freq * 4, start + 0.01, 0.12, 'triangle', vol * 0.12);
+}
+const SFX = {
+  glassbell: () => [1319, 1976, 2637].forEach((f, i) => glassBell(f, i * 0.16, 0.08)),
+  ting:    () => glassBell(1760, 0, 0.1),
+  shimmer: () => { for (let i = 0; i < 10; i++) glassBell(1568 + i * 180 + (i % 2) * 260, i * 0.05, 0.03, 0.8); },
+  beep:    () => { note(880, 0, 0.09, 'square', 0.06); note(1175, 0.11, 0.12, 'square', 0.06); },
+  boop:    () => note(330, 0, 0.18, 'square', 0.07, 220),
+  blorp:   () => { note(140, 0, 0.35, 'sawtooth', 0.08, 70); note(90, 0.05, 0.3, 'sine', 0.1, 60); },
+  wobble:  () => { for (let i = 0; i < 6; i++) note(200 + (i % 2) * 80, i * 0.08, 0.1, 'sine', 0.09); },
+  guitar:  () => [196, 247, 294, 392].forEach((f, i) => note(f, i * 0.03, 0.6, 'sawtooth', 0.04, f * 0.99)),
+  drum:    () => { note(120, 0, 0.2, 'sine', 0.16, 50); whooshNoise(0.25, 0.1, 3000, 5000, 0.08); note(120, 0.5, 0.2, 'sine', 0.16, 50); },
+  twinkle: () => [1319, 1568, 1976, 2637].forEach((f, i) => note(f, i * 0.07, 0.35, 'sine', 0.06)),
+  chime:   () => [784, 988, 1175, 1568, 1976].forEach((f, i) => note(f, i * 0.09, 0.6, 'sine', 0.07)),
+  boing:   () => note(260, 0, 0.3, 'sine', 0.14, 700),
+  pop:     () => { note(900, 0, 0.08, 'sine', 0.12, 1600); },
+  giggle:  () => [988, 1175, 988, 1175, 1319].forEach((f, i) => note(f, i * 0.08, 0.07, 'triangle', 0.07)),
+  click:   () => note(700, 0, 0.06, 'square', 0.05),
+  whoosh:  () => whooshNoise(0, 0.35, 600, 3500, 0.2),
+  bonk:    () => { note(220, 0, 0.18, 'square', 0.12, 90); note(1400, 0.02, 0.1, 'sine', 0.08, 2200); [1568, 1319, 1568].forEach((f, i) => note(f, 0.12 + i * 0.07, 0.1, 'triangle', 0.05)); },
+  thud:    () => { note(110, 0, 0.3, 'sine', 0.18, 50); whooshNoise(0, 0.25, 900, 200, 0.08); },
+  splat:   () => { note(400, 0, 0.18, 'sine', 0.1, 120); whooshNoise(0, 0.2, 1200, 300, 0.12); },
+  swirl:   () => { for (let i = 0; i < 12; i++) note(500 + i * 120 + (i % 2) * 300, i * 0.06, 0.25, 'sine', 0.045); },
+  yay:     () => [523, 659, 784, 1047, 784, 1047, 1319].forEach((f, i) => note(f, i * 0.12, 0.22, 'triangle', 0.09)),
+  cheer:   () => { whooshNoise(0, 1.4, 900, 2600, 0.14); [784, 988, 1175, 1568].forEach((f, i) => note(f, 0.2 + i * 0.1, 0.3, 'triangle', 0.06)); },
+  gasp:    () => { whooshNoise(0, 0.25, 1500, 900, 0.1); note(880, 0, 0.2, 'triangle', 0.06, 1200); },
+  sad:     () => { note(523, 0, 0.35, 'triangle', 0.07, 494); note(440, 0.35, 0.6, 'triangle', 0.07, 392); },
+  crack:   () => { whooshNoise(0, 0.3, 4000, 1500, 0.15); for (let i = 0; i < 6; i++) note(2000 + Math.random() * 2500, i * 0.04, 0.15, 'sine', 0.04); },
+};
+function sfx(name) { if (SFX[name]) try { SFX[name](); } catch (_) {} }
+
+// ---------- 🎼 THE SONGS (all original). mel = one MIDI note per 8th note (0 = rest / hold). One chord per bar: [bass, pad notes...] ----------
+const cA = [45, 64, 69, 73], cE = [40, 64, 68, 71], cFsm = [42, 66, 69, 73], cD = [38, 66, 69, 74], cBm = [47, 62, 66, 71];
+const cC = [36, 60, 64, 67], cF = [41, 65, 69, 72], cG = [43, 62, 67, 71], cAm = [45, 64, 69, 72], cDm = [38, 62, 65, 69], cBb = [34, 62, 65, 70], cEm = [40, 64, 67, 71], cB = [47, 63, 66, 71];
+const SONGS = {
+  // 🔔 "Shimmer and Shine (Glint's Song)" — THE MAIN THEME: a glassy bell tune in A major
+  glint: { bpm: 104, lead: 'bell', pad: 'choir', bass: 'sub', arp: [0, 1, 2, 1, 2, 3, 2, 1], arpKind: 'bell', hold: 4,
+    mel: [76,0,81,0,85,0,83,81, 80,0,0,76,0,0,0,0, 78,0,81,0,85,0,88,0, 86,0,85,0,83,0,0,0,
+          76,0,81,0,85,0,83,81, 80,0,83,0,88,0,0,0, 86,0,85,83,81,0,83,0, 81,0,0,0,0,0,0,0,
+          86,0,86,85,86,0,88,0, 85,0,81,0,76,0,0,0, 83,0,83,81,83,0,86,0, 88,0,0,0,80,0,0,0,
+          85,0,88,0,90,0,88,0, 86,0,85,0,83,0,81,0, 83,0,0,85,83,0,80,0, 81,0,0,0,0,0,0,0],
+    chords: [cA, cE, cFsm, cD, cA, cE, cD, cA, cD, cA, cBm, cE, cFsm, cD, cE, cA],
+    bassPat: 'R...F...', drums: { k: 'x.......', h: '..x...x.' } },
+  // 🙃 "Copy Copy Copycat" — the silly copying music (every phrase gets COPIED, higher and squeakier)
+  copycat: { bpm: 138, lead: 'square', pad: 'organ', bass: 'slap', arp: null, hold: 2,
+    mel: [72,0,67,0,72,74,76,0, 84,0,79,0,84,86,88,0, 77,0,76,0,74,0,72,0, 79,0,0,0,74,0,0,0,
+          76,0,72,0,76,77,79,0, 88,0,84,0,88,89,91,0, 79,77,76,74,72,0,71,0, 72,0,0,0,0,0,0,0],
+    chords: [cC, cC, cF, cG, cAm, cAm, cG, cC],
+    bassPat: 'R.O.R.FO', drums: { k: 'x..x..x.', s: '....x...', h: 'xxxxxxxx' } },
+  // 🎨 "Paint It Me" — gentle studio music (F major)
+  paint: { bpm: 96, lead: 'flute', pad: 'saw', bass: 'sub', arp: [0, 1, 2, 1, 0, 1, 2, 3], arpKind: 'pluck', hold: 4,
+    mel: [72,0,0,74,76,0,77,0, 79,0,0,0,76,0,72,0, 74,0,0,76,77,0,81,0, 79,0,77,0,74,0,0,0,
+          72,0,0,74,76,0,77,0, 79,0,0,81,84,0,0,0, 82,0,81,0,79,0,76,0, 77,0,0,0,0,0,0,0],
+    chords: [cF, cC, cDm, cBb, cF, cC, cBb, cF],
+    bassPat: 'R...F.O.', drums: { k: 'x.......', h: '....x...' } },
+  // 🕺 "The Shimmer Shuffle" — the dance-off (D dorian disco)
+  disco: { bpm: 124, lead: 'saw', pad: 'saw', bass: 'slap', arp: [0, 2, 1, 2, 0, 2, 1, 3], arpKind: 'bell', hold: 2,
+    mel: [74,0,74,0,77,0,74,72, 71,0,0,74,0,71,67,0, 74,0,74,0,77,0,79,81, 79,0,77,0,74,0,0,0,
+          77,0,77,79,81,0,77,0, 79,0,79,81,84,0,79,0, 81,0,79,0,77,0,76,0, 74,0,0,0,69,0,72,0],
+    chords: [cDm, cG, cDm, cG, cBb, cC, cDm, cDm],
+    bassPat: 'R.OR.ROF', drums: { k: 'x...x...', s: '....x...', h: '..x...x.', o: '..x...x.', c: '......x.' } },
+  // 🪞 "The Mirror Maze" — mysterious, twinkly (E minor)
+  maze: { bpm: 92, lead: 'glass', pad: 'choir', bass: 'sub', arp: [0, 1, 2, 3, 2, 1, 2, 3], arpKind: 'bell', hold: 4,
+    mel: [76,0,0,79,0,0,83,0, 84,0,0,0,83,0,79,0, 81,0,0,84,0,0,88,0, 87,0,0,0,83,0,0,0,
+          88,0,86,0,83,0,79,0, 81,0,79,0,76,0,72,0, 74,0,76,0,79,0,81,0, 78,0,0,0,75,0,0,0],
+    chords: [cEm, cC, cAm, cB, cEm, cC, cAm, cB],
+    bassPat: 'R...O...', drums: { h: '..x...x.' } },
+};
+// 🎤 the BIG concert version of Glint's Song (drums, bass, everything!)
+SONGS.concert = Object.assign({}, SONGS.glint, { bpm: 120, pad: 'saw', bass: 'slap', bassPat: 'R.ROR.FO', hold: 3, drums: { k: 'x...x...', s: '....x...', h: 'x.xxx.xx', c: '....x...' } });
+// 🌙 the soft version (menus + credits)
+SONGS.soft = Object.assign({}, SONGS.glint, { bpm: 80, lead: 'bell', pad: 'choir', bass: 'sub', bassPat: 'R...F...', drums: null, hold: 6 });
+// ---------- the sequencer (looks ahead a little and schedules real WebAudio notes) ----------
+let MUSIC_LOG = null;                                  // tests set this to an array to see every note
+const MUSIC_VOL = 0.42;
+let song = null, songName = '', mPos = 0, nextT = 0;
+function setSong(name) {
+  if (name === songName) return;
+  songName = name || ''; song = SONGS[songName] || null; mPos = 0; nextT = 0;
+}
+function musicTick() {
+  if (!actx || !musicBus || !song || !musicOn) return;
+  const now = actx.currentTime, step = 60 / song.bpm / 2;
+  if (nextT < now) nextT = now + 0.06;
+  let guard = 0;
+  while (nextT < now + 0.25 && guard++ < 16) { scheduleStep(song, mPos, nextT, step); mPos++; nextT += step; }
+}
+function scheduleStep(S, pos, t, step) {
+  const N = S.mel.length, i = pos % N, bar = Math.floor(i / 8) % S.chords.length, st = i % 8, ch = S.chords[bar];
+  const m = S.mel[i];
+  if (m > 0) {
+    let len = 1; while (len < S.hold && S.mel[(i + len) % N] === 0) len++;
+    leadVoice(m, t, len * step * 0.95, 0.075, S.lead, musicBus);
+    if (MUSIC_LOG) MUSIC_LOG.push({ song: songName, m, t });
+  }
+  if (st === 0) padVoice(ch.slice(1), t, step * 8, 0.022, S.pad, musicBus);
+  if (S.arp) { const k = S.arp[st] % (ch.length - 1); pluckVoice(ch[1 + k] + 12, t, step * 0.9, 0.03, S.arpKind || 'pluck', musicBus); }
+  const b = S.bassPat[st];
+  if (b !== '.') bassVoice(ch[0] + (b === 'O' ? 12 : b === 'F' ? 7 : 0), t, step * 0.9, 0.1, S.bass, musicBus);
+  if (S.drums) for (const k in S.drums) if (S.drums[k][st] === 'x') drumHit(k, t, k === 'k' ? 0.5 : k === 's' ? 0.28 : k === 't' ? 0.3 : k === 'c' ? 0.2 : 0.06, musicBus);
+}
+function setMusic(on) {
+  musicOn = on; save.music = on; writeSave();
+  if (actx && musicBus) { const t = actx.currentTime; musicBus.gain.cancelScheduledValues(t); musicBus.gain.setValueAtTime(musicBus.gain.value, t); musicBus.gain.linearRampToValueAtTime(on ? MUSIC_VOL : 0, t + 0.3); }
+  nextT = 0;
+}
+
+
+// =====================================================================
+// 🤖 THE ROBOTS (same look as Robo Jump 9: white round robot, dark visor, blue eyes, blue ear pods)
+// GLINT = Mirror Robo's chrome shape (sheen, round mirror ear pods) in its OWN sunrise-pink + aqua colors.
+// x, y = the middle of the feet. s = size (1 = the in-game size, 30 x 40).
+// =====================================================================
+const PAL_ROBO = { head: '#ffffff', body: '#f5f7ff', visor: '#111827', eye: '#40c4ff', legs: '#3d5afe', pod: '#2979ff' };
+const PAL_NEGA = { head: '#37474f', body: '#263238', visor: '#b71c1c', eye: '#e040fb', legs: '#4a148c', pod: '#7b1fa2' };
+const PAL_MIRROR = { head: '#dfe7ee', body: '#c9d4dc', visor: '#1c2a3a', eye: '#b3ecff', legs: '#8fa3b0', pod: '#eef3f7' };
+const PAL_GLINT = { head: '#ffe3ef', body: '#fff0e0', visor: '#1a2540', eye: '#64ffda', legs: '#ff9e80', pod: '#64ffda' };
+// when Glint COPIES somebody, its mirror-shine turns into their colors (oops!)
+const COPY_PAL = {
+  robo: { head: '#f4f8ff', body: '#e3ecff', visor: '#141c2c', eye: '#40c4ff', legs: '#3d5afe', pod: '#2979ff' },
+  nega: { head: '#4a5a64', body: '#33434c', visor: '#9a1a1a', eye: '#e040fb', legs: '#4a148c', pod: '#7b1fa2' },
+  gloop: { head: '#d6b8ff', body: '#c69cff', visor: '#2a0f52', eye: '#fff176', legs: '#7c3aed', pod: '#9c4dff' },
+  chrome: PAL_MIRROR,
+  mud: { head: '#b49a7a', body: '#a08868', visor: '#2a2018', eye: '#ffe0b2', legs: '#6d5a44', pod: '#8d7458' },
+};
+function roboShape(x, y, w, h, pal, face, talk, nega) {      // (from Robo Jump 9's drawRoboBase) x, y = top-left
+  ctx.fillStyle = pal.legs;
+  ctx.fillRect(x + 4 * w / 30, y + h - 7 * (h / 40), 8 * w / 30, 7 * (h / 40)); ctx.fillRect(x + w - 12 * w / 30, y + h - 7 * (h / 40), 8 * w / 30, 7 * (h / 40));
+  roundRect(x + 2, y + h * 0.5, w - 4, h * 0.4, 6 * (w / 30), pal.body);
+  if (talk) glow(x + w / 2, y + h * 0.7, 9 * (w / 30), pal.eye, 0.9);
+  circle(x + w / 2, y + h * 0.7, 3 * (w / 30), pal.pod);
+  roundRect(x - 5 * w / 30, y + h * 0.3 - 3, 6 * w / 30, 9 * (h / 40), 3, pal.pod);
+  roundRect(x + w - 1, y + h * 0.3 - 3, 6 * w / 30, 9 * (h / 40), 3, pal.pod);
+  roundRect(x - 2, y, w + 4, h * 0.55, 12 * (w / 30), pal.head);
+  roundRect(x + 2, y + 4, w - 4, h * 0.55 - 9, 9 * (w / 30), pal.visor);
+  const es = w / 30, ex = x + w / 2 + face * 3 * es, ey = y + h * 0.27 + (talk ? Math.sin(frame * 0.5) * 0.8 * es : 0), blink = (frame + x * 3) % 200 < 6 ? 1 : 5 * (h / 40);
+  ctx.fillStyle = pal.eye;
+  ctx.beginPath(); ctx.ellipse(ex - 6 * es, ey, 3.5 * es, Math.max(0.5, blink), 0, 0, 7); ctx.ellipse(ex + 6 * es, ey, 3.5 * es, Math.max(0.5, blink), 0, 0, 7); ctx.fill();
+  if (nega) { ctx.fillStyle = '#7b1fa2'; ctx.beginPath(); ctx.moveTo(x + 4 * es, y + 2); ctx.lineTo(x + 2 * es, y - 8 * es); ctx.lineTo(x + 11 * es, y + 1); ctx.moveTo(x + w - 4 * es, y + 2); ctx.lineTo(x + w - 2 * es, y - 8 * es); ctx.lineTo(x + w - 11 * es, y + 1); ctx.fill(); }
+}
+function glintExtras(x, y, w, h, face, o) {                // ✨ Glint's mirror shine (from Mirror Robo's drawing)
+  const s = w / 30, hue = o.chrome ? null : 1;
+  ctx.save(); ctx.beginPath(); ctx.rect(x - 2, y, w + 4, h * 0.55); ctx.clip();       // the sheen sliding across the head
+  const sh = ((frame * 0.8 + x) % 60) / 60 * (w + 30 * s) - 15 * s;
+  ctx.fillStyle = 'rgba(255,255,255,.6)'; ctx.beginPath(); ctx.moveTo(x + sh, y); ctx.lineTo(x + sh + 7 * s, y); ctx.lineTo(x + sh - 5 * s, y + h * 0.55); ctx.lineTo(x + sh - 12 * s, y + h * 0.55); ctx.fill();
+  ctx.restore();
+  for (const d of [-1, 1]) {                             // round MIRROR ear pods
+    const px = d < 0 ? x - 3 * s : x + w + 3 * s, py = y + h * 0.3 + 2 * s;
+    circle(px, py, 6.5 * s, hue ? '#ff9e80' : '#90a4ae'); circle(px, py, 5 * s, hue ? '#e0fff8' : '#f5fbff'); circle(px - 1.6 * s, py - 1.6 * s, 1.8 * s, '#fff');
+    ctx.strokeStyle = hue ? 'rgba(255,128,171,.9)' : 'rgba(128,216,255,.9)'; ctx.lineWidth = Math.max(1, s * 0.5); ctx.beginPath(); ctx.moveTo(px - 3 * s, py + 2 * s); ctx.lineTo(px + 2 * s, py - 3 * s); ctx.stroke();
+  }
+  if (o.badge) { glow(x + w / 2, y + h * 0.7, 9 * s, 'rgba(255,214,110,.8)'); star(x + w / 2, y + h * 0.7, 5 * s, '#ffd54f', frame * 0.02); star(x + w / 2, y + h * 0.7, 2.6 * s, '#ff80ab', frame * 0.02); }
+  if (!o.chrome) for (let k = 0; k < 3; k++) {          // little sparkles that float around Glint
+    const a = frame * 0.04 + k * 2.1 + x * 0.01;
+    twinkle(x + w / 2 + Math.cos(a) * w * 0.85, y + h * 0.4 + Math.sin(a * 1.3) * h * 0.5, 3.5 * s * (0.6 + 0.4 * Math.sin(frame * 0.12 + k)), 0.85, k % 2 ? '#ffd0e4' : '#b9fff0');
+  }
+}
+// pose -> body transform
+function botPose(pose, t) {
+  const P = { dx: 0, dy: 0, rot: 0, sx: 1, sy: 1 };
+  if (pose === 'idle' || pose === 'sad') P.sy = 1 + Math.sin(t * 0.08) * 0.015;
+  if (pose === 'sad') { P.sy *= 0.93; P.rot = 0.06; }
+  if (pose === 'walk' || pose === 'run') { P.dy = -Math.abs(Math.sin(t * (pose === 'run' ? 0.45 : 0.3))) * 6; P.rot = Math.sin(t * 0.3) * 0.05; }
+  if (pose === 'jump') { P.sx = 0.92; P.sy = 1.1; }
+  if (pose === 'happy') { P.dy = -Math.abs(Math.sin(t * 0.22)) * 16; P.sy = 1 + Math.sin(t * 0.44) * 0.04; }
+  if (pose === 'wobble') { const k = Math.sin(t * 0.38); P.sx = 1 + k * 0.22; P.sy = 1 - k * 0.18; P.rot = Math.sin(t * 0.19) * 0.12; }
+  if (pose === 'cool') P.rot = -0.2;
+  if (pose === 'flop') { P.rot = 1.45; P.dy = 0; }
+  if (pose === 'dance') { P.rot = Math.sin(t * 0.2) * 0.3; P.dy = -Math.abs(Math.sin(t * 0.4)) * 12; }
+  if (pose === 'spin' || pose === 'karate') { P.sx = Math.cos(t * 0.3); if (Math.abs(P.sx) < 0.08) P.sx = 0.08; P.dy = -8; }
+  if (pose === 'shuffle') { P.dx = Math.sin(t * 0.14) * 22; P.rot = Math.sin(t * 0.28) * 0.15; P.dy = -Math.abs(Math.sin(t * 0.28)) * 10; P.sx = Math.sin(t * 0.07) > 0.85 ? Math.cos(t * 0.5) : 1; if (Math.abs(P.sx) < 0.08) P.sx = 0.08; }
+  if (pose === 'sit') P.sy = 0.84;
+  if (pose === 'bow') P.rot = 0.4;
+  return P;
+}
+// id: robo | nega | glint | echo. o = { face, s, t, pose, talk, art }
+function drawBot(id, x, y, o = {}) {
+  const s = o.s || 2.6, face = o.face || 1, t = o.t || frame, art = o.art || {};
+  const P = botPose(o.pose || 'idle', t), w = 30 * s, h = 40 * s;
+  ctx.save(); ctx.translate(x + P.dx, y + P.dy);
+  ellipse(0, 0 - P.dy, w * 0.55, 6 * s / 2.6, 'rgba(0,0,0,.22)');
+  ctx.rotate(P.rot * face); ctx.scale(P.sx * (o.flip ? -1 : 1), P.sy);
+  const isG = id === 'glint' || id === 'echo';
+  const pal = id === 'robo' ? PAL_ROBO : id === 'nega' ? PAL_NEGA : id === 'echo' ? PAL_MIRROR : (art.copy && COPY_PAL[art.copy]) || PAL_GLINT;
+  if (isG && !art.copy && id !== 'echo') {               // a soft sunrise glow behind Glint
+    ctx.save(); ctx.strokeStyle = `hsla(${330 + Math.sin(frame * 0.05) * 25 + (Math.sin(frame * 0.03) > 0 ? 0 : 150)},90%,80%,.55)`; ctx.lineWidth = 3;
+    rrect(-w / 2 - 5, -h - 3, w + 10, h * 0.57 + 4, 12 * s / 2.6); ctx.stroke(); ctx.restore();
+  }
+  roboShape(-w / 2, -h, w, h, pal, face, o.talk, id === 'nega' || art.copy === 'nega');
+  if (art.copy === 'gloop') { ctx.fillStyle = '#ffd740'; const ty = -h - 2; ctx.beginPath(); ctx.moveTo(-w * 0.3, ty + 4); ctx.lineTo(-w * 0.34, ty - 14 * s / 2.6 * 2); ctx.lineTo(-w * 0.14, ty - 6); ctx.lineTo(0, ty - 18 * s / 2.6 * 2); ctx.lineTo(w * 0.14, ty - 6); ctx.lineTo(w * 0.34, ty - 14 * s / 2.6 * 2); ctx.lineTo(w * 0.3, ty + 4); ctx.closePath(); ctx.fill(); }
+  if (isG) glintExtras(-w / 2, -h, w, h, face, { badge: art.badge && !art.copy, chrome: id === 'echo' || !!art.copy });
+  if (art.paint) for (const [px, py, r, c] of [[-0.25, -0.62, 0.09, '#ff80ab'], [0.2, -0.3, 0.07, '#64ffda'], [-0.1, -0.2, 0.06, '#ffd54f']]) circle(px * w, py * h, r * w, c);
+  ctx.restore();
+  if (o.pose === 'cool' && !isG) { ctx.save(); ctx.translate(x, y); twinkle(face * w * 0.55, -h * 1.05, 9, 0.6 + 0.4 * Math.sin(frame * 0.2)); ctx.restore(); }
+  if (o.pose === 'sad') { const ty = y - h * 0.45 + ((frame * 1.2) % 30); ctx.save(); ctx.globalAlpha = 1 - ((frame * 1.2) % 30) / 30; ellipse(x + face * w * 0.1 - w * 0.2, ty, 3.5, 5, '#80d8ff'); ctx.restore(); }
+  if (art.dizzy) for (let k = 0; k < 3; k++) { const a = frame * 0.12 + k * 2.1; star(x + Math.cos(a) * w * 0.6, y - h - 10 + Math.sin(a) * 6, 7, '#fff59d', frame * 0.1); }
+}
+// ---------- 👑 KING GLOOP (purple goo, gold crown) + 💜 BABY GLOOP (light purple) ----------
+function drawGloop(x, y, o = {}) {                       // x, y = middle of the bottom
+  const baby = !!o.baby, s = o.s || 1.6, t = o.t || frame, w = (baby ? 50 : 80) * s, h = (baby ? 40 : 60) * s, face = o.face || 1;
+  const pose = o.pose || 'idle';
+  let sq = 1 + Math.sin(t * 0.1) * 0.04, dy = 0;
+  if (pose === 'wobble') sq = 1 + Math.sin(t * 0.35) * 0.2;
+  if (pose === 'happy' || pose === 'dance' || pose === 'shuffle') { dy = -Math.abs(Math.sin(t * 0.2)) * 18; sq = 1 + Math.sin(t * 0.4) * 0.08; }
+  if (pose === 'walk' || pose === 'run' || pose === 'jump') dy = -Math.abs(Math.sin(t * 0.25)) * 8;
+  const body = baby ? '#d9b8ff' : '#9c4dff', dark = baby ? '#a77de0' : '#5e1fb0';
+  ellipse(x, y, w * 0.5, 7 * s, 'rgba(0,0,0,.22)');
+  const cy = y + dy - h * 0.45;
+  ctx.save(); ctx.translate(x, cy); if (pose === 'dance' || pose === 'shuffle') ctx.rotate(Math.sin(t * 0.2) * 0.2);
+  ellipse(0, h * 0.03, w * 0.52 * sq, h * 0.48 / sq, dark);
+  ellipse(0, 0, w * 0.48 * sq, h * 0.44 / sq, body);
+  ellipse(-w * 0.18, -h * 0.2, w * 0.1, h * 0.07, 'rgba(255,255,255,.6)', -0.5);
+  const ey = -h * 0.1, er = w * (baby ? 0.12 : 0.09);
+  for (const d of [-1, 1]) { circle(d * w * 0.16, ey, er, '#fff'); circle(d * w * 0.16 + face * er * 0.35, ey + er * 0.1, er * 0.5, '#111'); circle(d * w * 0.16 + face * er * 0.35 - er * 0.18, ey - er * 0.15, er * 0.18, '#fff'); }
+  if (baby) for (const d of [-1, 1]) ellipse(d * w * 0.3, h * 0.06, w * 0.07, h * 0.04, 'rgba(255,128,171,.6)');
+  if (o.talk && Math.sin(frame * 0.5) > -0.3) ellipse(0, h * 0.13, w * 0.09, h * 0.07, '#3b0a5e');
+  else { ctx.strokeStyle = '#2a0f42'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(0, h * 0.08, w * 0.12, 0.2, Math.PI - 0.2); ctx.stroke(); }
+  if (!baby) {                                           // 👑 the gold crown
+    ctx.fillStyle = '#ffd740'; const ty = -h * 0.36 / sq;
+    ctx.beginPath(); ctx.moveTo(-w * 0.2, ty + 10); ctx.lineTo(-w * 0.22, ty - 14); ctx.lineTo(-w * 0.1, ty - 2); ctx.lineTo(0, ty - 20); ctx.lineTo(w * 0.1, ty - 2); ctx.lineTo(w * 0.22, ty - 14); ctx.lineTo(w * 0.2, ty + 10); ctx.closePath(); ctx.fill();
+    circle(0, ty + 2, 4, '#e53935'); circle(-w * 0.13, ty + 4, 3, '#40c4ff'); circle(w * 0.13, ty + 4, 3, '#40c4ff');
+  } else { circle(0, -h * 0.46 / sq, 6, body); circle(0, -h * 0.52 / sq, 4, '#ff80ab'); }      // Baby Gloop's little goo curl with a pink dot
+  ctx.restore();
+}
+// ---------- 🌟 CHAOS NOVA (a rainbow star with ONE big eye; a good guy now, and the best light-show maker) ----------
+const rb = k => `hsl(${(k * 47) % 360},95%,62%)`;
+function drawNova(x, y, o = {}) {
+  const R = 34 * (o.s || 1), t = (o.t || frame) / 60, by = y - 120 + Math.sin(t * 2.4) * 10;
+  ellipse(x, y, R * 0.8, 6, 'rgba(0,0,0,.18)');
+  ctx.save(); ctx.translate(x, by);
+  for (let i = 3; i >= 1; i--) { ctx.globalAlpha = 0.14; circle(0, 0, R * (1.15 + i * 0.32) + Math.sin(t * 5 + i) * 6, rb(t * 6 + i)); }
+  ctx.globalAlpha = 1;
+  const flap = Math.sin(t * 6) * 0.16;
+  for (const sd of [-1, 1]) for (let wg = 0; wg < 3; wg++) {
+    const a = -0.5 + wg * 0.45 + flap * (wg + 1);
+    ctx.globalAlpha = 0.75; ctx.fillStyle = ['#7df9ff', '#ff80ab', '#b388ff'][wg]; ctx.beginPath();
+    ctx.moveTo(sd * R * 0.5, 0); ctx.lineTo(sd * Math.cos(a) * R * (2 - wg * 0.25), Math.sin(a) * R * 1.4 - R * 0.3); ctx.lineTo(sd * Math.cos(a + 0.25) * R * 1.4, Math.sin(a + 0.25) * R * 1.1); ctx.closePath(); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  const rot = t * 0.6;
+  for (let i = 0; i < 5; i++) star(0, 0, R * (1 - i * 0.16), rb(i + t * 4), rot + i * 0.06, 5, 0.55);
+  const k = o.talk ? 0.8 + Math.sin(frame * 0.5) * 0.2 : (frame % 220 < 8 ? 0.15 : 1);
+  ellipse(0, 0, R * 0.32, R * 0.26 * k, '#fff'); circle(0, 0, R * 0.16 * Math.max(0.2, k), '#311b92'); circle(-R * 0.05, -R * 0.06, R * 0.05, '#fff');
+  ctx.restore();
+}
+// glass-shard confetti (used when a mirror goes CRACK into sparkles)
+function pickleSlice(x, y, r, rot) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(rot);
+  ctx.fillStyle = 'rgba(200,240,255,.85)'; ctx.beginPath(); ctx.moveTo(0, -r); ctx.lineTo(r * 0.6, r * 0.4); ctx.lineTo(-r * 0.5, r * 0.7); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,.9)'; ctx.fillRect(-1, -r * 0.6, 2, r * 0.6); ctx.restore();
+}
+
+// =====================================================================
+// 🌄 BACKGROUNDS (sx = how far the camera has scrolled, for parallax walking scenes)
+// =====================================================================
+const FLAGS = {};                                      // scene switches set by the script (gate open, door open, ...)
+function skyGrad(top, mid, bot) { const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, top); g.addColorStop(0.6, mid); g.addColorStop(1, bot); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); }
+const wrapX = (x, span) => ((x % span) + span) % span;
+function moon(x, y, r) { glow(x, y, r * 3.2, 'rgba(255,250,215,.45)'); circle(x, y, r, '#fff8dc'); circle(x - r * 0.3, y - r * 0.2, r * 0.18, '#efe6c2'); circle(x + r * 0.25, y + r * 0.3, r * 0.12, '#efe6c2'); }
+function hills(y, amp, col, sx, k, seed) {
+  ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(0, H);
+  for (let x = 0; x <= W; x += 16) ctx.lineTo(x, y - amp * (0.5 + 0.5 * Math.sin((x + sx * k) * 0.006 + seed)) - amp * 0.4 * Math.sin((x + sx * k) * 0.017 + seed * 2));
+  ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
+}
+function pine(x, base, h, col) { ctx.fillStyle = col; for (let i = 0; i < 3; i++) { const w = h * (0.36 - i * 0.07), y = base - h * (0.28 + i * 0.26); ctx.beginPath(); ctx.moveTo(x, y - h * 0.32); ctx.lineTo(x - w, y + h * 0.12); ctx.lineTo(x + w, y + h * 0.12); ctx.closePath(); ctx.fill(); } ctx.fillRect(x - h * 0.04, base - h * 0.2, h * 0.08, h * 0.2); }
+function roundTree(x, base, h, trunk, leaf) { ctx.fillStyle = trunk; ctx.fillRect(x - h * 0.06, base - h * 0.55, h * 0.12, h * 0.55); for (const [dx, dy, r] of [[0, -0.72, 0.3], [-0.2, -0.58, 0.22], [0.2, -0.58, 0.22], [0, -0.5, 0.2]]) circle(x + dx * h, base + dy * h, r * h, leaf); }
+function cloudPuff(x, y, s, col = 'rgba(255,255,255,.92)') { for (const [dx, dy, r] of [[0, 0, 24], [26, -10, 30], [56, 0, 24], [28, 8, 24]]) circle(x + dx * s, y + dy * s, r * s, col); }
+function fireflies(t, n, col = '#fff59d', seed = 3) {
+  const r = rng(seed);
+  for (let i = 0; i < n; i++) { const bx = r() * W, by = 120 + r() * 300, p = r() * 6; const x = bx + Math.sin(t * 0.013 + p) * 30, y = by + Math.cos(t * 0.017 + p) * 20; glow(x, y, 12, 'rgba(255,240,140,.7)', 0.5 + 0.5 * Math.sin(t * 0.08 + p)); circle(x, y, 2.2, col); }
+}
+function grassTufts(y, col, sx, k = 1) { ctx.strokeStyle = col; ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.beginPath(); for (let i = 0; i < 40; i++) { const x = wrapX(i * 53 - sx * k, W + 60) - 30; ctx.moveTo(x, y); ctx.lineTo(x - 4, y - 12); ctx.moveTo(x + 4, y); ctx.lineTo(x + 6, y - 14); } ctx.stroke(); }
+
+function sunrise(x, y, r, t) { glow(x, y, r * 4, 'rgba(255,200,150,.55)'); circle(x, y, r, '#fff1c9'); for (let i = 0; i < 12; i++) { const a = i / 12 * Math.PI * 2 + t * 0.003; ctx.save(); ctx.globalAlpha = 0.18; ctx.strokeStyle = '#fff3d6'; ctx.lineWidth = 8; ctx.beginPath(); ctx.moveTo(x + Math.cos(a) * r * 1.4, y + Math.sin(a) * r * 1.4); ctx.lineTo(x + Math.cos(a) * r * 2.6, y + Math.sin(a) * r * 2.6); ctx.stroke(); ctx.restore(); } }
+function gear(x, y, r, col, rot) { ctx.fillStyle = col; ctx.beginPath(); for (let i = 0; i < 16; i++) { const a = rot + i * Math.PI / 8, rr = i % 2 ? r : r * 1.22; ctx.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); } ctx.closePath(); ctx.fill(); circle(x, y, r * 0.4, 'rgba(0,0,0,.25)'); }
+function sparkleDust(t, n, seed, cols = ['#ffd0e4', '#b9fff0', '#fff8d0']) { const r = rng(seed); for (let i = 0; i < n; i++) { const x = r() * W, y = r() * H * 0.85, p = r() * 6; twinkle(wrapX(x + Math.sin(t * 0.01 + p) * 20, W), y + Math.sin(t * 0.02 + p) * 8, 3 + r() * 4, 0.3 + 0.5 * (0.5 + 0.5 * Math.sin(t * 0.08 + p)), cols[i % cols.length]); } }
+function signText(str, x, y, size, col) { ctx.font = `bold ${size}px Arial Rounded MT Bold, Arial, sans-serif`; ctx.textAlign = 'center'; ctx.fillStyle = col; ctx.fillText(str, x, y); }
+const BG = {
+  town(t, sx) {                                        // 🏭 Robo Town at sunrise (the factory where the team lives)
+    skyGrad('#ff9ec4', '#ffc8a8', '#ffe8c0'); sunrise(760, 190, 48, t);
+    for (let i = 0; i < 5; i++) cloudPuff(wrapX(i * 240 - sx * 0.1 - t * 0.1, W + 240) - 140, 70 + (i % 2) * 50, 0.9, 'rgba(255,255,255,.75)');
+    hills(340, 40, '#c48fd6', sx, 0.15, 2);
+    for (let i = 0; i < 7; i++) {                       // factory buildings with gears + puffy chimneys
+      const x = wrapX(i * 170 - sx * 0.4, W + 170) - 85, hh = 120 + (i % 3) * 40, col = ['#7e8cc9', '#8f7ec9', '#6fa4c4'][i % 3];
+      ctx.fillStyle = col; ctx.fillRect(x, 400 - hh, 120, hh); ctx.fillStyle = 'rgba(0,0,0,.15)'; ctx.fillRect(x + 84, 400 - hh - 40, 18, 40);
+      for (let k = 0; k < 3; k++) circle(x + 93 + Math.sin(t * 0.02 + k) * 6, 400 - hh - 52 - k * 22 - (t * 0.3 % 22), 10 + k * 3, 'rgba(255,255,255,.6)');
+      for (let r = 0; r < 2; r++) for (let c = 0; c < 2; c++) roundRect(x + 14 + c * 50, 400 - hh + 20 + r * 44, 34, 28, 5, '#ffe9a8');
+      gear(x + 60, 400 - hh + 4, 14, '#ffd54f', t * 0.02 * (i % 2 ? 1 : -1));
+    }
+    const g = ctx.createLinearGradient(0, 400, 0, H); g.addColorStop(0, '#b9a5d6'); g.addColorStop(1, '#8f7bb0'); ctx.fillStyle = g; ctx.fillRect(0, 400, W, 120);
+    ctx.fillStyle = 'rgba(255,255,255,.5)'; for (let i = 0; i < 14; i++) ctx.fillRect(wrapX(i * 90 - sx, W + 90) - 45, 470, 50, 6);
+    if (FLAGS.crate !== undefined) { const cx = 690; roundRect(cx - 40, 360, 80, 80, 6, '#c98e5a'); ctx.strokeStyle = '#8d5a2b'; ctx.lineWidth = 4; ctx.strokeRect(cx - 36, 364, 72, 72); ctx.beginPath(); ctx.moveTo(cx - 36, 364); ctx.lineTo(cx + 36, 436); ctx.stroke(); }
+  },
+  studio(t) {                                          // 🎨 the paint studio
+    const g = ctx.createLinearGradient(0, 0, 0, 400); g.addColorStop(0, '#fff3e0'); g.addColorStop(1, '#ffe0c2'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, 400);
+    for (let i = 0; i < 18; i++) circle((i * 167) % W, 40 + (i * 89) % 300, 10 + (i % 4) * 6, ['#ffcdd2', '#c8e6c9', '#bbdefb', '#fff9c4', '#e1bee7'][i % 5]);   // old paint dots on the walls
+    roundRect(40, 50, 170, 130, 10, '#8d6e63'); const sk = ctx.createLinearGradient(0, 60, 0, 170); sk.addColorStop(0, '#ff9ec4'); sk.addColorStop(1, '#ffe0b2'); ctx.fillStyle = sk; ctx.fillRect(50, 60, 150, 110); circle(150, 140, 18, '#fff3c4');
+    for (let r = 0; r < 2; r++) { ctx.fillStyle = '#a1887f'; ctx.fillRect(260, 120 + r * 70, 300, 10); for (let i = 0; i < 7; i++) { const c = ['#e53935', '#fb8c00', '#fdd835', '#43a047', '#1e88e5', '#8e24aa', '#ff80ab'][(i + r * 3) % 7]; roundRect(272 + i * 41, 88 + r * 70, 30, 32, 5, '#eceff1'); roundRect(272 + i * 41, 88 + r * 70, 30, 12, 4, c); } }
+    // the big easel
+    ctx.strokeStyle = '#6d4c41'; ctx.lineWidth = 10; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(700, 140); ctx.lineTo(640, 440); ctx.moveTo(760, 140); ctx.lineTo(820, 440); ctx.moveTo(730, 160); ctx.lineTo(730, 440); ctx.stroke();
+    roundRect(610, 110, 240, 190, 8, '#ffffff'); ctx.strokeStyle = '#8d6e63'; ctx.lineWidth = 6; rrect(610, 110, 240, 190, 8); ctx.stroke();
+    if (FLAGS.mud) { ctx.save(); ctx.globalAlpha = FLAGS.mud; for (let i = 0; i < 14; i++) circle(640 + (i * 53) % 180, 140 + (i * 37) % 130, 26, ['#7a6248', '#6b5a4a', '#8a7058'][i % 3]); ctx.restore(); }
+    if (FLAGS.canvas) {                                // Glint's OWN painting: a sunrise in pink + aqua, with a sparkly star
+      ctx.save(); ctx.globalAlpha = FLAGS.canvas; ctx.beginPath(); ctx.rect(616, 116, 228, 178); ctx.clip();
+      const cg = ctx.createLinearGradient(0, 116, 0, 294); cg.addColorStop(0, '#ff80ab'); cg.addColorStop(0.55, '#ffccbc'); cg.addColorStop(1, '#64ffda'); ctx.fillStyle = cg; ctx.fillRect(616, 116, 228, 178);
+      circle(730, 250, 46, '#fff3c4'); ctx.fillStyle = '#26c6da'; ctx.fillRect(616, 250, 228, 50); for (let i = 0; i < 6; i++) ctx.fillRect(630 + i * 36, 262 + (i % 2) * 10, 22, 3);
+      star(670, 160, 16, '#fff', t * 0.02, 4, 0.3); star(800, 150, 10, '#fff', -t * 0.02, 4, 0.3); ctx.restore();
+    }
+    ctx.fillStyle = '#d7b98e'; ctx.fillRect(0, 400, W, 120); ctx.fillStyle = '#c9a97a'; for (let i = 0; i < 8; i++) ctx.fillRect(0, 410 + i * 14, W, 2);
+    for (const [x, y, c] of [[120, 470, '#e53935'], [260, 492, '#1e88e5'], [420, 462, '#fdd835'], [560, 500, '#43a047'], [860, 480, '#8e24aa']]) { ellipse(x, y, 30, 9, c); circle(x + 26, y - 4, 5, c); }
+    const sp = FLAGS.splat || 0; if (sp) { ctx.save(); ctx.globalAlpha = sp; for (const [x, y, c] of [[300, 300, '#ff80ab'], [380, 250, '#64ffda'], [180, 330, '#ffd54f'], [470, 330, '#64ffda'], [230, 240, '#ff80ab']]) { circle(x, y, 18, c); for (let k = 0; k < 6; k++) circle(x + Math.cos(k) * 26, y + Math.sin(k * 1.7) * 22, 6, c); } ctx.restore(); }
+  },
+  music(t) {                                           // 🎵 the music room
+    skyGrad('#3a1a5a', '#5a2a7a', '#7a3a8a');
+    for (let i = 0; i < 4; i++) { ctx.save(); ctx.globalAlpha = 0.12 + 0.05 * Math.sin(t * 0.03 + i); ctx.fillStyle = ['#ff80ab', '#64ffda', '#ffd54f', '#b388ff'][i]; ctx.beginPath(); ctx.moveTo(150 + i * 220, 0); ctx.lineTo(190 + i * 220, 0); ctx.lineTo(260 + i * 220, 440); ctx.lineTo(80 + i * 220, 440); ctx.fill(); ctx.restore(); }
+    for (let i = 0; i < 10; i++) { const x = 40 + i * 95, y = 60 + (i % 3) * 30 + Math.sin(t * 0.04 + i) * 6; text(i % 2 ? '♪' : '♫', x, y, 30, 'rgba(255,255,255,.35)', 'center', false); }
+    roundRect(0, 330, W, 110, 0, '#4a2060'); ctx.fillStyle = '#6a3080'; ctx.fillRect(0, 330, W, 10);
+    // a drum, a big tuba and an electric guitar on stands
+    ellipse(120, 360, 50, 14, '#e53935'); ctx.fillStyle = '#c62828'; ctx.fillRect(70, 360, 100, 50); ellipse(120, 410, 50, 14, '#b71c1c'); ellipse(120, 360, 46, 11, '#fff8e1');
+    ctx.strokeStyle = '#ffd54f'; ctx.lineWidth = 14; ctx.beginPath(); ctx.arc(840, 330, 40, 0.5, Math.PI * 1.9); ctx.stroke(); circle(870, 280, 34, '#ffd54f'); circle(870, 280, 24, '#3a1a5a');
+    ctx.save(); ctx.translate(250, 300); ctx.rotate(-0.4); ctx.fillStyle = '#8d6e63'; ctx.fillRect(-4, -110, 8, 100); ellipse(0, 10, 26, 34, '#7b1fa2'); ellipse(0, -18, 20, 24, '#7b1fa2'); circle(0, 4, 7, '#1a1a1a'); ctx.restore();
+    ctx.fillStyle = '#2a1040'; ctx.fillRect(0, 440, W, 80); ctx.fillStyle = '#3a1850'; for (let i = 0; i < 16; i++) ctx.fillRect(i * 64, 440, 2, 80);
+    if (FLAGS.notes) { ctx.save(); ctx.globalAlpha = FLAGS.notes; for (let i = 0; i < 14; i++) { const x = 300 + Math.sin(t * 0.02 + i) * 260, y = 380 - ((t * 0.8 + i * 40) % 340); twinkle(x, y, 8, 0.9, i % 2 ? '#ffd0e4' : '#b9fff0'); text('♪', x + 14, y + 6, 22, i % 2 ? '#ff80ab' : '#64ffda', 'center', false); } ctx.restore(); }
+  },
+  disco(t) {                                           // 🕺 the dance-off floor
+    ctx.fillStyle = '#140a2a'; ctx.fillRect(0, 0, W, H);
+    const cols = ['#ff80ab', '#64ffda', '#ffd54f', '#b388ff', '#40c4ff'];
+    for (let i = 0; i < 6; i++) { ctx.save(); ctx.globalAlpha = 0.16; ctx.fillStyle = cols[i % 5]; const a = Math.sin(t * 0.02 + i) * 0.6; ctx.translate(W / 2, 60); ctx.rotate(a + (i - 2.5) * 0.3); ctx.beginPath(); ctx.moveTo(-10, 0); ctx.lineTo(10, 0); ctx.lineTo(90, 520); ctx.lineTo(-90, 520); ctx.fill(); ctx.restore(); }
+    circle(W / 2, 60, 40, '#cfd8dc'); for (let i = 0; i < 24; i++) { const a = i / 24 * Math.PI * 2 + t * 0.02; ctx.fillStyle = (i + (t >> 4)) % 3 ? '#eceff1' : '#ffffff'; ctx.fillRect(W / 2 + Math.cos(a) * 26 - 5, 60 + Math.sin(a) * 26 - 5, 10, 10); }
+    ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(W / 2, 0); ctx.lineTo(W / 2, 20); ctx.stroke();
+    sparkleDust(t, 26, 5, cols);
+    for (let r = 0; r < 4; r++) for (let c = 0; c < 12; c++) { const lit = ((c + r + (t >> 4)) % 4 === 0); ctx.fillStyle = lit ? cols[(c + r) % 5] : (c + r) % 2 ? '#2a1a4a' : '#3a2a5a'; ctx.fillRect(c * 80, 400 + r * 30, 79, 29); }
+  },
+  hall(t) {                                            // 🚪 the hallway in Robo HQ, with everybody's doors
+    const g = ctx.createLinearGradient(0, 0, 0, 440); g.addColorStop(0, '#d7e3ff'); g.addColorStop(1, '#b8c6f0'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, 440);
+    ctx.fillStyle = '#a9b8e6'; for (let i = 0; i < 12; i++) ctx.fillRect(i * 84, 0, 3, 440);
+    const doors = [[110, '#3d5afe', 'ROBO', '#fff'], [300, '#4a148c', 'NEGA-ROBO', '#e040fb'], [660, '#7c3aed', 'GLOOPS', '#ffd740']];
+    for (const [x, col, name, tc] of doors) { roundRect(x - 60, 180, 120, 260, 14, col); roundRect(x - 50, 190, 100, 240, 10, 'rgba(255,255,255,.12)'); circle(x + 38, 320, 7, '#ffd54f'); roundRect(x - 56, 140, 112, 34, 8, '#fff'); signText(name, x, 165, name.length > 6 ? 17 : 22, col); }
+    // Glint's door (the new one!) on the right
+    const gx = 820; roundRect(gx - 64, 176, 128, 264, 16, '#e0f7fa'); const dg = ctx.createLinearGradient(gx - 56, 184, gx + 56, 436); dg.addColorStop(0, '#ffd0e4'); dg.addColorStop(1, '#b9fff0'); ctx.fillStyle = dg; rrect(gx - 56, 184, 112, 252, 12); ctx.fill();
+    ctx.save(); ctx.globalAlpha = 0.5; ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(gx - 40 + ((t * 0.6) % 120), 184); ctx.lineTo(gx - 24 + ((t * 0.6) % 120), 184); ctx.lineTo(gx - 64 + ((t * 0.6) % 120), 436); ctx.lineTo(gx - 80 + ((t * 0.6) % 120), 436); ctx.fill(); ctx.restore();
+    circle(gx + 40, 320, 7, '#ff80ab');
+    if (FLAGS.oldsign) { ctx.save(); ctx.globalAlpha = FLAGS.oldsign; roundRect(gx - 60, 132, 120, 38, 8, '#fff'); signText('ROBO 2', gx, 160, 24, '#3d5afe'); ctx.strokeStyle = '#e53935'; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(gx - 50, 140); ctx.lineTo(gx + 50, 164); ctx.stroke(); ctx.restore(); }
+    const sg = FLAGS.sign || 0;                        // ✨ GLINT's own sign, one glass-bead letter at a time
+    if (sg > 0.02) {
+      ctx.save(); ctx.globalAlpha = clamp(sg * 3, 0, 1); glow(gx, 110, 120, 'rgba(255,200,230,.7)'); roundRect(gx - 78, 76, 156, 64, 18, '#2a1a4a'); ctx.strokeStyle = '#ff9e80'; ctx.lineWidth = 4; rrect(gx - 78, 76, 156, 64, 18); ctx.stroke(); ctx.restore();
+      const word = 'GLINT', n = Math.floor(sg * 5.99);
+      ctx.font = 'bold 34px Arial Rounded MT Bold, Arial, sans-serif'; let lx = gx - ctx.measureText(word).width / 2;
+      for (let i = 0; i < n; i++) { const lw = ctx.measureText(word[i]).width; signText(word[i], lx + lw / 2, 122, 34, i % 2 ? '#64ffda' : '#ff9ec4'); lx += lw; }
+      if (sg > 0.98) { for (let k = 0; k < 5; k++) twinkle(gx - 70 + k * 35, 80 + (k % 2) * 56, 6 + 3 * Math.sin(t * 0.15 + k), 0.9, k % 2 ? '#b9fff0' : '#ffd0e4'); star(gx + 70, 82, 12, '#ffd54f', t * 0.03); }
+    }
+    ctx.fillStyle = '#8a7bb8'; ctx.fillRect(0, 440, W, 80); ctx.fillStyle = '#ff9ec4'; ctx.fillRect(0, 456, W, 26); ctx.fillStyle = '#ffd0e4'; for (let i = 0; i < 20; i++) ctx.fillRect(i * 50, 466, 26, 4);
+  },
+  meadow(t, sx) {                                      // 🌼 the sunny meadow (the Favorite Thing Quest)
+    skyGrad('#7ec8ff', '#c6ecff', '#fff4e0'); sunrise(150, 100, 36, t);
+    for (let i = 0; i < 4; i++) cloudPuff(wrapX(i * 260 - sx * 0.2 - t * 0.15, W + 260) - 130, 60 + (i % 2) * 40, 0.8);
+    hills(350, 50, '#a5d6a7', sx, 0.25, 1); hills(395, 40, '#81c784', sx, 0.5, 3);
+    for (let i = 0; i < 6; i++) roundTree(wrapX(i * 200 + 60 - sx * 0.6, W + 200) - 100, 410, 130, '#795548', i % 2 ? '#66bb6a' : '#4caf50');
+    ctx.fillStyle = '#9ccc65'; ctx.fillRect(0, 425, W, 95);
+    for (let i = 0; i < 30; i++) { const x = wrapX(i * 47 - sx, W + 50) - 25, y = 450 + (i * 17) % 60; circle(x, y, 6, ['#ff80ab', '#ffd740', '#ffffff', '#ea80fc'][i % 4]); circle(x, y, 2.5, '#fff59d'); }
+    if (FLAGS.bubbles) { ctx.save(); ctx.globalAlpha = FLAGS.bubbles; for (let i = 0; i < 12; i++) { const x = 200 + Math.sin(t * 0.02 + i * 2) * 160 + i * 30, y = 420 - ((t * 0.9 + i * 47) % 380); ctx.strokeStyle = `hsla(${(i * 50 + t) % 360},80%,70%,.8)`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, 14 + (i % 3) * 5, 0, 7); ctx.stroke(); circle(x - 5, y - 6, 3, 'rgba(255,255,255,.8)'); } ctx.restore(); }
+    grassTufts(428, '#7cb342', sx);
+  },
+  rainbow(t) {                                         // 🌈 the hilltop where Glint finds its favorite thing
+    BG.meadow(t, 0);
+    const r = FLAGS.rainbow || 0;
+    if (r > 0.01) {                                    // sunlight goes INTO Glint... and comes out as RAINBOWS
+      const gx = actors.glint ? actors.glint.x : W / 2, gy = actors.glint ? actors.glint.y - 70 : 340;
+      ctx.save(); ctx.globalAlpha = r * 0.55; ctx.strokeStyle = '#fff8d0'; ctx.lineWidth = 16; ctx.beginPath(); ctx.moveTo(150, 100); ctx.lineTo(gx, gy); ctx.stroke(); ctx.restore();
+      const rc = ['#ff5252', '#ffb74d', '#fff176', '#81c784', '#64b5f6', '#ba68c8'];
+      ctx.save(); ctx.globalAlpha = r * 0.6;
+      for (let i = 0; i < 6; i++) { ctx.fillStyle = rc[i]; ctx.beginPath(); ctx.moveTo(gx, gy); const a0 = -0.5 + i * 0.12 + Math.sin(t * 0.02) * 0.05; ctx.lineTo(gx + Math.cos(a0) * 900, gy + Math.sin(a0) * 900); ctx.lineTo(gx + Math.cos(a0 + 0.12) * 900, gy + Math.sin(a0 + 0.12) * 900); ctx.closePath(); ctx.fill(); }
+      for (let i = 0; i < 6; i++) { ctx.fillStyle = rc[i]; ctx.beginPath(); ctx.moveTo(gx, gy); const a0 = Math.PI + 0.5 - i * 0.12 - 0.12 - Math.sin(t * 0.02) * 0.05; ctx.lineTo(gx + Math.cos(a0) * 900, gy + Math.sin(a0) * 900); ctx.lineTo(gx + Math.cos(a0 + 0.12) * 900, gy + Math.sin(a0 + 0.12) * 900); ctx.closePath(); ctx.fill(); }
+      ctx.restore(); glow(gx, gy, 90, 'rgba(255,255,255,.9)', r);
+    }
+  },
+  maze(t) {                                            // 🪞 the Mirror Maze: shiny glass walls everywhere
+    skyGrad('#0f2a44', '#24557a', '#3a6f96');
+    const vx = W / 2, vy = 250;
+    for (let i = 0; i < 6; i++) {                       // mirror panels going back into the distance
+      const k = 1 - i * 0.15, w = 420 * k, h = 300 * k;
+      for (const d of [-1, 1]) { const x = vx + d * w, top = vy - h * 0.7; ctx.fillStyle = i % 2 ? '#bfe3f5' : '#a7d3ec'; ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x - d * 60 * k, top + 20 * k); ctx.lineTo(x - d * 60 * k, vy + h * 0.55 - 20 * k); ctx.lineTo(x, vy + h * 0.55); ctx.closePath(); ctx.fill();
+        ctx.strokeStyle = '#e1f5fe'; ctx.lineWidth = 2; ctx.stroke(); ctx.save(); ctx.globalAlpha = 0.35; ctx.fillStyle = '#fff'; const sh = ((t * 0.5 + i * 30) % 100) / 100; ctx.fillRect(x - d * 60 * k * sh - 3, top + 10, 6, h * 0.9); ctx.restore(); }
+    }
+    for (let i = 0; i < 3; i++) { const x = 140 + i * 340; ctx.fillStyle = '#d8f0fb'; ctx.fillRect(x - 70, 120, 140, 320); ctx.strokeStyle = '#80d8ff'; ctx.lineWidth = 6; ctx.strokeRect(x - 70, 120, 140, 320); ctx.save(); ctx.globalAlpha = 0.5; ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(x - 60 + ((t + i * 40) % 140), 120); ctx.lineTo(x - 40 + ((t + i * 40) % 140), 120); ctx.lineTo(x - 80 + ((t + i * 40) % 140), 440); ctx.lineTo(x - 100 + ((t + i * 40) % 140), 440); ctx.fill(); ctx.restore(); }
+    if (FLAGS.fork) { ctx.save(); ctx.globalAlpha = FLAGS.fork; for (const d of [-1, 1]) { const x = W / 2 + d * 180; ctx.fillStyle = 'rgba(10,30,50,.7)'; rrect(x - 60, 160, 120, 280, 50); ctx.fill(); } ctx.restore(); }
+    sparkleDust(t, 22, 9, ['#e1f5fe', '#b3ecff', '#ffffff']);
+    ctx.fillStyle = '#5a7f99'; ctx.fillRect(0, 440, W, 80); for (let i = 0; i < 12; i++) { ctx.fillStyle = i % 2 ? '#6d93ad' : '#4f7189'; ctx.fillRect(i * 80, 440, 80, 80); }
+    const p = FLAGS.path || 0;                         // ✨ Glint's own sunrise-colored path
+    if (p > 0.01) { ctx.save(); ctx.globalAlpha = p; for (let i = 0; i < 9; i++) { const x = 140 + i * 95, y = 470 + Math.sin(i) * 10; glow(x, y, 40, i % 2 ? 'rgba(100,255,218,.7)' : 'rgba(255,158,196,.7)'); star(x, y, 10, i % 2 ? '#64ffda' : '#ff9ec4', t * 0.03); } ctx.restore(); }
+    if (FLAGS.exit) { ctx.save(); ctx.globalAlpha = FLAGS.exit; glow(880, 300, 160, 'rgba(255,230,180,.9)'); roundRect(820, 180, 120, 260, 50, '#fff6dd'); ctx.restore(); }
+  },
+  stage(t) {                                           // 🎤 Glint's BIG concert (at night, under the stars)
+    skyGrad('#0d0826', '#2a1050', '#4a1a6a'); starField(t, 1);
+    const L = FLAGS.lights || 0, cols = ['#ff80ab', '#64ffda', '#ffd54f', '#b388ff'];
+    for (let i = 0; i < 4; i++) { ctx.save(); ctx.globalAlpha = 0.1 + L * 0.18; ctx.fillStyle = cols[i]; ctx.translate(120 + i * 240, 0); ctx.rotate(Math.sin(t * 0.025 + i * 1.3) * 0.35 * (0.3 + L)); ctx.beginPath(); ctx.moveTo(-12, 0); ctx.lineTo(12, 0); ctx.lineTo(110, 440); ctx.lineTo(-110, 440); ctx.fill(); ctx.restore(); }
+    for (const d of [-1, 1]) { ctx.fillStyle = '#b0216b'; ctx.beginPath(); ctx.moveTo(W / 2 + d * W / 2, 0); ctx.lineTo(W / 2 + d * 340, 0); ctx.quadraticCurveTo(W / 2 + d * 400, 200, W / 2 + d * 440, 400); ctx.lineTo(W / 2 + d * W / 2, 400); ctx.fill(); ctx.fillStyle = '#d81b60'; for (let k = 0; k < 3; k++) ctx.fillRect(W / 2 + d * (380 + k * 30), 0, 6, 400); }
+    ctx.fillStyle = '#ffd54f'; ctx.fillRect(0, 0, W, 16); for (let i = 0; i < 24; i++) circle(i * 42 + 20, 22, 6, (i + (t >> 3)) % 3 ? '#fff59d' : '#ff80ab');
+    if (L > 0.3) { signText('🔔 GLINT 🔔', W / 2, 90, 46, `hsl(${(t * 2) % 360},90%,75%)`); }
+    const sg = ctx.createLinearGradient(0, 380, 0, 450); sg.addColorStop(0, '#6d4c8a'); sg.addColorStop(1, '#4a2f66'); ctx.fillStyle = sg; ctx.fillRect(60, 380, 840, 70);
+    ctx.fillStyle = '#ffd0e4'; ctx.fillRect(60, 378, 840, 6);
+    ctx.fillStyle = '#1a0f2e'; ctx.fillRect(0, 450, W, 70);         // the crowd (glow sticks waving!)
+    for (let i = 0; i < 26; i++) { const x = 20 + i * 37, bob = Math.sin(t * 0.15 + i) * 5 * (0.4 + L); circle(x, 498 + bob, 16, '#2a1a44'); ctx.save(); ctx.translate(x, 480 + bob); ctx.rotate(Math.sin(t * 0.12 + i) * 0.5); ctx.fillStyle = cols[i % 4]; ctx.fillRect(-2, -26, 4, 22); ctx.restore(); glow(x, 462 + bob, 14, cols[i % 4], 0.6); }
+    if (L > 0.5) sparkleDust(t, 30, 13);
+  },
+  home(t) {                                            // 🌙 that night, back at Robo HQ
+    BG.hall(t);
+    ctx.save(); ctx.globalAlpha = 0.35; ctx.fillStyle = '#1a1050'; ctx.fillRect(0, 0, W, H); ctx.restore();
+    sparkleDust(t, 18, 21);
+  },
+  credits(t) { skyGrad('#1a0f2e', '#3a1a5a', '#ff9ec4'); starField(t, 1); sparkleDust(t, 24, 3); },
+};
+
+// =====================================================================
+// 🎬 THE STORY. Each line: [who, words, actions]. Actions (space separated):
+//   id>x walk · id>>x run · id^ hop · id^^ BIG jump · id~ happy wiggle · id@pose (idle/walk/sad/wobble/cool/flop/dance/shuffle/spin/sit)
+//   id:L / id:R face · id+ appear · id- disappear · id=happy/dizzy/badge/paint · id%robo/gloop/nega (Glint copies their colors) · id% (back to Glint colors)
+//   fx:sparkle/hearts/confetti/stars/shards · sfx:name · set:flag=value · pop:WORDS · song:name · shake · wait:seconds
+// =====================================================================
+const CHAPTERS = [
+ { title: 'Glint the Copycat', icon: '🪞', scenes: [
+  { bg: 'town', song: 'glint', cast: { robo: [300], glint: [600, { face: -1 }] }, lines: [
+   ['n', "Not long ago, in Robo Town, a foggy mirror went CRACK... and out stepped a shiny robot called Mirror Robo."],
+   ['n', "Mirror Robo used to copy EVERYTHING. But then it picked its very own name, Glint, and its shine turned sunrise pink and sparkly aqua!", 'glint~ fx:sparkle sfx:shimmer'],
+   ['glint', "Good morning, Robo! Good morning, Robo Town! Good morning, ME!", 'glint^ sfx:glassbell'],
+   ['robo', "Good morning, Glint! You're up early!", 'robo^ sfx:beep'],
+   ['glint', "Today is my very first day of being... me! But there's one teeny, tiny problem."],
+   ['glint', "I don't know what being me IS. I only know how to copy!", 'glint@sad sfx:sad'],
+   ['robo', "Hmm. Well, watch my super jump. Maybe that will help!", 'glint@idle robo^^ sfx:boing'],
+   ['glint', "Ooh! I'll copy you!", 'glint%robo sfx:shimmer set:crate=1'],
+   ['n', "Uh oh. When Glint copies somebody, its shine turns into their colors. Now Glint looked just like Robo!"],
+   ['n', "Glint jumped... a little bit late, and a little bit backwards. Just like a reflection.", 'glint>>700 glint^^ sfx:whoosh'],
+   ['n', "BONK! Right into a big box of bolts.", 'sfx:bonk shake glint=dizzy pop:BONK!'],
+   ['glint', "Ow-wee. Did I do it right?"],
+   ['robo', "Ha ha! Almost! You did it backwards!", 'robo~ sfx:giggle'],
+   ['glint', "Backwards is how mirrors do everything!", 'glint=happy glint>560'],
+  ] },
+  { bg: 'town', song: 'copycat', walk: 0, cast: { robo: [130], glint: [400], gloop: [640, { pose: 'wobble', face: -1 }], baby: [790, { face: -1 }], nega: [-120] }, lines: [
+   ['n', "Just then, King Gloop came bouncing down the street, with Baby Gloop right behind."],
+   ['gloop', "Good morning, my friends! Wobble, wobble, wobble!", 'sfx:wobble'],
+   ['baby', "Wobble wobble! Hi, Glint!", 'baby^ sfx:giggle'],
+   ['glint', "King Gloop, your wobble is AMAZING! I'll copy you!", 'glint%gloop sfx:shimmer gloop@idle'],
+   ['n', "Glint turned goopy purple. It even grew a little gold crown!"],
+   ['n', "Then Glint wobbled. And wobbled. And WOBBLED...", 'glint@wobble sfx:wobble'],
+   ['glint', "Whoa-oa-oa! Robots aren't made of goo! I can't stop!"],
+   ['n', "...until it wobbled right over. Clank!", 'glint@flop sfx:thud shake'],
+   ['baby', "Again! Again!", 'baby~ sfx:giggle'],
+   ['nega', "Hey. What's up.", 'glint@idle nega>290 nega@cool sfx:guitar'],
+   ['glint', "Nega-Robo! You have the coolest pose in Robo Town! I'll copy THAT!", 'glint%nega sfx:shimmer'],
+   ['n', "Glint turned dark and stormy, and leaned way back, just like Nega-Robo. Way back. WAY back...", 'glint@cool'],
+   ['n', "...TOO far back. Bonk!", 'glint@flop sfx:bonk shake pop:BONK!'],
+   ['glint', "I'm not a very good Robo. Or a good Gloop. Or a good Nega-Robo.", 'glint% glint@sad sfx:sad nega@idle'],
+   ['robo', "Glint, you don't have to be a good Robo. You get to be a good GLINT!", 'robo>200'],
+   ['gloop', "Yes! Let's help you find the things that are just YOURS!", 'gloop~'],
+   ['glint', "My very own things? Okay! Let's do it!", 'glint@idle glint^ glint~ fx:sparkle sfx:glassbell'],
+  ] },
+ ] },
+ { title: 'The Paint Studio', icon: '🎨', scenes: [
+  { bg: 'studio', song: 'paint', cast: { gloop: [110, { s: 1.4 }], robo: [260], baby: [380], glint: [520] }, lines: [
+   ['n', "First stop: the paint studio! Paint pots in every color of the rainbow."],
+   ['robo', "Glint, here's a big blank canvas, just for you. Paint anything you want!"],
+   ['glint', "I'll paint it Robo blue! And Gloop purple! And Nega-Robo black! Everybody's colors!", 'glint>600 sfx:splat'],
+   ['n', "Splish! Splash! Splosh! Glint mixed all the colors together... and made a big, brown, muddy blob.", 'sfx:splat set:mud=1 glint=paint'],
+   ['baby', "It looks like a mud pie!", 'baby^ sfx:giggle'],
+   ['glint', "It has everybody's favorite colors. So why don't I like it?", 'glint@sad glint:L'],
+   ['gloop', "Because those are OUR favorites, Glint. Close your eyes. What colors make YOU happy?"],
+   ['n', "Glint closed its eyes, and remembered the morning it first said its name.", 'glint@idle'],
+   ['glint', "The sunrise! The sky was pink... and the water was sparkly aqua! Those are MY colors!", 'glint^ sfx:glassbell'],
+   ['n', "Glint painted a brand new picture: a pink and aqua sunrise, with a sparkly star.", 'glint:R set:mud=0 set:canvas=1 fx:sparkle sfx:chime'],
+   ['robo', "Wow! It looks just like you!", 'robo~'],
+   ['glint', "And one more thing. A little star, right here on my chest. My very own mark!", 'glint=badge sfx:shimmer fx:sparkle'],
+   ['n', "Then Glint did a happy spin, and paint splashed EVERYWHERE.", 'glint@spin set:splat=1 sfx:splat'],
+   ['baby', "Now the whole studio is Glint colors!", 'glint@idle baby~'],
+   ['glint', "Oops! Hee hee. I love it!", 'glint~ sfx:giggle'],
+  ] },
+ ] },
+ { title: 'A Sound All My Own', icon: '🔔', scenes: [
+  { bg: 'music', song: '', cast: { robo: [190], nega: [330], glint: [500], gloop: [690, { s: 1.4, face: -1 }], baby: [830, { face: -1 }] }, lines: [
+   ['n', "Next stop: the music room. Everybody here has a sound of their very own."],
+   ['robo', "My sound goes BEEP BOOP! On the big red drum!", 'robo^ sfx:beep sfx:drum'],
+   ['gloop', "And MY sound goes BLORP! On my big golden tuba!", 'gloop@wobble sfx:blorp'],
+   ['nega', "Mine is the electric guitar. It goes like this.", 'nega@cool sfx:guitar'],
+   ['glint', "I'll copy ALL of them! Beep boop blorp... WHANG!", 'glint@dance sfx:beep sfx:blorp sfx:guitar sfx:drum shake'],
+   ['n', "It was the loudest, jumbliest noise anybody had ever heard."],
+   ['baby', "My ears are wobbling!", 'baby@wobble sfx:wobble'],
+   ['glint', "Sorry, everybody. When I copy sounds, it just sounds like... noise.", 'glint@sad gloop@idle nega@idle baby@idle'],
+   ['n', "Glint sat down with a sad little bump. And its glass head went... TING!", 'glint@sit sfx:ting wait:1'],
+   ['glint', "What was THAT?", 'glint@idle glint^'],
+   ['n', "Glint tapped its shiny glass head again. Ting! Ting-a-ling!", 'sfx:glassbell fx:sparkle'],
+   ['nega', "Whoa. That sound is... sparkly."],
+   ['robo', "Glint! Nobody else can make that sound. That sound is just YOURS!", 'robo^'],
+   ['glint', "My OWN sound! Listen, I can play a whole song with it!", 'song:glint set:notes=1 glint~ sfx:shimmer'],
+   ['n', "And for the very first time, Glint played its very own music. It sounded like a sunrise, made of bells.", 'glint@dance'],
+   ['baby', "That's my new favorite song!", 'baby~ gloop~'],
+  ] },
+ ] },
+ { title: 'The Dance-Off', icon: '🕺', scenes: [
+  { bg: 'disco', song: 'disco', cast: { robo: [150], gloop: [320, { s: 1.4 }], glint: [490], nega: [640, { face: -1 }], baby: [760, { face: -1 }], nova: [875, { face: -1 }] }, lines: [
+   ['n', "That night, there was a big dance-off at the Robo Town disco! The floor lit up in every color."],
+   ['nova', "Hello, dancers! I'm DJ Chaos Nova, and my one big eye is watching your moves! Let's DANCE!", 'fx:stars sfx:twinkle'],
+   ['robo', "Here's MY move: the Robo Hop!", 'robo@dance sfx:boing'],
+   ['gloop', "Behold! The Royal Wobble!", 'gloop@wobble sfx:wobble'],
+   ['nega', "The Cool Lean. Totally cool.", 'nega@cool sfx:guitar'],
+   ['glint', "I'll copy all of them! The... Robo Wobble Lean!", 'glint@wobble'],
+   ['n', "Glint hopped and wobbled and leaned all at once, and got tangled up like a pretzel.", 'glint@flop sfx:thud'],
+   ['nova', "Ooh, a tangle! Glint, don't copy. What does YOUR music make you want to do?"],
+   ['n', "Glint listened to its own glass bells, deep inside. A slide to the left! A sparkly spin! A hop with a twinkle!", 'glint@shuffle robo@idle gloop@idle nega@idle fx:sparkle sfx:shimmer'],
+   ['glint', "I call it... the SHIMMER SHUFFLE!"],
+   ['nova', "WOW! Everybody, try the Shimmer Shuffle!", 'fx:confetti sfx:cheer'],
+   ['n', "And then something amazing happened. Everybody copied GLINT!", 'robo@shuffle gloop@shuffle nega@shuffle baby@shuffle'],
+   ['robo', "Hey, look! Now WE'RE the copycats!", 'sfx:giggle'],
+   ['nega', "Okay. This is the coolest dance ever. Don't tell anybody I said that."],
+   ['glint', "Being copied is fun! But being ME is even better!", 'fx:sparkle sfx:glassbell'],
+  ] },
+ ] },
+ { title: 'A Name for My Door', icon: '🚪', scenes: [
+  { bg: 'hall', song: 'glint', cast: { robo: [420], baby: [560], glint: [700, { face: 1 }] }, lines: [
+   ['n', "The next morning, Glint got its very own room in Robo HQ, right at the end of the hallway."],
+   ['robo', "Every door here has a name sign. See? Robo! Nega-Robo! The Gloops!", 'robo:L'],
+   ['glint', "Ooh! I'll make mine just like yours, Robo!", 'set:oldsign=1 sfx:pop'],
+   ['n', "Glint put up a sign. It said... Robo Two.", 'robo:R'],
+   ['baby', "But you're not Robo Two. You're GLINT!", 'baby^'],
+   ['glint', "Oh! You're right, Baby Gloop! I copied again. Oopsie.", 'set:oldsign=0 sfx:whoosh'],
+   ['glint', "This time, I'll make a sign that's all me. With shiny glass beads, in my colors!", 'glint~'],
+   ['n', "Glint put up the beads, one letter at a time. G... L... I... N... T!", 'set:sign=1 sfx:twinkle wait:3'],
+   ['glint', "Glint! That's me! That's MY door!", 'glint^ sfx:glassbell fx:sparkle'],
+   ['robo', "It's the sparkliest door in the whole hallway!", 'robo~'],
+   ['glint', "Every time I see it, I'll remember: I'm not a copy. I'm Glint!", 'glint~'],
+  ] },
+ ] },
+ { title: 'The Favorite Thing Quest', icon: '🌈', scenes: [
+  { bg: 'meadow', song: 'paint', walk: 1.5, cast: { nega: [180, { pose: 'walk' }], robo: [320, { pose: 'walk' }], glint: [480, { pose: 'walk' }], baby: [640, { pose: 'walk' }] }, lines: [
+   ['n', "Glint had its own colors, its own sound, its own dance, and its own door. But one big question was left."],
+   ['glint', "What's my FAVORITE thing? Everybody has one!"],
+   ['robo', "My favorite thing is jumping! Boing!", 'robo^ sfx:boing'],
+   ['nega', "Mine is rock music. And looking at the stars at night."],
+   ['baby', "Mine is BUBBLES!", 'baby^ set:bubbles=1 sfx:pop'],
+   ['glint', "Bubbles! Maybe bubbles are my favorite too!", 'glint^'],
+   ['n', "Glint chased a bubble. Pop! Then another bubble popped right on its visor. Splish!", 'sfx:pop glint=dizzy'],
+   ['glint', "Hee hee! Bubbles are fun. But they're Baby Gloop's favorite. Not quite mine.", 'glint=happy'],
+   ['robo', "Let's keep looking! Up to the top of Sunny Hill!", 'robo~'],
+  ] },
+  { bg: 'rainbow', song: 'glint', cast: { nega: [110], robo: [240], glint: [480], baby: [700, { face: -1 }], gloop: [830, { s: 1.4, face: -1 }] }, lines: [
+   ['n', "At the top of Sunny Hill, the sun was shining bright."],
+   ['gloop', "Glint, you're so shiny, you're making me squint!"],
+   ['n', "Then the sunshine went INTO Glint's glass head... and came out the other side as...", 'set:rainbow=1 sfx:shimmer'],
+   ['all', "RAINBOWS!", 'fx:sparkle sfx:chime'],
+   ['n', "Rainbows splashed across the grass, and onto Robo, and Nega-Robo, and King Gloop, and Baby Gloop."],
+   ['baby', "I'm a rainbow gloop!", 'baby~ sfx:giggle'],
+   ['glint', "Oh! THIS is it! My favorite thing is... making rainbows for my friends!", 'glint^ glint~ sfx:glassbell'],
+   ['nega', "That's a really good favorite thing.", 'nega~'],
+   ['glint', "Robos can jump. Gloops can wobble. But a glass robot can turn sunshine into rainbows!", 'fx:hearts'],
+  ] },
+ ] },
+ { title: 'The Mirror Maze', icon: '🔮', scenes: [
+  { bg: 'maze', song: 'maze', cast: { robo: [90], glint: [230], echo1: [560, { hide: true, face: -1 }], echo2: [700, { hide: true, face: -1 }], echo3: [840, { hide: true, face: -1 }] }, lines: [
+   ['n', "At the Robo Town Fun Fair, there was a brand new ride: the Mirror Maze! Shiny glass walls, everywhere."],
+   ['robo', "Glint, you go first! You're the mirror expert!"],
+   ['glint', "Okay! I'll find the way out!", 'glint>400 robo-'],
+   ['n', "But inside the maze, Glint saw lots and lots of... Glints!", 'echo1+ echo2+ echo3+ sfx:shimmer'],
+   ['echo', "Hello, Glint! We're your reflections! We copy, copy, COPY!"],
+   ['glint', "Oh! Hi! You look just like the old me. All silver."],
+   ['n', "Then the maze split into two paths.", 'set:fork=1'],
+   ['echo', "Go LEFT! Go left! Everybody goes left!", 'echo1:L echo2:L echo3:L'],
+   ['glint', "Hmm. Everybody goes left? But I don't have to do what everybody does. Let me listen to my own sound.", 'sfx:glassbell'],
+   ['n', "Ting-a-ling! From the RIGHT path, a sparkly bell rang back. And a trail of pink and aqua stars lit up!", 'set:path=1 sfx:twinkle'],
+   ['glint', "No, thank you! I'm choosing MY way!", 'glint>>900 sfx:whoosh'],
+   ['n', "And all the silver reflections went CRACK... and turned into sparkles!", 'echo1- echo2- echo3- sfx:crack fx:shards shake'],
+  ] },
+  { bg: 'maze', song: 'glint', cast: { glint: [120], robo: [800, { hide: true, face: -1 }], nega: [680, { hide: true, face: -1 }], baby: [560, { hide: true, face: -1 }], nova: [880, { hide: true, face: -1 }] }, lines: [
+   ['n', "At the end of Glint's path was a bright, warm doorway. And outside, Glint's friends were waiting!", 'set:path=1 set:exit=1 glint>420 robo+ nega+ baby+ sfx:chime'],
+   ['robo', "Glint, you made it! How did you know the way?", 'robo^'],
+   ['glint', "The reflections all said go left. But my own bell rang on the right. So I followed ME!", 'glint~'],
+   ['nova', "Ha ha! Glint, that was MY maze! The left path is a big silly loop that goes round and round forever!", 'nova+ sfx:giggle'],
+   ['nega', "So copying would've made you go in circles?"],
+   ['glint', "Round and round and round! Copying is okay for practice. But choosing my own way gets me where I want to go!", 'fx:sparkle sfx:glassbell'],
+   ['baby', "Glint! Glint! Now you should have a CONCERT!", 'baby^ sfx:yay'],
+  ] },
+ ] },
+ { title: "Glint's Big Concert", icon: '🎤', scenes: [
+  { bg: 'stage', song: 'soft', cast: { robo: [150], nega: [270], glint: [480, { hide: true }], gloop: [650, { s: 1.4, face: -1 }], baby: [770, { face: -1 }], nova: [880, { face: -1 }] }, lines: [
+   ['n', "That night, all of Robo Town came to the big stage. The crowd waved their glow sticks."],
+   ['nova', "Gloops and robots and friends! Give it up for... GLINT!", 'set:lights=1 sfx:cheer glint+'],
+   ['glint', "Hi, everybody! I'm a little bit nervous.", 'sfx:ting'],
+   ['robo', "You can do it, Glint! Just be YOU!", 'robo^'],
+   ['glint', "Okay. This song is called Shimmer and Shine. I made it all by myself!", 'glint~'],
+   ['n', "Glint tapped its glass head. Ting! And the music began.", 'song:concert sfx:ting wait:1'],
+   ['n', "Glint played its glass bells, and glowed sunrise pink and sparkly aqua.", 'glint@dance fx:sparkle wait:1'],
+   ['n', "It did the Shimmer Shuffle, and made rainbows shine across the whole crowd!", 'glint@shuffle fx:confetti wait:2'],
+   ['all', "GO, GLINT! GO, GLINT!", 'robo@dance nega@dance gloop@dance baby@dance sfx:cheer wait:2'],
+   ['gloop', "Sniff! I'm not crying. My goo is just... very, very happy.", 'gloop@wobble'],
+   ['glint', "Thank you, everybody! A long time ago, I only knew how to copy.", 'glint@idle'],
+   ['glint', "But my friends helped me find my own colors, my own sound, my own dance, my own name, my favorite thing, and my own path!"],
+   ['glint', "And now I know the best thing about me... is being ME!", 'glint~ fx:sparkle sfx:glassbell'],
+   ['all', "HOORAY FOR GLINT!", 'fx:confetti sfx:yay robo^ nega^ baby^'],
+  ] },
+  { bg: 'home', song: 'soft', flags: { sign: 1 }, cast: { robo: [600], glint: [760, { face: -1 }] }, lines: [
+   ['n', "Later that night, back at Robo HQ, Glint stopped at its sparkly door."],
+   ['robo', "Good night, Glint. You were amazing."],
+   ['glint', "Good night, Robo. Hey... tomorrow, want to race? I'll jump FIRST!", 'glint^'],
+   ['robo', "Ha ha! Okay. And maybe this time... I'll copy YOU!", 'robo~ sfx:giggle'],
+   ['n', "Glint tapped its head one last time. Ting! And the whole hallway twinkled pink and aqua.", 'sfx:ting fx:sparkle'],
+   ['n', "The End.", 'wait:2'],
+  ] },
+  { credits: true, bg: 'credits', song: 'soft', cast: {}, lines: [] },
+ ] },
+];
+
+// =====================================================================
+// 🗣️ VOICES (speechSynthesis with a safe fallback: no voice = subtitles + a timer)
+// =====================================================================
+const CAST = {
+  n:     { name: 'Narrator', col: '#fff59d', pitch: 1.0, rate: 0.9 },
+  glint: { name: 'Glint ✨', col: '#ff9ec4', pitch: 1.7, rate: 1.04 },
+  robo:  { name: 'Robo', col: '#80d8ff', pitch: 1.25, rate: 1.05 },
+  gloop: { name: 'King Gloop', col: '#c69cff', pitch: 0.45, rate: 0.86, second: true },
+  baby:  { name: 'Baby Gloop', col: '#e6ccff', pitch: 2.0, rate: 1.1 },
+  nega:  { name: 'Nega-Robo', col: '#ea80fc', pitch: 0.7, rate: 0.95, second: true },
+  nova:  { name: 'Chaos Nova', col: '#ffd54f', pitch: 1.35, rate: 1.15 },
+  echo:  { name: 'The Reflections', col: '#b3ecff', pitch: 1.9, rate: 1.2, second: true },
+  all:   { name: 'Everyone', col: '#ffffff', pitch: 1.25, rate: 1.0 },
+};
+const VOICE = { list: [] };
+const NOVELTY = /Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Good News|Jester|Organ|Superstar|Trinoids|Whisper|Wobble|Zarvox|Deranged|Hysterical|Junior|Ralph|Fred|Kathy|Princess|Vicki|Victoria|Agnes|Bruce/i;
+const GOOD = ['Samantha', 'Karen', 'Daniel', 'Moira', 'Tessa', 'Google US English', 'Google UK English Female', 'Microsoft Aria', 'Microsoft Jenny', 'Alex', 'Serena', 'Fiona', 'Rishi', 'Google UK English Male', 'Microsoft Guy'];
+function synth() { try { return (typeof window !== 'undefined' && window.speechSynthesis && typeof SpeechSynthesisUtterance !== 'undefined') ? window.speechSynthesis : null; } catch (_) { return null; } }
+function pickVoices() {
+  const s = synth(); if (!s) return; let v = [];
+  try { v = s.getVoices() || []; } catch (_) {}
+  const score = x => { const i = GOOD.findIndex(g => (x.name || '').indexOf(g) === 0); return (i < 0 ? 50 : i) + (/en[-_]US/i.test(x.lang) ? 0 : 5) + (x.localService ? 0 : 3); };
+  VOICE.list = v.filter(x => /^en/i.test(x.lang || '') && !NOVELTY.test(x.name || '')).sort((a, b) => score(a) - score(b));
+}
+try { const s = synth(); if (s) { pickVoices(); s.onvoiceschanged = pickVoices; } } catch (_) {}
+const est = str => Math.max(1.5, 0.6 + String(str).split(/\s+/).length * 0.34);    // how long a line takes (also the no-voice timer)
+const spoken = str => String(str).replace(/[\u{1F300}-\u{1FAFF}☀-➿⭐]/gu, '').replace(/\.\.\./g, ', ').replace(/\bT\. I\. G\. E\. R\./, 'T, I, G, E, R.');
+let sayTok = 0;
+function speak(who, str) {                             // returns a "say" record that the player watches
+  const sy = { tok: ++sayTok, t: 0, dur: est(str), max: est(str) * 2.6 + 3, done: false, started: false, speech: false };
+  const s = synth();
+  if (s && str) {
+    try {
+      const C = CAST[who] || CAST.n, u = new SpeechSynthesisUtterance(spoken(str));
+      if (!VOICE.list.length) pickVoices();
+      const L = VOICE.list, v = L.length ? L[C.second && L.length > 1 ? 1 : 0] : null;
+      u.pitch = C.pitch; u.rate = C.rate; u.volume = 1; if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-US';
+      u.onstart = () => { sy.started = true; };
+      u.onend = u.onerror = () => { if (sy.tok === sayTok) sy.done = true; };
+      if (s.speaking || s.pending) s.cancel(); if (s.resume) s.resume(); s.speak(u); sy.speech = true;
+    } catch (_) { sy.speech = false; }
+  }
+  return sy;
+}
+function stopSpeech() { sayTok++; const s = synth(); if (s) try { s.cancel(); } catch (_) {} }
+function sayDone(sy) {
+  if (!sy) return true;
+  if (sy.done) return sy.t >= 0.4;
+  if (!sy.speech) return sy.t >= sy.dur;
+  if (!sy.started && sy.t >= sy.dur + 1) return true;  // the voice never started: carry on with subtitles
+  return sy.t >= sy.max;                               // onend never came: timeout
+}
+
+
+// =====================================================================
+// 🎭 ACTORS + ACTIONS
+// =====================================================================
+let actors = {}, order = [], fx = [], pops = [], scroll = 0, shakeT = 0;
+const FT = {};                                         // flag targets (flags glide toward them)
+const KIND_S = { bot: 2.6, gloop: 1.6, baby: 1.3, nova: 1.0, echo: 2.6 };
+function mkActor(id, spec) {
+  const o = spec[1] || {}, kind = id === 'gloop' ? 'gloop' : id === 'baby' ? 'baby' : id === 'nova' ? 'nova' : id.indexOf('echo') === 0 ? 'echo' : 'bot';
+  return { id, kind, x: spec[0], y: o.y !== undefined ? o.y : GROUND, face: o.face || 1, s: o.s || KIND_S[kind],
+    pose: o.pose || 'idle', grumpy: false, hidden: !!o.hide, alpha: o.hide ? 0 : 1, q: [], mv: null, hop: null, happyT: 0, hit: 0, att: null, art: { badge: id === 'glint' && PLAY.ch >= 2 }, sT: 1, sMul: 1, dx: 0 };
+}
+function groundAt(x) { return GROUND; }
+function act(tok, line) {
+  if (!tok) return;
+  let m;
+  if ((m = tok.match(/^fx:(\w+)/))) return spawnFx(m[1], line);
+  if ((m = tok.match(/^sfx:(\w+)/))) return sfx(m[1]);
+  if ((m = tok.match(/^set:(\w+)=([\d.]+)/))) { FT[m[1]] = +m[2]; if (m[1] === 'crate' || m[1] === 'fork' || m[1] === 'oldsign') FLAGS[m[1]] = +m[2]; return; }
+  if ((m = tok.match(/^song:(\w*)/))) return setSong(m[1]);
+  if ((m = tok.match(/^pop:(.+)/))) { pops.push({ txt: m[1].replace(/_/g, ' '), t: 0, x: lastAttacker ? lastAttacker.x + 60 : W / 2, y: 150 }); return; }
+  if (tok === 'shake') { shakeT = 0.5; return; }
+  if ((m = tok.match(/^wait:([\d.]+)/))) return;
+  if ((m = tok.match(/^shrink:(\w+)/))) { const a = actors[m[1]]; if (a) { a.sT = Math.max(0.2, a.sT * 0.6); a.hit = 30; } return; }
+  if ((m = tok.match(/^(\w+)(.*)$/))) {
+    const a = actors[m[1]], r = m[2]; if (!a) return;
+    let k;
+    if ((k = r.match(/^(>>?)(-?[\d.]+)(?:,(-?[\d.]+))?$/))) { a.q.push({ x: +k[2], y: k[3] !== undefined ? +k[3] : null, run: k[1] === '>>' }); return; }
+    if (r === '^') { a.hop = { t: 0, dur: 0.5, h: 34 }; return; }
+    if (r === '^^') { a.hop = { t: 0, dur: 1.0, h: 150, scared: true }; return; }
+    if (r === '~') { a.happyT = 2.4; return; }
+    if (r === '!') { a.grumpy = true; return; }
+    if (r === '.') { a.grumpy = false; return; }
+    if (r === '+') { a.hidden = false; burst(a.x, a.y - 40, 16, 'star'); return; }
+    if (r === '-') { a.hidden = true; return; }
+    if ((k = r.match(/^%(\w*)$/))) { a.art.copy = k[1] || null; burst(a.x, a.y - 60, 12, 'star'); return; }   // 🪞 Glint copies someone's colors (or goes back to its own)
+    if ((k = r.match(/^@(\w+)/))) { a.pose = k[1]; return; }
+    if (r === ':L') { a.face = -1; return; }
+    if (r === ':R') { a.face = 1; return; }
+    if ((k = r.match(/^=(\w+)/))) { if (k[1] === 'grow') a.sT *= 1.15; else if (k[1] === 'happy') { a.art.happy = true; a.art.dizzy = false; a.grumpy = false; } else a.art[k[1]] = true; return; }
+    if ((k = r.match(/^\*(\w+)(!?)/))) { attack(a, k[1], k[2] === '!'); return; }
+  }
+}
+let lastAttacker = null;
+const MOVES = {};
+function attack(a, targetId, ko) {
+  const tg = actors[targetId]; if (!tg) return;
+  a.q = []; a.mv = null; lastAttacker = a;
+  const dir = tg.x >= a.x ? 1 : -1, n = Object.values(actors).filter(b => b.att && b.att.target === targetId).length;
+  a.att = { target: targetId, ko, t: 0, dur: 1.15, x0: a.x, y0: a.y, tx: tg.x - dir * (tg.kind === 'king' ? 70 + 40 * tg.s : 50) - dir * n * 18, ty: tg.kind === 'king' ? GROUND - 60 * tg.s - n * 30 : GROUND - 20, hitDone: false, dir };
+  a.face = dir; sfx('hiyah');
+}
+function updateActor(a, dt) {
+  a.alpha = clamp(a.alpha + (a.hidden ? -dt * 2 : dt * 2), 0, 1);
+  a.sMul += (a.sT - a.sMul) * Math.min(1, dt * 3);
+  if (a.hit > 0) a.hit = Math.max(0, a.hit - dt * 60);
+  if (a.happyT > 0) a.happyT = Math.max(0, a.happyT - dt);
+  if (a.att) {                                         // 🥋 a karate move: leap in, BONK, leap back
+    const A = a.att; A.t += dt; const u = A.t / A.dur;
+    if (u < 0.45) { const k = ease(u / 0.45); a.x = lerp(A.x0, A.tx, k); a.y = lerp(A.y0, A.ty, k) - Math.sin(k * Math.PI) * 90; }
+    else if (u < 1) { const k = ease((u - 0.45) / 0.55); a.x = lerp(A.tx, A.x0, k); a.y = lerp(A.ty, A.y0, k) - Math.sin(k * Math.PI) * 60; a.face = -A.dir; }
+    if (u >= 0.45 && !A.hitDone) {
+      A.hitDone = true; const tg = actors[A.target];
+      if (tg) {
+        tg.hit = 30; sfx('bonk'); burst(lerp(a.x, tg.x, 0.5), a.y - 30, 12, 'star'); pops.push({ txt: 'BONK!', t: 0, x: tg.x, y: Math.max(90, GROUND - 120 * tg.s - 40), small: true });
+        if (A.ko) { tg.hidden = true; tg.alpha = 0; for (let i = 0; i < 9; i++) fx.push({ kind: 'pickle', x: tg.x, y: GROUND - 50, vx: (Math.random() - 0.5) * 7, vy: -4 - Math.random() * 5, t: 0, life: 3, rot: Math.random() * 6 }); sfx('pop'); }
+      }
+    }
+    if (a.id === 'tiger' && u < 0.6) fx.push({ kind: 'trail', x: a.x, y: a.y - 40, t: 0, life: 0.7 });
+    if (u >= 1) { a.x = A.x0; a.y = A.y0; a.face = A.dir; a.att = null; }
+    return;
+  }
+  if (!a.mv && a.q.length) {
+    const g = a.q.shift(); a.mv = { x0: a.x, y0: a.y, x: g.x, y: g.y === null ? a.y : g.y, run: g.run, t: 0 };
+    a.mv.dur = g.y !== null && g.y !== a.y ? 0.9 : Math.max(0.2, Math.abs(g.x - a.x) / (g.run ? 300 : 150));
+    if (g.x !== a.x) a.face = g.x > a.x ? 1 : -1;
+  }
+  if (a.mv) {
+    const M = a.mv; M.t += dt; const u = clamp(M.t / M.dur, 0, 1);
+    a.x = lerp(M.x0, M.x, M.y !== M.y0 ? ease(u) : u);
+    if (M.y !== M.y0) a.y = lerp(M.y0, M.y, ease(u)) - Math.sin(u * Math.PI) * 50;
+    else if (SCENE && SCENE.ground === 'bridge') a.y = groundAt(a.x);
+    if (u >= 1) { a.y = M.y; a.mv = null; }
+  } else if (SCENE && SCENE.ground === 'bridge' && !a.hop) a.y = groundAt(a.x);
+  if (a.hop) { a.hop.t += dt; if (a.hop.t >= a.hop.dur) a.hop = null; }
+}
+function actorPose(a) {
+  if (a.att) { const u = a.att.t / a.att.dur; return u < 0.6 ? (MOVES[a.id] || 'karate') : 'jump'; }
+  if (a.mv) return a.mv.y !== a.mv.y0 ? 'jump' : a.mv.run ? 'run' : 'walk';
+  if (a.hop) return 'jump';
+  if (a.happyT > 0 && (a.pose === 'idle' || a.pose === 'karate' || a.pose === 'walk')) return 'happy';
+  return a.pose;
+}
+function hopY(a) { if (!a.hop) return 0; const u = a.hop.t / a.hop.dur; return -Math.sin(u * Math.PI) * a.hop.h; }
+function talking(a) {
+  if (!LINE || !LINE.say || sayDone(LINE.say) || PLAY.phase !== 'line') return false;
+  const w = LINE.who;
+  return w === a.id || (w === 'all' && a.kind !== 'echo') || (w === 'echo' && a.kind === 'echo');
+}
+function drawActor(a) {
+  if (a.alpha <= 0.01) return;
+  const t = frame + a.x * 0.37, talk = talking(a), y = a.y + hopY(a);
+  ctx.save(); ctx.globalAlpha = a.alpha * (a.kind === 'echo' ? 0.7 : 1);
+  const pose = actorPose(a);
+  if (a.kind === 'gloop' || a.kind === 'baby') drawGloop(a.x, y, { baby: a.kind === 'baby', s: a.s * a.sMul, face: a.face, t, pose, talk });
+  else if (a.kind === 'nova') drawNova(a.x, y, { s: a.s, t, talk });
+  else drawBot(a.kind === 'echo' ? 'echo' : a.id, a.x, y, { s: a.s * a.sMul, face: a.face, t, pose, talk, art: a.art });
+  if ((a.kind === 'gloop' || a.kind === 'baby') && a.art.dizzy) for (let k = 0; k < 3; k++) { const an = frame * 0.12 + k * 2.1; star(a.x + Math.cos(an) * 40, y - 90 * a.s / 1.6 + Math.sin(an) * 6, 7, '#fff59d'); }
+  if (SCENE && SCENE.bg === 'rainbow' && FLAGS.rainbow > 0.3 && a.id !== 'glint') {      // 🌈 rainbow light shining on the friends
+    const rc = ['#ff5252', '#ffb74d', '#fff176', '#81c784', '#64b5f6', '#ba68c8'];
+    for (let i = 0; i < 6; i++) { const an = frame * 0.03 + i * 1.05; glow(a.x + Math.cos(an) * 30, a.y - 60 + Math.sin(an) * 30, 34, rc[i], 0.3 * FLAGS.rainbow); }
+  }
+  ctx.restore();
+}
+// ---------- ✨ effects ----------
+function burst(x, y, n, kind = 'star') { for (let i = 0; i < n; i++) fx.push({ kind, x, y, vx: (Math.random() - 0.5) * 6, vy: -Math.random() * 4 - 1, t: 0, life: 1 + Math.random() * 0.6, col: ['#ff5c8a', '#ffd54f', '#7ec8ff', '#b2ff59', '#ce93d8'][i % 5] }); }
+function spawnFx(name, line) {
+  const sp = line && actors[line.who];
+  const cx = sp ? sp.x : W / 2, cy = sp ? sp.y - 60 : 260;
+  if (name === 'sparkle') { for (let i = 0; i < 26; i++) fx.push({ kind: 'twinkle', x: cx + (Math.random() - 0.5) * 320, y: cy + (Math.random() - 0.5) * 200, vx: 0, vy: -0.3, t: 0, life: 1.6 + Math.random() }); sfx('twinkle'); }
+  else if (name === 'hearts') burst(cx, cy, 14, 'heart');
+  else if (name === 'confetti') for (let i = 0; i < 70; i++) fx.push({ kind: 'confetti', x: Math.random() * W, y: -20 - Math.random() * 200, vx: (Math.random() - 0.5) * 2, vy: 1.5 + Math.random() * 2, t: 0, life: 5, rot: Math.random() * 6, col: ['#ff5c8a', '#ffd54f', '#7ec8ff', '#b2ff59', '#ce93d8'][i % 5] });
+  else if (name === 'stars') for (let i = 0; i < 5; i++) fx.push({ kind: 'shoot', x: 100 + Math.random() * 700, y: 30 + Math.random() * 120, vx: 7 + Math.random() * 3, vy: 2.5, t: -i * 0.5, life: 1.4 });
+  else if (name === 'swirl') fx.push({ kind: 'swirl', x: W / 2, y: H / 2, t: 0, life: 1.6 });
+  else if (name === 'shards') { for (const id in actors) { const a = actors[id]; if (a.kind !== 'echo') continue; for (let i = 0; i < 10; i++) fx.push({ kind: 'pickle', x: a.x, y: a.y - 60, vx: (Math.random() - 0.5) * 7, vy: -3 - Math.random() * 5, t: 0, life: 2.5, rot: Math.random() * 6 }); for (let i = 0; i < 8; i++) fx.push({ kind: 'twinkle', x: a.x + (Math.random() - 0.5) * 120, y: a.y - 60 - Math.random() * 100, vx: 0, vy: -0.4, t: 0, life: 1.5 + Math.random() }); } }
+}
+function updateFx(dt) {
+  for (const p of fx) {
+    p.t += dt; if (p.t < 0) continue;
+    if (p.kind === 'confetti') { p.x += p.vx + Math.sin(p.t * 3 + p.rot) * 0.8; p.y += p.vy; p.rot += 0.1; }
+    else if (p.kind === 'pickle') { p.x += p.vx; p.y += p.vy; p.vy += 0.3; p.rot += 0.15; if (p.y > GROUND + 10) { p.y = GROUND + 10; p.vy *= -0.4; p.vx *= 0.8; } }
+    else if (p.kind !== 'swirl' && p.kind !== 'trail') { p.x += p.vx || 0; p.y += p.vy || 0; if (p.kind !== 'shoot' && p.kind !== 'twinkle') p.vy += 0.08; }
+  }
+  fx = fx.filter(p => p.t < p.life);
+  for (const p of pops) p.t += dt; pops = pops.filter(p => p.t < 1.4);
+}
+function drawFx() {
+  for (const p of fx) {
+    if (p.t < 0) continue;
+    const a = clamp(1 - p.t / p.life, 0, 1);
+    if (p.kind === 'star') { ctx.save(); ctx.globalAlpha = a; star(p.x, p.y, 7, p.col || '#ffd54f', p.t * 4); ctx.restore(); }
+    else if (p.kind === 'heart') { ctx.save(); ctx.globalAlpha = a; heart(p.x, p.y, 10, p.col); ctx.restore(); }
+    else if (p.kind === 'twinkle') twinkle(p.x, p.y, 8 * Math.sin(Math.PI * clamp(p.t / p.life, 0, 1)), a + 0.2);
+    else if (p.kind === 'trail') { glow(p.x, p.y, 26 * a, 'rgba(255,220,120,.8)'); twinkle(p.x, p.y, 9 * a, a); }
+    else if (p.kind === 'pickle') { ctx.save(); ctx.globalAlpha = Math.min(1, a * 2); pickleSlice(p.x, p.y, 13, p.rot); ctx.restore(); }
+    else if (p.kind === 'confetti') { ctx.save(); ctx.globalAlpha = Math.min(1, a * 3); ctx.translate(p.x, p.y); ctx.rotate(p.rot); ctx.fillStyle = p.col; ctx.fillRect(-5, -3, 10, 6); ctx.restore(); }
+    else if (p.kind === 'shoot') { ctx.save(); ctx.globalAlpha = a; ctx.strokeStyle = '#fff8d0'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x - p.vx * 8, p.y - p.vy * 8); ctx.stroke(); ctx.restore(); twinkle(p.x, p.y, 8, a); }
+    else if (p.kind === 'swirl') { const u = p.t / p.life; ctx.save(); ctx.globalAlpha = Math.sin(u * Math.PI) * 0.9; const cols = ['#ff7eb6', '#ffd166', '#7ae582', '#5ec8ff', '#b388ff']; for (let i = 0; i < 10; i++) { ctx.fillStyle = cols[i % 5]; ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.arc(p.x, p.y, 800, i * 0.628 + u * 6, i * 0.628 + u * 6 + 0.314); ctx.closePath(); ctx.fill(); } ctx.restore(); }
+  }
+  for (const p of pops) {                              // 💥 comic words: HI-YAH! BONK!
+    const u = p.t / 1.4, sc = u < 0.15 ? u / 0.15 : 1;
+    ctx.save(); ctx.globalAlpha = clamp((1 - u) * 2, 0, 1); ctx.translate(clamp(p.x, 120, W - 120), p.y - u * 30); ctx.scale(sc, sc); ctx.rotate(-0.08);
+    if (!p.small) star(0, -12, 90, '#fff176', 0, 10, 0.72);
+    text(p.txt, 0, 0, p.small ? 34 : 44, p.small ? '#ffeb3b' : '#e53935'); ctx.restore();
+  }
+}
+
+// =====================================================================
+// 🎞️ THE MOVIE PLAYER
+// =====================================================================
+let mode = 'title';                                    // title | menu | cats | play | end
+let SCENE = null, LINE = null;
+const PLAY = { ch: 0, sc: 0, li: -1, phase: 'idle', t: 0, paused: false, fade: 1, fadeDir: -1, card: null, creditsT: 0 };
+let subsOn = save.subs !== false;
+const CREDITS_DUR = 36;
+function startChapter(ch, sc = 0) {
+  PLAY.ch = clamp(ch, 0, CHAPTERS.length - 1);
+  startScene(PLAY.ch, sc, sc === 0);
+}
+function startScene(ch, sc, withCard) {
+  const chap = CHAPTERS[ch]; if (!chap) return finishMovie();
+  sc = clamp(sc, 0, chap.scenes.length - 1);
+  PLAY.ch = ch; PLAY.sc = sc; PLAY.li = -1; PLAY.t = 0; PLAY.fade = 1; PLAY.fadeDir = -1;
+  SCENE = chap.scenes[sc]; LINE = null; stopSpeech();
+  actors = {}; order = []; fx = []; pops = []; scroll = 0; shakeT = 0; lastAttacker = null;
+  for (const k in FLAGS) delete FLAGS[k]; for (const k in FT) delete FT[k];
+  if (SCENE.flags) for (const k in SCENE.flags) FLAGS[k] = FT[k] = SCENE.flags[k];
+  for (const id in SCENE.cast) { actors[id] = mkActor(id, SCENE.cast[id]); order.push(id); }
+  setSong(SCENE.song);
+  mode = 'play';
+  save.ch = ch; save.sc = sc; save.started = true; writeSave();
+  if (SCENE.credits) { PLAY.phase = 'credits'; PLAY.creditsT = 0; LINE = { who: 'n', text: "Starring Glint, Robo, King Gloop, Baby Gloop, Nega-Robo, and Chaos Nova. For Ben.", say: null }; if (!PLAY.paused) LINE.say = speak('n', LINE.text); return; }
+  if (withCard) { PLAY.phase = 'card'; PLAY.card = { t: 0, say: PLAY.paused ? null : speak('n', `Chapter ${ch + 1}. ${chap.title}`) }; }
+  else nextLine();
+}
+function nextLine() {
+  PLAY.li++;
+  const L = SCENE.lines[PLAY.li];
+  if (!L) { PLAY.phase = 'fadeout'; PLAY.fadeDir = 1; stopSpeech(); return; }
+  const [who, txt, acts] = L;
+  LINE = { who, text: txt, say: null, wait: 0 };
+  PLAY.phase = 'line'; PLAY.t = 0;
+  for (const tok of String(acts || '').split(/\s+/)) { const m = tok.match(/^wait:([\d.]+)/); if (m) LINE.wait = +m[1]; act(tok, LINE); }
+  if (txt && !PLAY.paused) LINE.say = speak(who, txt);
+  else LINE.say = { t: 0, dur: txt ? est(txt) : 0, max: 99, done: false, started: false, speech: false };
+}
+function lineFinished() { return LINE && sayDone(LINE.say) && PLAY.t >= (LINE.say.speech ? 0 : 0) + LINE.wait; }
+function goNextScene() {
+  const chap = CHAPTERS[PLAY.ch];
+  if (PLAY.sc + 1 < chap.scenes.length) startScene(PLAY.ch, PLAY.sc + 1, false);
+  else if (PLAY.ch + 1 < CHAPTERS.length) startScene(PLAY.ch + 1, 0, true);
+  else finishMovie();
+}
+function goPrevScene() {
+  if (PLAY.li > 1 && PLAY.phase !== 'credits') return startScene(PLAY.ch, PLAY.sc, PLAY.sc === 0);
+  if (PLAY.sc > 0) startScene(PLAY.ch, PLAY.sc - 1, false);
+  else if (PLAY.ch > 0) { const p = CHAPTERS[PLAY.ch - 1]; startScene(PLAY.ch - 1, p.scenes.length - 1, p.scenes.length === 1); }
+  else startScene(0, 0, true);
+}
+function settleActors() {                              // when a line is skipped, finish moves + karate bonks right away
+  for (const id of order) { const a = actors[id]; let g = 0; while ((a.att || a.mv || a.q.length) && g++ < 20) updateActor(a, 5); a.hop = null; }
+}
+function skipLine() {                                  // tap / Space: on to the next line
+  if (PLAY.paused) return togglePause();
+  settleActors();
+  if (PLAY.phase === 'card') { stopSpeech(); PLAY.card = null; nextLine(); }
+  else if (PLAY.phase === 'line' || PLAY.phase === 'gap') { stopSpeech(); nextLine(); }
+  else if (PLAY.phase === 'credits' && PLAY.creditsT > 3) finishMovie();
+}
+function togglePause() {
+  PLAY.paused = !PLAY.paused;
+  if (PLAY.paused) { stopSpeech(); if (actx && actx.suspend) try { actx.suspend(); } catch (_) {} }
+  else {
+    wakeAudio();
+    if (PLAY.phase === 'line' && LINE && LINE.text) LINE.say = speak(LINE.who, LINE.text);            // say the line again
+    else if (PLAY.phase === 'card') PLAY.card.say = speak('n', `Chapter ${PLAY.ch + 1}. ${CHAPTERS[PLAY.ch].title}`);
+  }
+}
+function finishMovie() {
+  stopSpeech(); trophy(TROPHY_ID);
+  save.done = true; save.started = false; save.ch = 0; save.sc = 0; writeSave();
+  mode = 'end'; PLAY.phase = 'idle'; setSong('soft'); sfx('glassbell');
+}
+function updatePlay(dt) {
+  if (PLAY.paused) return;
+  frame++;
+  if (SCENE.walk) scroll += SCENE.walk;
+  for (const k in FT) { const d = FT[k] - (FLAGS[k] || 0); FLAGS[k] = Math.abs(d) < 0.002 ? FT[k] : (FLAGS[k] || 0) + d * Math.min(1, dt * 1.5); }
+  for (const id of order) updateActor(actors[id], dt);
+  updateFx(dt);
+  if (shakeT > 0) shakeT = Math.max(0, shakeT - dt);
+  if (PLAY.fadeDir) {
+    PLAY.fade = clamp(PLAY.fade + PLAY.fadeDir * dt / 0.6, 0, 1);
+    if (PLAY.fadeDir < 0 && PLAY.fade <= 0) PLAY.fadeDir = 0;
+    if (PLAY.fadeDir > 0 && PLAY.fade >= 1) { PLAY.fadeDir = 0; goNextScene(); return; }
+  }
+  if (PLAY.phase === 'card') {
+    const c = PLAY.card; c.t += dt; if (c.say) c.say.t += dt;
+    if (c.t >= 3 && (!c.say || sayDone(c.say)) || c.t > 12) { PLAY.card = null; nextLine(); }
+  } else if (PLAY.phase === 'line') {
+    PLAY.t += dt; LINE.say.t += dt;
+    if (lineFinished()) { PLAY.phase = 'gap'; PLAY.t = 0; }
+  } else if (PLAY.phase === 'gap') {
+    PLAY.t += dt; if (PLAY.t >= 0.45) nextLine();
+  } else if (PLAY.phase === 'credits') {
+    PLAY.creditsT += dt; if (LINE && LINE.say) LINE.say.t += dt;
+    if (PLAY.creditsT >= CREDITS_DUR) finishMovie();
+  }
+}
+
+// =====================================================================
+// 🖼️ DRAWING THE MOVIE + BUTTONS
+// =====================================================================
+let BTNS = [];
+function btn(x, y, w, h, label, fn, o = {}) {
+  BTNS.push({ x, y, w, h, fn });
+  ctx.save(); ctx.globalAlpha = o.alpha || 1;
+  roundRect(x + 2, y + 4, w, h, h / 2.4, 'rgba(0,0,0,.3)');
+  const g = ctx.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, o.col || '#ffd54f'); g.addColorStop(1, o.col2 || '#ffb300');
+  ctx.fillStyle = g; rrect(x, y, w, h, h / 2.4); ctx.fill();
+  if (o.sel) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; rrect(x - 3, y - 3, w + 6, h + 6, h / 2.2); ctx.stroke(); }
+  text(label, x + w / 2, y + h / 2 + (o.size || 24) * 0.36, o.size || 24, o.tcol || '#4a2c00', 'center', false);
+  ctx.restore();
+}
+function roundBtn(x, y, label, fn, on = true) {
+  BTNS.push({ x: x - 26, y: y - 26, w: 52, h: 52, fn });
+  circle(x + 1, y + 3, 24, 'rgba(0,0,0,.3)'); circle(x, y, 24, on ? 'rgba(255,255,255,.88)' : 'rgba(150,150,170,.75)');
+  emoji(label, x, y + 9, 24);
+  if (!on) { ctx.strokeStyle = '#e53935'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(x - 15, y + 15); ctx.lineTo(x + 15, y - 15); ctx.stroke(); }
+}
+function playButtons() {
+  ctx.save(); ctx.globalAlpha = 0.9;
+  roundBtn(36, 34, '📖', openMenu);
+  roundBtn(724, 34, '⏮', () => { wakeAudio(); goPrevScene(); });
+  roundBtn(780, 34, PLAY.paused ? '▶️' : '⏸', () => { wakeAudio(); togglePause(); });
+  roundBtn(836, 34, '⏭', () => { wakeAudio(); goNextScene(); });
+  roundBtn(892, 34, '💬', () => { subsOn = !subsOn; save.subs = subsOn; writeSave(); }, subsOn);
+  roundBtn(948 - 8, 90, '🎵', () => { wakeAudio(); setMusic(!musicOn); }, musicOn);
+  ctx.restore();
+}
+function subtitles() {
+  if (!subsOn || !LINE || !LINE.text) return;
+  if (PLAY.phase !== 'line' && PLAY.phase !== 'gap' && PLAY.phase !== 'credits') return;
+  if (PLAY.phase === 'credits' && PLAY.creditsT > 6) return;
+  const C = CAST[LINE.who] || CAST.n, size = 25, lines = wrapLines(LINE.text, 820, size);
+  const h = 22 + lines.length * (size + 7) + (LINE.who === 'n' ? 0 : 26), y = H - 10 - h;
+  ctx.save(); ctx.globalAlpha = 0.82; roundRect(50, y, W - 100, h, 18, '#120c2e'); ctx.restore();
+  let ty = y + 34;
+  if (LINE.who !== 'n') { text(C.name, 76, ty - 4, 21, C.col, 'left'); ty += 26; }
+  for (const l of lines) { text(l, W / 2, ty, size, LINE.who === 'n' ? '#fffbe6' : '#ffffff'); ty += size + 7; }
+}
+function sceneOverlays() {
+  if (SCENE.bg === 'stage' && FLAGS.lights > 0.5 && actors.glint && !actors.glint.hidden && (actors.glint.pose === 'dance' || actors.glint.pose === 'shuffle')) {   // 🎶 bell notes floating up from Glint
+    const g = actors.glint;
+    for (let i = 0; i < 6; i++) { const u = ((frame * 0.8 + i * 40) % 240) / 240, x = g.x + Math.sin(u * 8 + i) * 60, y = g.y - 120 - u * 260; ctx.save(); ctx.globalAlpha = 1 - u; text(i % 2 ? '♪' : '🔔', x, y, 26, i % 2 ? '#ff9ec4' : '#64ffda', 'center', false); ctx.restore(); }
+  }
+}
+function renderPlay() {
+  ctx.save();
+  if (shakeT > 0) ctx.translate(Math.sin(frame * 1.7) * 8 * shakeT, Math.cos(frame * 1.3) * 6 * shakeT);
+  BG[SCENE.bg](frame, scroll);
+  if (PLAY.phase === 'credits') { renderCredits(); ctx.restore(); }
+  else {
+    sceneOverlays();
+    const list = order.map(id => actors[id]).sort((a, b) => (a.kind === 'king' ? -1 : 0) - (b.kind === 'king' ? -1 : 0) || a.y - b.y);
+    for (const a of list) drawActor(a);
+    drawFx();
+    ctx.restore();
+  }
+  if (PLAY.phase === 'card' && PLAY.card) {            // 📜 chapter title card
+    const u = PLAY.card.t, a = clamp(Math.min(u / 0.5, (3.6 - u) / 0.5 + 1), 0, 1);
+    ctx.save(); ctx.globalAlpha = 0.6 * a; ctx.fillStyle = '#0b0820'; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = a;
+    emoji(CHAPTERS[PLAY.ch].icon, W / 2, 190, 64);
+    text(`Chapter ${PLAY.ch + 1}`, W / 2, 255, 30, '#ffd54f');
+    text(CHAPTERS[PLAY.ch].title, W / 2, 315, 50, '#ffffff');
+    for (let i = 0; i < 9; i++) twinkle(W / 2 - 300 + i * 75, 350 + Math.sin(frame * 0.05 + i) * 6, 6, 0.6 + 0.4 * Math.sin(frame * 0.1 + i));
+    ctx.restore();
+  }
+  subtitles();
+  if (PLAY.fade > 0) { ctx.save(); ctx.globalAlpha = PLAY.fade; ctx.fillStyle = '#05030f'; ctx.fillRect(0, 0, W, H); ctx.restore(); }
+  if (PLAY.paused) {
+    ctx.save(); ctx.globalAlpha = 0.45; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); ctx.restore();
+    circle(W / 2, 230, 56, 'rgba(255,255,255,.9)'); ctx.fillStyle = '#ff7043'; ctx.beginPath(); ctx.moveTo(W / 2 - 16, 200); ctx.lineTo(W / 2 + 26, 230); ctx.lineTo(W / 2 - 16, 260); ctx.closePath(); ctx.fill();
+    text('Paused — tap to keep watching', W / 2, 330, 30);
+  }
+  playButtons();
+}
+const CREDITS = [
+  ["🪞 Glint's Story ✨", 42, '#ff9ec4'], ['', 20], ['Starring', 30, '#b9fff0'],
+  ['GLINT — the glass robot who found out how to be itself', 26, '#ff9ec4'], ['Robo — the best jumper in Robo Town', 24], ['King Gloop — the royal wobbler', 24],
+  ['Baby Gloop — loves bubbles more than anything', 24], ['Nega-Robo — totally cool (and a great friend)', 24], ['Chaos Nova — DJ, maze-maker and light-show star', 24], ['', 20],
+  ['Also starring', 30, '#b9fff0'], ['The Reflections (now sparkles)', 24], ['Everybody in Robo Town, waving glow sticks', 24], ['', 20],
+  ['Music: “Shimmer and Shine (Glint’s Song)”', 24, '#fff59d'], ['“Copy Copy Copycat” · “Paint It Me” · “The Shimmer Shuffle” · “The Mirror Maze”', 20, '#fff59d'], ['', 20],
+  ['Made with love for Ben 💛', 28, '#ffccbc'], ['', 60],
+];
+const TEAM = [['robo', 220, 1], ['nega', 340, 1], ['glint', 480, 1], ['gloop', 630, -1], ['baby', 760, -1]];
+function drawTeam(y, s = 1, pose = 'idle') {
+  for (const [id, x, f] of TEAM) {
+    const t = frame + x;
+    if (id === 'gloop') drawGloop(x, y, { s: 1.35 * s, face: f, t, pose });
+    else if (id === 'baby') drawGloop(x, y, { baby: true, s: 1.0 * s, face: f, t, pose });
+    else drawBot(id, x, y, { s: (id === 'glint' ? 2.8 : 2.4) * s, face: f, t, pose: id === 'glint' && pose === 'idle' ? 'happy' : pose, art: id === 'glint' ? { badge: true } : {} });
+  }
+}
+function renderCredits() {
+  const T = PLAY.creditsT;
+  const parade = ['glint', 'robo', 'baby', 'nega', 'gloop', 'nova'];
+  for (let i = 0; i < 6; i++) { const id = parade[i], x = wrapX(T * 70 + i * 150, W + 300) - 150, t = frame + i * 30;
+    if (id === 'gloop' || id === 'baby') drawGloop(x, 470, { baby: id === 'baby', s: id === 'baby' ? 0.8 : 1.1, t, pose: 'walk' });
+    else if (id === 'nova') drawNova(x, 520, { s: 0.7, t });
+    else drawBot(id, x, 470, { s: id === 'glint' ? 2 : 1.8, t, pose: 'walk', art: id === 'glint' ? { badge: true } : {} }); }
+  let y = H + 30 - T * 34;
+  for (const [s, size, col] of CREDITS) { if (y > -40 && y < H - 60) text(s, W / 2, y, size, col || '#ffffff'); y += size + 20; }
+  const fy = Math.max(170, y + 20);
+  if (fy < H - 120) {
+    glow(W / 2, fy - 20, 300, 'rgba(255,170,210,.35)');
+    text('Starring GLINT ✨', W / 2, fy, 44, '#ff9ec4');
+    text('and the whole team', W / 2, fy + 46, 32, '#b9fff0');
+    text('— for Ben —', W / 2, fy + 90, 30, '#ffccbc');
+  }
+  drawFx();
+}
+
+// =====================================================================
+// 🏠 TITLE · 📖 CHAPTERS · 🤖 MEET THE TEAM · 💛 THE END
+// =====================================================================
+let menuSel = 0, catsPage = 0, cardHop = {};
+const canResume = () => save.started && (save.ch > 0 || save.sc > 0);
+function playFrom(ch, sc) { wakeAudio(); PLAY.paused = false; if (actx && actx.resume) try { actx.resume(); } catch (_) {} startScene(ch, sc, sc === 0); }
+function openMenu() { stopSpeech(); PLAY.phase = 'idle'; PLAY.paused = false; mode = 'menu'; menuSel = PLAY.ch || 0; setSong('soft'); }
+function goTitle() { stopSpeech(); PLAY.phase = 'idle'; PLAY.paused = false; mode = 'title'; setSong('soft'); }
+function topToggles() {
+  roundBtn(892, 34, '💬', () => { subsOn = !subsOn; save.subs = subsOn; writeSave(); }, subsOn);
+  roundBtn(940 - 8 + 8, 34, '🎵', () => { wakeAudio(); setMusic(!musicOn); }, musicOn);
+}
+function renderTitle() {
+  FLAGS.lights = 0.25; BG.stage(frame); delete FLAGS.lights;
+  drawTeam(372);
+  ctx.save(); ctx.translate(W / 2, 92); const b = 1 + Math.sin(frame * 0.04) * 0.02; ctx.scale(b, b);
+  glow(0, -10, 330, 'rgba(255,158,196,.3)');
+  text("🪞 Glint's Story ✨", 0, 0, 60, '#ff9ec4');
+  ctx.restore();
+  text("A movie about being YOU", W / 2, 140, 26, '#b9fff0');
+  if (canResume()) {
+    btn(300, 160, 360, 60, `▶ Keep Watching (Chapter ${save.ch + 1})`, () => playFrom(save.ch, save.sc), { size: 26, sel: true, col: '#ffd0e4', col2: '#ff80ab', tcol: '#4a0f2a' });
+    btn(355, 228, 250, 42, '⏮ Start from the Beginning', () => playFrom(0, 0), { size: 19, col: '#b9fff0', col2: '#1de9b6', tcol: '#08304a' });
+  } else btn(320, 168, 320, 70, '▶ Play the Movie', () => playFrom(0, 0), { size: 32, sel: true, col: '#ffd0e4', col2: '#ff80ab', tcol: '#4a0f2a' });
+  btn(70, 160, 200, 52, '📖 Chapters', () => { mode = 'menu'; menuSel = save.ch || 0; }, { col: '#ce93d8', col2: '#ab47bc', tcol: '#fff' });
+  btn(690, 160, 200, 52, '🤖 Meet the Team', () => { mode = 'cats'; catsPage = 0; }, { size: 21, col: '#b9fff0', col2: '#1de9b6', tcol: '#08304a' });
+  if (save.done) text('🏆 You watched the whole movie!', W / 2, 508, 20, '#fff59d');
+  else text('Tap to play · About 12 minutes · Tap anywhere during the movie for the next part', W / 2, 508, 17, '#ffe0f0');
+  topToggles();
+}
+function drawThumbCast(sc) {                           // the chapter's first scene, frozen (for the chapter menu)
+  for (const id in sc.cast) {
+    const o = sc.cast[id][1] || {}; if (o.hide) continue;
+    const a = mkActor(id, sc.cast[id]); a.pose = o.pose === 'walk' ? 'idle' : a.pose;
+    if (a.kind === 'gloop' || a.kind === 'baby') drawGloop(a.x, a.y, { baby: a.kind === 'baby', s: a.s, face: a.face, t: frame, pose: a.pose });
+    else if (a.kind === 'nova') drawNova(a.x, a.y, { s: a.s, t: frame });
+    else drawBot(a.kind === 'echo' ? 'echo' : id, a.x, a.y, { s: a.s, face: a.face, t: frame, pose: a.pose, art: id === 'glint' && CHAPTERS.findIndex(c => c.scenes[0] === sc) > 1 ? { badge: true } : {} });
+  }
+}
+function renderMenu() {
+  skyGrad('#1a0f2e', '#3a1a5a', '#5a2a6a'); sparkleDust(frame, 20, 4);
+  text('📖 Chapters', W / 2, 50, 38, '#ff9ec4');
+  roundBtn(40, 34, '🏠', goTitle);
+  CHAPTERS.forEach((c, i) => {
+    const col = i % 4, row = Math.floor(i / 4), x = 42 + col * 225, y = 74 + row * 200, w = 200, h = 120;
+    BTNS.push({ x, y, w, h: 160, fn: () => playFrom(i, 0) });
+    const sc = c.scenes[0];
+    ctx.save(); rrect(x, y, w, h, 12); ctx.clip(); ctx.translate(x, y); ctx.scale(w / W, h / H);
+    for (const k in FLAGS) delete FLAGS[k];
+    if (sc.bg === 'studio') FLAGS.canvas = 1; if (sc.bg === 'stage') FLAGS.lights = 1; if (sc.bg === 'maze') FLAGS.path = 1; if (sc.bg === 'hall') FLAGS.sign = 1; if (sc.bg === 'music') FLAGS.notes = 1; if (sc.bg === 'town') FLAGS.crate = 1;
+    BG[sc.bg](frame, 0);
+    drawThumbCast(sc);
+    ctx.restore();
+    if (mode === 'menu' && i === menuSel) { ctx.strokeStyle = '#ff9ec4'; ctx.lineWidth = 5; rrect(x - 4, y - 4, w + 8, h + 8, 14); ctx.stroke(); }
+    else { ctx.strokeStyle = 'rgba(255,255,255,.5)'; ctx.lineWidth = 2; rrect(x, y, w, h, 12); ctx.stroke(); }
+    circle(x + 22, y + 22, 18, 'rgba(0,0,0,.55)'); text(String(i + 1), x + 22, y + 30, 20, '#fff');
+    emoji(c.icon, x + w - 22, y + 30, 24);
+    text(c.title, x + w / 2, y + h + 28, c.title.length > 20 ? 16 : 19, '#ffffff');
+  });
+  for (const k in FLAGS) delete FLAGS[k];
+}
+const CARDS = [
+  ['glint', 'Glint ✨', "Used to be Mirror Robo and only COPY. Now it has its own colors, its own glass-bell sound and its own dance!", "Ting-a-ling! I'm Glint!"],
+  ['robo', 'Robo', "The white round robot with the blue eyes. Robo's favorite thing is jumping!", "Boing! Let's jump!"],
+  ['nega', 'Nega-Robo', "Totally cool. Loves rock music and the night stars. A good guy now!", "Heh. The Shimmer Shuffle is awesome."],
+];
+const FRIENDS = [
+  ['gloop', 'King Gloop', "Purple goo with a gold crown. Does the Royal Wobble and plays a big golden tuba.", "Wobble, wobble, wobble!"],
+  ['baby', 'Baby Gloop', "Little light-purple goo. Baby Gloop's favorite thing is BUBBLES!", "Again! Again!"],
+  ['nova', 'Chaos Nova', "A rainbow star with one big eye. DJ of the dance-off and maker of the Mirror Maze.", "Let's DANCE!"],
+];
+function renderCats() {
+  skyGrad('#1a0f2e', '#3a1a5a', '#6a2a6a'); sparkleDust(frame, 20, 6);
+  roundBtn(40, 34, '🏠', goTitle);
+  text(catsPage ? '👑 More Friends' : '🤖 Meet the Team', W / 2, 52, 38, '#ff9ec4');
+  const list = catsPage ? FRIENDS : CARDS, cw = 250, gap = 40, x0 = (W - (list.length * cw + (list.length - 1) * gap)) / 2;
+  list.forEach(([id, name, info, says], i) => {
+    const x = x0 + i * (cw + gap), y = 80, h = 360, cx = x + cw / 2;
+    BTNS.push({ x, y, w: cw, h, fn: () => { wakeAudio(); cardHop[id] = frame; speak(id, says); sfx(id === 'glint' ? 'glassbell' : id === 'robo' ? 'beep' : id === 'nega' ? 'guitar' : id === 'gloop' ? 'blorp' : id === 'baby' ? 'giggle' : 'twinkle'); } });
+    roundRect(x, y, cw, h, 20, id === 'glint' ? '#4a1a3a' : 'rgba(255,255,255,.12)');
+    if (id === 'glint') { ctx.strokeStyle = '#ff9ec4'; ctx.lineWidth = 3; rrect(x, y, cw, h, 20); ctx.stroke(); }
+    const hop = cardHop[id] !== undefined && frame - cardHop[id] < 30 ? -Math.sin((frame - cardHop[id]) / 30 * Math.PI) * 26 : 0, talk = hop !== 0;
+    if (id === 'gloop' || id === 'baby') drawGloop(cx, y + 196 + hop, { baby: id === 'baby', s: id === 'baby' ? 1.6 : 1.7, t: frame, talk, pose: talk ? 'happy' : 'idle' });
+    else if (id === 'nova') drawNova(cx, y + 236 + hop, { s: 1.3, t: frame, talk });
+    else drawBot(id, cx, y + 196 + hop, { s: 3, t: frame + i * 40, talk, art: id === 'glint' ? { badge: true } : {} });
+    text(name, cx, y + 236, 27, CAST[id] ? CAST[id].col : '#fff');
+    let ty = y + 264; for (const l of wrapLines(info, cw - 20, 15)) { text(l, cx, ty, 15, '#ffffff', 'center', false); ty += 20; }
+  });
+  btn(W / 2 - 150, 456, 300, 50, catsPage ? '🤖 Back to the Team' : '👑 More Friends ▶', () => { catsPage = 1 - catsPage; }, { size: 21, col: '#b9fff0', col2: '#1de9b6', tcol: '#08304a' });
+  text('Tap a card to say hi!', W / 2 + 330, 488, 16, '#ffe0f0');
+}
+function renderEnd() {
+  FLAGS.lights = 0.25; BG.stage(frame); delete FLAGS.lights;
+  drawTeam(372);
+  text('The End 💛', W / 2, 112, 54, '#ff9ec4');
+  text("🏆 You earned the Glint's Story trophy!", W / 2, 152, 24, '#ffffff');
+  btn(150, 176, 200, 52, '▶ Watch Again', () => playFrom(0, 0), { sel: true, col: '#ffd0e4', col2: '#ff80ab', tcol: '#4a0f2a' });
+  btn(380, 176, 200, 52, '📖 Chapters', () => { mode = 'menu'; menuSel = 0; }, { col: '#ce93d8', col2: '#ab47bc', tcol: '#fff' });
+  btn(610, 176, 200, 52, '🤖 Meet the Team', () => { mode = 'cats'; catsPage = 0; }, { size: 21, col: '#b9fff0', col2: '#1de9b6', tcol: '#08304a' });
+  roundBtn(40, 34, '🏠', goTitle);
+}
+// =====================================================================
+// 👆 INPUT (tap / click; touchpad.js turns iPad touches on the canvas into mouse events) + ⌨️ keys
+// =====================================================================
+function toCanvas(e) { const r = C.getBoundingClientRect(); return { x: (e.clientX - r.left) * W / (r.width || W), y: (e.clientY - r.top) * H / (r.height || H) }; }
+function onTap(x, y) {
+  wakeAudio();
+  for (let i = BTNS.length - 1; i >= 0; i--) { const b = BTNS[i]; if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) { sfx('click'); b.fn(); return; } }
+  if (mode === 'play') skipLine();
+  else if (mode === 'title' && y > 360) playFrom(canResume() ? save.ch : 0, canResume() ? save.sc : 0);
+}
+C.addEventListener('mousedown', e => { const p = toCanvas(e); onTap(p.x, p.y); if (e.preventDefault) e.preventDefault(); });
+window.addEventListener('keydown', e => {
+  const k = e.key;
+  if (k === ' ' || k.indexOf('Arrow') === 0) { if (e.preventDefault) e.preventDefault(); }
+  if (e.repeat) return;
+  wakeAudio();
+  if (mode === 'play') {
+    if (k === ' ') skipLine();
+    else if (k === 'Enter') togglePause();
+    else if (k === 'ArrowRight') goNextScene();
+    else if (k === 'ArrowLeft') goPrevScene();
+    else if (k === 'Escape') openMenu();
+  } else if (mode === 'title') {
+    if (k === ' ' || k === 'Enter') playFrom(canResume() ? save.ch : 0, canResume() ? save.sc : 0);
+    else if (k === 'ArrowRight') { mode = 'cats'; catsPage = 0; }
+    else if (k === 'ArrowLeft' || k === 'ArrowDown') { mode = 'menu'; menuSel = save.ch || 0; }
+  } else if (mode === 'menu') {
+    if (k === 'ArrowRight') menuSel = (menuSel + 1) % CHAPTERS.length;
+    else if (k === 'ArrowLeft') menuSel = (menuSel + CHAPTERS.length - 1) % CHAPTERS.length;
+    else if (k === 'ArrowDown') menuSel = Math.min(CHAPTERS.length - 1, menuSel + 4);
+    else if (k === 'ArrowUp') menuSel = Math.max(0, menuSel - 4);
+    else if (k === ' ' || k === 'Enter') playFrom(menuSel, 0);
+    else if (k === 'Escape') goTitle();
+  } else if (mode === 'cats') {
+    if (k === 'ArrowRight' || k === 'ArrowLeft' || k === ' ') catsPage = 1 - catsPage;
+    else if (k === 'Escape' || k === 'Enter') goTitle();
+  } else if (mode === 'end') {
+    if (k === ' ' || k === 'Enter') playFrom(0, 0);
+    else if (k === 'Escape') goTitle();
+  }
+});
+
+// =====================================================================
+// 🔁 MAIN LOOP (fixed 60 steps a second)
+// =====================================================================
+let lastT = 0, acc = 0;
+function render() {
+  BTNS = [];
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
+  if (mode === 'play') renderPlay();
+  else if (mode === 'menu') renderMenu();
+  else if (mode === 'cats') renderCats();
+  else if (mode === 'end') renderEnd();
+  else renderTitle();
+}
+function step(dt) {
+  if (mode === 'play') updatePlay(dt);
+  else { frame++; updateFx(dt); }
+}
+function loop(ts) {
+  if (!lastT) lastT = ts;
+  acc = Math.min(0.25, acc + (ts - lastT) / 1000); lastT = ts;
+  while (acc >= 1 / 60) { step(1 / 60); acc -= 1 / 60; }
+  musicTick();
+  render();
+  requestAnimationFrame(loop);
+}
+setSong('soft');
+requestAnimationFrame(loop);
+</script>
