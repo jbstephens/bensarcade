@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>The Claude Museum</title>
+<script src="touchpad.js?v=9"></script>
+<style>
+  html, body { height: 100%; }
+  body { margin: 0; background: #2a1d17; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  canvas { width: min(100vw, calc(100vh * 960 / 540)); height: auto; display: block; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
+  #printBox { position: fixed; inset: 0; overflow: auto; -webkit-overflow-scrolling: touch; background: #fff3e0; z-index: 99999; text-align: center; padding: 12px 12px 40px; box-sizing: border-box; font-family: "Trebuchet MS", Arial, sans-serif; }
+  #printBox .pbBar { position: sticky; top: 0; display: flex; gap: 14px; justify-content: center; padding: 8px; background: #fff3e0; z-index: 2; }
+  #printBox button { font: bold 26px "Trebuchet MS", Arial, sans-serif; border: 0; border-radius: 16px; padding: 14px 30px; color: #fff; cursor: pointer; box-shadow: 0 5px 0 rgba(0,0,0,.25); }
+  #printBox .pbPrint { background: #43a047; } #printBox .pbBack { background: #6d4c41; }
+  #printBox .pbTip { font-size: 20px; color: #5d4037; margin: 6px 0 4px; }
+  #printBox .pbPage { display: block; width: min(94vw, 720px); margin: 16px auto; background: #fff; box-shadow: 0 6px 20px rgba(0,0,0,.25); border-radius: 6px; }
+  @media print {
+    @page { size: letter portrait; margin: 0.3in; }
+    html, body { display: block !important; height: auto !important; overflow: visible !important; background: #fff !important; }
+    body > *:not(#printBox) { display: none !important; }
+    #printBox { position: static; overflow: visible; background: #fff; padding: 0; }
+    #printBox .pbBar, #printBox .pbTip { display: none !important; }
+    #printBox .pbPage { width: 100%; margin: 0; box-shadow: none; border-radius: 0; break-after: page; page-break-after: always; }
+    #printBox .pbPage:last-child { break-after: auto; page-break-after: auto; }
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+<canvas id="game" width="960" height="540"></canvas>
+<script>
+// 🏛️ THE CLAUDE MUSEUM — Ben's idea! A museum of Claude characters (Claude Gloop, Claude Dino, Baby Claude...).
+// Tap an exhibit to check it out (and make it do its thing), collect a stamp for every exhibit in your Museum Passport,
+// then visit the 🎁 Gift Shop to print souvenirs: posters, postcards, stickers and your passport.
+// The GRAND HALL shows CLAUDE NOVA: Chaos Nova mashed with Claude (Ben's own idea!).
+const C = document.getElementById('game');
+let ctx = C.getContext('2d');
+const W = 960, H = 540;
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }
+let save = { seen: {} };
+try { const s = JSON.parse(localStorage.getItem('claudeMuseum') || 'null'); if (s && s.seen) save = s; } catch (_) {}
+function writeSave() { try { localStorage.setItem('claudeMuseum', JSON.stringify(save)); } catch (_) {} }
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+let frame = 0;
+
+// ---------- drawing helpers ----------
+function rr(x, y, w, h, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(x, y, Math.max(0, w), Math.max(0, h), r); else ctx.rect(x, y, w, h); ctx.fill(); }
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, 7); ctx.fill(); }
+function tri(a, b, c, d, e, f, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.lineTo(e, f); ctx.closePath(); ctx.fill(); }
+function text(str, x, y, size, color = '#fff', align = 'center', outline = true) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; ctx.textAlign = align; ctx.lineJoin = 'round';
+  if (outline) { ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = Math.max(3, size / 6); ctx.strokeText(str, x, y); }
+  ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function fit(str, x, y, size, maxW, color, align, outline) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; const w = ctx.measureText(str).width || 0;
+  text(str, x, y, w > maxW ? Math.max(9, Math.floor(size * maxW / w)) : size, color, align, outline);
+}
+function emoji(e, x, y, size) { ctx.font = `${size}px Arial`; ctx.textAlign = 'center'; ctx.fillStyle = '#000'; ctx.fillText(e, x, y); }
+function star(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, q = i % 2 ? r * 0.45 : r; ctx.lineTo(x + Math.cos(a) * q, y + Math.sin(a) * q); } ctx.closePath(); ctx.fill(); }
+function wrap(str, size, maxW) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; const out = []; let line = '';
+  for (const wd of String(str).split(' ')) { const t = line ? line + ' ' + wd : wd; if (line && ctx.measureText(t).width > maxW) { out.push(line); line = wd; } else line = t; }
+  if (line) out.push(line); return out;
+}
+function button(b, label, fill, size = 22) {
+  rr(b.x, b.y + 4, b.w, b.h, 14, 'rgba(0,0,0,.35)'); rr(b.x, b.y, b.w, b.h, 14, fill);
+  fit(label, b.x + b.w / 2, b.y + b.h / 2 + size * 0.36, size, b.w - 12);
+}
+const inBox = (t, b) => t && t.x >= b.x && t.x <= b.x + b.w && t.y >= b.y && t.y <= b.y + b.h;
+
+</script>
+<script>
+// ---------- THE CLAUDE CHARACTERS (all with the orange Claude sparkle) ----------
+const OR = '#d97757', OR2 = '#e8956f', OR3 = '#b85c3c', CREAM = '#fbe3d3', DARK = '#3d2b23', GOLD = '#ffc94d';
+function sparkle(cx, cy, r, col, rot = 0, lw) {               // the Claude sparkle: 8 rounded rays
+  ctx.save(); ctx.strokeStyle = col; ctx.lineCap = 'round'; ctx.lineWidth = lw || Math.max(1.5, r * 0.28); ctx.beginPath();
+  for (let i = 0; i < 8; i++) { const a = rot + i * Math.PI / 4, q = i % 2 ? 0.7 : 1; ctx.moveTo(cx + Math.cos(a) * r * 0.25, cy + Math.sin(a) * r * 0.25); ctx.lineTo(cx + Math.cos(a) * r * q, cy + Math.sin(a) * r * q); }
+  ctx.stroke(); ctx.restore();
+}
+function eyes(cx, cy, s, gap = 12, size = 6, col = DARK) {
+  const bl = !PRINTING && frame % 220 < 6 ? 0.15 : 1;
+  for (const d of [-1, 1]) { ctx.fillStyle = col; ctx.beginPath(); ctx.ellipse(cx + d * gap * s, cy, size * s * 0.8, size * s * bl, 0, 0, 7); ctx.fill(); if (bl > 0.5) circle(cx + d * gap * s + 1.5 * s, cy - 2 * s, size * 0.35 * s, '#fff'); }
+}
+function smile(cx, cy, s, w = 7, col = DARK, open = 0) {
+  ctx.strokeStyle = col; ctx.lineWidth = 2.2 * s; ctx.lineCap = 'round'; ctx.beginPath(); ctx.arc(cx, cy, w * s, 0.2, Math.PI - 0.2); ctx.stroke(); ctx.lineCap = 'butt';
+  if (open > 0) { ctx.fillStyle = '#7b2d1e'; ctx.beginPath(); ctx.ellipse(cx, cy + w * 0.6 * s, w * 0.8 * s, w * 0.7 * open * s, 0, 0, 7); ctx.fill(); }
+}
+function blush(cx, cy, s, gap = 18) { circle(cx - gap * s, cy, 4 * s, 'rgba(255,128,128,.45)'); circle(cx + gap * s, cy, 4 * s, 'rgba(255,128,128,.45)'); }
+function robot(cx, by, s, pal) {                               // a Robo Jump-style body
+  const w = 30 * s, h = 40 * s, x = cx - w / 2, y = by - h;
+  ctx.fillStyle = pal[4]; ctx.fillRect(x + 4 * s, y + h - 7 * s, 8 * s, 7 * s); ctx.fillRect(x + w - 12 * s, y + h - 7 * s, 8 * s, 7 * s);
+  rr(x + 2 * s, y + h * 0.5, w - 4 * s, h * 0.4, 6 * s, pal[1]);
+  rr(x - 5 * s, y + h * 0.3 - 3 * s, 6 * s, 9 * s, 3 * s, pal[5]); rr(x + w - 1 * s, y + h * 0.3 - 3 * s, 6 * s, 9 * s, 3 * s, pal[5]);
+  rr(x - 2 * s, y, w + 4 * s, h * 0.55, 12 * s, pal[0]); rr(x + 2 * s, y + 4 * s, w - 4 * s, h * 0.55 - 9 * s, 9 * s, pal[2]);
+  return { x, y, w, h, ey: y + h * 0.27 };
+}
+// each: [id, name, emoji, action button, where it was "discovered", fun facts, draw(cx, cy, s, a)]  (a = 0..1 while it does its thing)
+const CHARS = [
+  ['robo', 'Claude Robo', '🤖', 'BEEP BOOP!', 'The Inventor Room of the Secret Print Shop', ['He was the very FIRST Claude character!', 'Ben invented him in the Secret Print Shop.', 'His chest sparkle glows when he has a good idea.'],
+    (cx, cy, s, a) => { const S = s * 2.2, by = cy + 44 * s - Math.abs(Math.sin(a * 12)) * 20 * s * (a > 0 ? 1 : 0); const b = robot(cx, by, S, [OR2, CREAM, DARK, '#fff', OR, OR]);
+      eyes(cx, b.ey, S * 0.5, 12, 8, '#fff'); sparkle(cx, b.y + b.h * 0.7, 6 * S, OR, frame * 0.02); if (a > 0) text('BEEP BOOP!', cx, cy - 70 * s, 22 * s, '#fff'); }],
+  ['baby', 'Baby Claude', '👶', 'GIGGLE!', 'Floating in a sunbeam', ['The teeniest Claude character of all!', 'She is smaller than a cookie!', 'Her sparkle rays wiggle when she is happy.'],
+    (cx, cy, s, a) => { const y = cy + Math.sin(frame * 0.06) * 6 * s - (a > 0 ? Math.abs(Math.sin(a * 14)) * 14 * s : 0); sparkle(cx, y, 46 * s, OR, frame * 0.01 + (a > 0 ? a * 6 : 0), 10 * s);
+      circle(cx, y, 24 * s, CREAM); eyes(cx, y - 2 * s, s, 9, 7); blush(cx, y + 8 * s, s, 14); smile(cx, y + 6 * s, s, 5, DARK, a > 0 ? 1 : 0);
+      if (a > 0) for (let i = 0; i < 3; i++) text('♥', cx + (i - 1) * 30 * s, y - 50 * s - a * 30 * s, 18 * s, '#ff80ab', 'center', false); }],
+  ['gloop', 'Claude Gloop', '🟠', 'JIGGLE!', 'A big orange puddle on Moon Base', ['He is King Gloop\'s orange cousin!', 'He wears a sparkle instead of a crown.', 'When he jiggles, he sounds like a bowl of jelly.'],
+    (cx, cy, s, a) => { const j = a > 0 ? Math.sin(a * 30) * 0.15 : Math.sin(frame * 0.05) * 0.03; ctx.save(); ctx.translate(cx, cy + 40 * s); ctx.scale(1 + j, 1 - j);
+      const g = ctx.createLinearGradient(0, -80 * s, 0, 0); g.addColorStop(0, OR2); g.addColorStop(1, OR3); ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(-50 * s, 0); ctx.bezierCurveTo(-56 * s, -70 * s, 56 * s, -70 * s, 50 * s, 0); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,.25)'; ctx.beginPath(); ctx.ellipse(-22 * s, -44 * s, 8 * s, 12 * s, -0.4, 0, 7); ctx.fill();
+      eyes(0, -32 * s, s, 14, 7); smile(0, -22 * s, s, 9, DARK, a > 0 ? 0.8 : 0); ctx.restore();
+      sparkle(cx, cy - 26 * s, 14 * s, GOLD, frame * 0.03, 4 * s); }],
+  ['cat', 'Claude Cat', '🐱', 'PURRR!', 'Napping on a warm laptop', ['She is an orange robot cat.', 'When she purrs, little sparkles float up.', 'Her favorite toy is a ball of yarn made of code.'],
+    (cx, cy, s, a) => { const S = s * 2.2, by = cy + 44 * s, b = robot(cx, by, S, [OR2, CREAM, DARK, '#fff', OR, OR]);
+      tri(b.x - 1 * S, b.y + 4 * S, b.x + 8 * S, b.y + 1 * S, b.x + 1 * S, b.y - 9 * S, OR2); tri(b.x + b.w + 1 * S, b.y + 4 * S, b.x + b.w - 8 * S, b.y + 1 * S, b.x + b.w - 1 * S, b.y - 9 * S, OR2);
+      eyes(cx, b.ey, S * 0.5, 12, 8, '#a5d6a7'); ctx.strokeStyle = '#fff'; ctx.lineWidth = 0.8 * S; ctx.beginPath(); for (const d of [-1, 1]) for (const k of [-2, 2]) { ctx.moveTo(cx + d * 8 * S, b.ey + 7 * S); ctx.lineTo(cx + d * 17 * S, b.ey + 7 * S + k * S); } ctx.stroke();
+      ctx.strokeStyle = OR; ctx.lineWidth = 3 * S; ctx.beginPath(); ctx.moveTo(b.x + b.w, b.y + b.h * 0.85); ctx.quadraticCurveTo(b.x + b.w + 14 * S, b.y + b.h * 0.85, b.x + b.w + 10 * S + Math.sin(frame * 0.1) * 3 * S, b.y + b.h * 0.5); ctx.stroke();
+      sparkle(cx, b.y + b.h * 0.7, 5 * S, OR, 0); if (a > 0) for (let i = 0; i < 5; i++) sparkle(cx + Math.sin(i * 2 + a * 9) * 40 * s, cy - 40 * s - ((a * 120 + i * 25) % 90) * s, 7 * s, GOLD, i); }],
+  ['ghost', 'Claude Ghost', '👻', 'BOO! (HI!)', 'The dark hallway at midnight', ['He is a FRIENDLY ghost. He says "boo" but means "hi".', 'He glows orange so nobody bumps into him in the dark.', 'He can float right through walls (and homework).'],
+    (cx, cy, s, a) => { const k = 1 + (a > 0 ? Math.sin(a * Math.PI) * 0.25 : 0), y = cy + Math.sin(frame * 0.05) * 8 * s; ctx.save(); ctx.translate(cx, y); ctx.scale(k, k);
+      ctx.fillStyle = 'rgba(217,119,87,.25)'; ctx.beginPath(); ctx.ellipse(0, 0, 62 * s, 70 * s, 0, 0, 7); ctx.fill();
+      ctx.fillStyle = 'rgba(232,149,111,.92)'; ctx.beginPath(); ctx.moveTo(-40 * s, 50 * s); ctx.lineTo(-40 * s, -10 * s); ctx.arc(0, -10 * s, 40 * s, Math.PI, 0); ctx.lineTo(40 * s, 50 * s);
+      for (let i = 0; i < 4; i++) { const x0 = 40 * s - i * 20 * s; ctx.quadraticCurveTo(x0 - 5 * s, (i % 2 ? 60 : 40) * s + Math.sin(frame * 0.1 + i) * 3 * s, x0 - 20 * s, 50 * s); } ctx.closePath(); ctx.fill();
+      eyes(0, -14 * s, s, 13, 8); smile(0, 0, s, 7, DARK, a > 0 ? 1 : 0); sparkle(0, 26 * s, 8 * s, CREAM, frame * 0.02); ctx.restore();
+      if (a > 0) text('BOO! (that means HI!)', cx, cy - 80 * s, 20 * s, '#fff'); }],
+  ['dino', 'Claude Dino', '🦖', 'ROAR "HELLO!"', 'Dino Moon, a long long time ago', ['His roar sounds exactly like "HELLO!"', 'The spikes on his back are little sparkles.', 'He only eats orange things: carrots, oranges and orange crayons (just kidding about the crayons).'],
+    (cx, cy, s, a) => { const y = cy + 30 * s; ctx.fillStyle = OR; ctx.beginPath(); ctx.moveTo(cx - 40 * s, y); ctx.quadraticCurveTo(cx - 90 * s, y - 10 * s, cx - 92 * s, y - 34 * s); ctx.quadraticCurveTo(cx - 70 * s, y - 14 * s, cx - 30 * s, y - 26 * s); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(cx - 5 * s, y - 20 * s, 44 * s, 32 * s, 0, 0, 7); ctx.fill(); ctx.fillStyle = CREAM; ctx.beginPath(); ctx.ellipse(cx + 2 * s, y - 12 * s, 28 * s, 20 * s, 0, 0, 7); ctx.fill();
+      rr(cx - 30 * s, y, 16 * s, 22 * s, 5 * s, OR3); rr(cx + 10 * s, y, 16 * s, 22 * s, 5 * s, OR3);
+      rr(cx + 18 * s, y - 80 * s, 54 * s, 46 * s, 20 * s, OR); rr(cx + 22 * s, y - 50 * s, 24 * s, 24 * s, 8 * s, OR);
+      eyes(cx + 46 * s, y - 64 * s, s, 9, 5); ctx.fillStyle = '#7b2d1e'; if (a > 0) { ctx.beginPath(); ctx.ellipse(cx + 58 * s, y - 44 * s, 10 * s, 8 * s, 0, 0, 7); ctx.fill(); } else smile(cx + 52 * s, y - 52 * s, s, 6);
+      for (let i = 0; i < 4; i++) sparkle(cx - 38 * s + i * 16 * s, y - 52 * s - Math.sin(i) * 4 * s, 7 * s, GOLD, i);
+      if (a > 0) text('HELLO!!', cx + 70 * s, y - 100 * s, 26 * s + a * 6 * s, '#fff'); }],
+  ['saucer', 'Claude Saucer', '🛸', 'BEAM DOWN IDEAS!', 'Zooming past Star Station', ['Instead of dropping bombs, it beams down IDEAS!', 'The sparkle inside the dome is the pilot.', 'It is the only saucer that waves hello with its lights.'],
+    (cx, cy, s, a) => { if (a > 0) { ctx.fillStyle = 'rgba(255,236,179,.45)'; ctx.beginPath(); ctx.moveTo(cx - 20 * s, cy + 10 * s); ctx.lineTo(cx + 20 * s, cy + 10 * s); ctx.lineTo(cx + 60 * s, cy + 110 * s); ctx.lineTo(cx - 60 * s, cy + 110 * s); ctx.fill();
+        for (let i = 0; i < 4; i++) text('💡', cx + (i - 1.5) * 26 * s, cy + 30 * s + ((a * 200 + i * 22) % 80) * s, 18 * s, '#000', 'center', false); }
+      const y = cy + Math.sin(frame * 0.06) * 5 * s; ctx.fillStyle = 'rgba(255,248,225,.85)'; ctx.beginPath(); ctx.ellipse(cx, y - 14 * s, 30 * s, 26 * s, 0, Math.PI, 0); ctx.fill(); sparkle(cx, y - 22 * s, 13 * s, OR, frame * 0.04);
+      ctx.fillStyle = OR; ctx.beginPath(); ctx.ellipse(cx, y - 2 * s, 74 * s, 18 * s, 0, 0, 7); ctx.fill(); ctx.fillStyle = OR3; ctx.beginPath(); ctx.ellipse(cx, y + 6 * s, 50 * s, 8 * s, 0, 0, 7); ctx.fill();
+      for (let i = 0; i < 6; i++) circle(cx - 55 * s + i * 22 * s, y - 2 * s, 4 * s, (Math.floor(frame / 10) + i) % 2 ? GOLD : CREAM); }],
+  ['dragon', 'Claude Dragon', '🐉', 'SPARKLE BREATH!', 'A cozy cave full of crayons', ['She breathes SPARKLES instead of fire.', 'Her wings are as soft as a blanket.', 'She guards a treasure pile of good ideas.'],
+    (cx, cy, s, a) => { const y = cy + 30 * s, f = Math.sin(frame * 0.08) * 0.2;
+      for (const d of [-1, 1]) { ctx.save(); ctx.translate(cx - 6 * s, y - 40 * s); ctx.rotate(d * (0.3 + f) - (d < 0 ? 0 : 0)); ctx.fillStyle = 'rgba(184,92,60,.85)'; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(d * 70 * s, -50 * s); ctx.lineTo(d * 60 * s, -10 * s); ctx.lineTo(d * 74 * s, 10 * s); ctx.closePath(); ctx.fill(); ctx.restore(); }
+      ctx.fillStyle = OR; ctx.beginPath(); ctx.ellipse(cx - 6 * s, y - 16 * s, 40 * s, 30 * s, 0, 0, 7); ctx.fill(); ctx.beginPath(); ctx.moveTo(cx - 40 * s, y - 10 * s); ctx.quadraticCurveTo(cx - 80 * s, y + 10 * s, cx - 90 * s, y - 20 * s); ctx.lineTo(cx - 40 * s, y - 24 * s); ctx.fill();
+      tri(cx - 96 * s, y - 14 * s, cx - 84 * s, y - 30 * s, cx - 80 * s, y - 12 * s, GOLD);
+      ctx.fillStyle = CREAM; ctx.beginPath(); ctx.ellipse(cx, y - 10 * s, 24 * s, 18 * s, 0, 0, 7); ctx.fill();
+      ctx.fillStyle = OR; ctx.beginPath(); ctx.ellipse(cx + 34 * s, y - 64 * s, 26 * s, 20 * s, 0, 0, 7); ctx.fill(); rr(cx + 16 * s, y - 56 * s, 18 * s, 30 * s, 8 * s, OR);
+      tri(cx + 22 * s, y - 80 * s, cx + 30 * s, y - 82 * s, cx + 20 * s, y - 98 * s, GOLD); tri(cx + 38 * s, y - 82 * s, cx + 46 * s, y - 80 * s, cx + 44 * s, y - 98 * s, GOLD);
+      eyes(cx + 36 * s, y - 68 * s, s, 8, 5); smile(cx + 44 * s, y - 58 * s, s, 5);
+      if (a > 0) for (let i = 0; i < 7; i++) { const d = ((a * 300 + i * 18) % 120) * s; sparkle(cx + 64 * s + d, y - 58 * s + Math.sin(i * 1.7 + a * 20) * d * 0.25, (5 + i % 3 * 2) * s, i % 2 ? GOLD : OR2, i); } }],
+  ['wizard', 'Claude Wizard', '🧙', 'MAGIC!', 'The top of the Game Factory tower', ['He waves his sparkle wand and NEW GAMES pop out!', 'His hat is covered in tiny sparkles.', 'His magic word is "Abraca-CODE-bra!"'],
+    (cx, cy, s, a) => { const y = cy + 50 * s; ctx.fillStyle = '#5c6bc0'; ctx.beginPath(); ctx.moveTo(cx - 44 * s, y); ctx.lineTo(cx + 44 * s, y); ctx.lineTo(cx + 18 * s, y - 70 * s); ctx.lineTo(cx - 18 * s, y - 70 * s); ctx.fill();
+      for (let i = 0; i < 3; i++) sparkle(cx - 20 * s + i * 20 * s, y - 20 * s - (i % 2) * 18 * s, 5 * s, GOLD, i);
+      circle(cx, y - 84 * s, 24 * s, OR2); eyes(cx, y - 88 * s, s, 9, 5); smile(cx, y - 80 * s, s, 6); blush(cx, y - 78 * s, s, 15);
+      ctx.fillStyle = '#3949ab'; ctx.beginPath(); ctx.moveTo(cx - 36 * s, y - 100 * s); ctx.lineTo(cx + 36 * s, y - 100 * s); ctx.lineTo(cx + 8 * s, y - 160 * s); ctx.fill(); ctx.fillRect(cx - 40 * s, y - 104 * s, 80 * s, 8 * s);
+      sparkle(cx - 2 * s, y - 128 * s, 7 * s, GOLD, frame * 0.03); sparkle(cx + 14 * s, y - 112 * s, 4 * s, CREAM, 0);
+      ctx.strokeStyle = '#8d6e63'; ctx.lineWidth = 4 * s; ctx.beginPath(); ctx.moveTo(cx + 40 * s, y - 40 * s); ctx.lineTo(cx + 66 * s, y - 92 * s); ctx.stroke(); sparkle(cx + 68 * s, y - 96 * s, 10 * s, a > 0 ? '#fff59d' : GOLD, frame * 0.08);
+      if (a > 0) ['🎮', '🕹️', '👾', '🤖'].forEach((e, i) => { const t = (a * 2 + i * 0.25) % 1; emoji(e, cx + 68 * s + Math.cos(i * 1.6) * t * 90 * s, y - 96 * s - t * 80 * s, 24 * s); }); }],
+  ['nova', 'CLAUDE NOVA', '🌟', 'CLAUDE CHAOS!', 'The edge of the Final Factory (💡 Ben\'s idea!)', ['💡 Ben\'s idea: Chaos Nova MASHED with Claude!', 'She has Chaos Nova\'s ONE big eye and glowing wings, and Claude\'s orange sparkle colors.', 'Instead of making chaos, she makes CREATIVE chaos: new ideas everywhere!'],
+    (cx, cy, s, a) => { const R = 62 * s, spin = frame * (a > 0 ? 0.08 : 0.012);
+      for (let i = 3; i >= 1; i--) { ctx.globalAlpha = 0.16; circle(cx, cy, R * (1.15 + i * 0.3) + Math.sin(frame * 0.08 + i) * 5 * s, [GOLD, OR2, CREAM][i - 1]); } ctx.globalAlpha = 1;
+      sparkle(cx, cy, R * 1.7, 'rgba(217,119,87,.55)', -spin * 0.6, 9 * s);
+      const flap = Math.sin(frame * 0.1) * 0.18;
+      for (const d of [-1, 1]) for (let k = 1; k >= 0; k--) { ctx.save(); ctx.translate(cx + d * R * 0.6, cy); ctx.rotate(d * (0.35 + k * 0.5 + flap)); ctx.fillStyle = k ? 'rgba(232,149,111,.85)' : 'rgba(255,201,77,.9)'; ctx.beginPath(); ctx.ellipse(d * R * 0.55, 0, R * 0.6, R * 0.2, 0, 0, 7); ctx.fill(); ctx.restore(); }
+      const starP = (rad, r2, rot) => { ctx.beginPath(); for (let i = 0; i < 10; i++) { const an = rot - Math.PI / 2 + i * Math.PI / 5, q = i % 2 ? r2 : rad; ctx.lineTo(cx + Math.cos(an) * q, cy + Math.sin(an) * q); } ctx.closePath(); };
+      for (const [dx, col] of [[-6, 'rgba(217,119,87,.5)'], [6, 'rgba(255,201,77,.5)']]) { ctx.save(); ctx.translate(dx * s, 0); starP(R, R * 0.55, spin); ctx.fillStyle = col; ctx.fill(); ctx.restore(); }
+      [OR3, OR, OR2, '#f4b393', CREAM].forEach((col, i) => { starP(R * (1 - i * 0.16), R * 0.55 * (1 - i * 0.16), spin + i * 0.06); ctx.fillStyle = col; ctx.fill(); if (!i) { ctx.strokeStyle = GOLD; ctx.lineWidth = 3 * s; ctx.stroke(); } });
+      const bl = !PRINTING && frame % 200 < 7 ? 0.15 : 1; ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.ellipse(cx, cy, R * 0.42, R * 0.34 * bl, 0, 0, 7); ctx.fill(); ctx.strokeStyle = DARK; ctx.lineWidth = 3 * s; ctx.stroke();
+      if (bl > 0.5) { circle(cx, cy, R * 0.2, OR); sparkle(cx, cy, R * 0.16, CREAM, spin * 2, 2.5 * s); }
+      if (!PRINTING && frame % 40 < 4) for (let i = 0; i < 3; i++) { ctx.fillStyle = [OR, GOLD, CREAM][i]; ctx.fillRect(cx - R, cy - R * 0.5 + i * R * 0.5, R * 2, 4 * s); }
+      if (a > 0) for (let i = 0; i < 10; i++) { const an = i / 10 * 6.28 + a * 4, d = (a * 260) % 160 * s; sparkle(cx + Math.cos(an) * d, cy + Math.sin(an) * d, 8 * s, i % 2 ? GOLD : OR2, an); } }],
+];
+const CI = {}; CHARS.forEach((c, i) => CI[c[0]] = i);
+let PRINTING = false;
+function drawChar(i, cx, cy, s, a = 0) { ctx.save(); try { CHARS[i][6](cx, cy, s, a); } finally { ctx.restore(); } }
+</script>
+<script>
+// ---------- 8 CLAUDE HEROES (Ben's idea: GOOD Claude versions of Robo Jump characters. They are all nice, not bosses!) ----------
+const CB = (cx, cy, s, pal, up = 0) => robot(cx, cy + 44 * s - up, s * 2.2, pal);
+const CLAUDE_BOSSES = [
+  ['phantom', 'Phantom Claude', '👻', 'VANISH!', 'Moon Base, glowing in the dark (like Phantom Robo in Robo Jump 5)', ['A see-through Claude, just like Phantom Robo!', 'He glows teal and orange.', 'He is a friendly night-light for anyone scared of the dark.'],
+    (cx, cy, s, a) => { const al = a > 0 ? 0.15 + Math.abs(Math.cos(a * 9)) * 0.5 : 0.6; for (let k = 3; k >= 1; k--) { ctx.fillStyle = k % 2 ? 'rgba(29,233,182,.14)' : 'rgba(217,119,87,.18)'; ctx.beginPath(); ctx.ellipse(cx, cy, 50 * s + k * 12 * s, 62 * s + k * 12 * s, 0, 0, 7); ctx.fill(); }
+      ctx.globalAlpha = al; const S = s * 2.2, b = CB(cx, cy, s, ['#ffd6c2', '#ffe9dc', '#004d40', '#64ffda', OR2, '#1de9b6']); eyes(cx, b.ey, S * 0.5, 12, 8, '#64ffda'); sparkle(cx, b.y + b.h * 0.7, 6 * S, OR, frame * 0.02); ctx.globalAlpha = 1; }],
+  ['nega', 'Nega Claude', '🌑', 'MIRROR TWIN!', 'The Mirror Dimension (like Nega-Robo in Robo Jump 4)', ['Claude\'s twin from the Mirror Dimension!', 'Dark gray with a red visor and glowing orange eyes.', 'He is super nice and gives the best high fives.'],
+    (cx, cy, s, a) => { const S = s * 2.2; if (a > 0) { ctx.globalAlpha = 0.45; const b2 = CB(cx + Math.sin(a * 10) * 50 * s, cy, s, ['#fbe3d3', '#fff', DARK, '#fff', OR, OR]); ctx.globalAlpha = 1; }
+      const b = CB(cx, cy, s, ['#37474f', '#263238', '#b71c1c', '#fff', '#4a148c', '#7b1fa2']); eyes(cx, b.ey, S * 0.5, 12, 8, '#ff9e80'); sparkle(cx, b.y + b.h * 0.7, 6 * S, '#ff7043', frame * 0.02); }],
+  ['glitch', 'Glitch Claude', '👾', 'GLITCH!', 'Scrambled save data (like Glitch Robo in Robo Jump 6)', ['A friendly Claude made of wiggly pixels!', 'He has square eyes and flickers pink and blue.', 'When he glitches, he teleports a few steps away.'],
+    (cx, cy, s, a) => { const S = s * 2.2, jx = a > 0 ? (Math.random() - 0.5) * 30 * s : 0; for (const [dx, col] of [[-4, 'rgba(255,0,229,.5)'], [4, 'rgba(0,229,255,.5)']]) { ctx.globalAlpha = 0.6; CB(cx + jx + dx * s, cy, s, [col, col, col, col, col, col]); }
+      ctx.globalAlpha = 1; const b = CB(cx + jx, cy, s, [OR2, '#3a2a4f', '#07070f', '#fff', '#5e0b6e', '#00e676']); ctx.fillStyle = '#ff00e5'; ctx.fillRect(cx + jx - 13 * S * 0.5 - 4 * s, b.ey - 5 * s, 9 * s, 9 * s); ctx.fillStyle = '#00e5ff'; ctx.fillRect(cx + jx + 13 * S * 0.5 - 5 * s, b.ey - 5 * s, 9 * s, 9 * s);
+      sparkle(cx + jx, b.y + b.h * 0.7, 6 * S, OR, 0); if ((!PRINTING && frame % 30 < 4) || a > 0) for (let i = 0; i < 3; i++) { ctx.fillStyle = ['#ff00ff', '#00e5ff', OR][i]; ctx.fillRect(cx - 50 * s, cy - 40 * s + i * 30 * s, 100 * s, 4 * s); } }],
+  ['time', 'Time Claude', '⏰', 'FREEZE TIME!', 'The Clock Tower (like Time Robo in Robo Jump 7)', ['A bronze-gold Claude with a ticking clock in his visor!', 'His ear pods are little gears.', 'He can freeze time... but only to make cookies cool down faster.'],
+    (cx, cy, s, a) => { const S = s * 2.2, b = CB(cx, cy, s, ['#ffca28', '#ffe082', '#3e2723', '#fff', '#8d6e63', '#ffa000']); const ccx = cx, ccy = b.ey;
+      circle(ccx, ccy, 8 * S * 0.6, '#fff8e1'); ctx.strokeStyle = DARK; ctx.lineWidth = 2 * s; ctx.beginPath(); const ang = a > 0 ? 0 : frame * 0.05; ctx.moveTo(ccx, ccy); ctx.lineTo(ccx + Math.cos(ang) * 8 * s, ccy + Math.sin(ang) * 8 * s); ctx.moveTo(ccx, ccy); ctx.lineTo(ccx, ccy - 6 * s); ctx.stroke();
+      for (const d of [-1, 1]) sparkle(cx + d * 17 * S * 0.98, b.y + b.h * 0.3 + 1.5 * S, 4 * S, '#8d6e63', frame * 0.03 * d);
+      ctx.fillStyle = '#8d6e63'; ctx.fillRect(cx - 1 * s, b.y - 14 * s, 2 * s, 14 * s); circle(cx, b.y - 18 * s, 6 * s, '#ffe082'); sparkle(cx, b.y + b.h * 0.7, 6 * S, OR, 0);
+      if (a > 0) { ctx.fillStyle = 'rgba(128,216,255,.25)'; ctx.fillRect(cx - 120 * s, cy - 110 * s, 240 * s, 220 * s); text('⏸ TIME FROZEN!', cx, cy - 92 * s, 18 * s, '#80d8ff'); } }],
+  ['mirror', 'Mirror Claude', '🪞', 'COPY ME!', 'The Hall of Mirrors (like Mirror Robo, a.k.a. Glint, in Robo Jump 9)', ['A shiny copper Claude that copies every move you make!', 'He copies you a little bit late, and flipped like a reflection.', 'Just like Glint, he picked his own name: SHINE!'],
+    (cx, cy, s, a) => { const S = s * 2.2; ctx.save(); ctx.globalAlpha = 0.35; ctx.translate(cx * 2, 0); ctx.scale(-1, 1); CB(cx - 46 * s - (a > 0 ? Math.sin(a * 12) * 10 * s : 0), cy, s, ['#ffccbc', '#fbe9e7', '#4e342e', '#fff', '#bcaaa4', '#bcaaa4']); ctx.restore();
+      const b = CB(cx - 10 * s, cy, s, ['#e0a080', '#f6d5c3', '#4e342e', '#fff', '#a1887f', '#d7ccc8']); eyes(cx - 10 * s, b.ey, S * 0.5, 12, 8, '#fff'); ctx.strokeStyle = 'rgba(255,255,255,.8)'; ctx.lineWidth = 3 * s; ctx.beginPath(); ctx.moveTo(b.x + 4 * s, b.y + 6 * s); ctx.lineTo(b.x + 12 * s, b.y + 2 * s); ctx.stroke(); sparkle(cx - 10 * s, b.y + b.h * 0.7, 6 * S, OR, frame * 0.02); }],
+  ['lock', 'Lock Claude', '🔒', 'UNLOCK!', 'The Locked Game Vault (like Lock Robo in Robo Jump 8)', ['A Claude with a big padlock on his tummy!', 'He unlocks doors for everybody and always finds lost keys.', 'His key ring jingles when he walks.'],
+    (cx, cy, s, a) => { const S = s * 2.2, b = CB(cx, cy, s, [OR2, '#90a4ae', '#263238', '#fff', '#546e7a', '#ffd740']); eyes(cx, b.ey, S * 0.5, 12, 8, GOLD);
+      const lx = cx, ly = b.y + b.h * 0.68; ctx.strokeStyle = '#ffd740'; ctx.lineWidth = 3 * s; ctx.beginPath(); ctx.arc(lx, ly - 2 * s - (a > 0 ? 8 * s : 0), 8 * s, Math.PI, 0); ctx.stroke(); rr(lx - 11 * s, ly - 2 * s, 22 * s, 18 * s, 4 * s, '#ffc400'); sparkle(lx, ly + 7 * s, 5 * s, OR, 0);
+      ctx.strokeStyle = GOLD; ctx.lineWidth = 2 * s; ctx.beginPath(); ctx.arc(b.x + b.w + 10 * s, b.y + b.h * 0.85, 6 * s, 0, 7); ctx.stroke(); ctx.fillStyle = GOLD; ctx.fillRect(b.x + b.w + 14 * s, b.y + b.h * 0.85, 10 * s, 2.5 * s);
+      if (a > 0) text('CLICK! 🔓', cx, cy - 86 * s, 20 * s, '#fff'); }],
+  ['element', 'King Element Claude', '👑', 'ELEMENT BLAST!', 'The Sunrise Throne (like King Element Robo in Robo Jump 10)', ['A big royal Claude with six glowing gems in his crown!', 'Fire, water, wind, earth, ice and lightning!', 'He is a kind king who shares his gems with everybody.'],
+    (cx, cy, s, a) => { const S = s * 2.6, b = robot(cx, cy + 50 * s, S, [OR2, '#ffccbc', DARK, '#fff', '#bf360c', '#ffd740']); eyes(cx, b.ey, S * 0.5, 12, 8, '#fff');
+      ctx.fillStyle = '#ffc400'; ctx.beginPath(); ctx.moveTo(b.x, b.y + 2 * s); for (let i = 0; i <= 6; i++) { ctx.lineTo(b.x + (i * b.w) / 6, b.y - (i % 2 ? 4 : 16) * s); } ctx.lineTo(b.x + b.w, b.y + 2 * s); ctx.fill();
+      ['#ff6d00', '#2196f3', '#26c6da', '#8d6e63', '#81d4fa', '#ffea00'].forEach((c, i) => circle(b.x + ((i + 0.5) * b.w) / 6, b.y - 3 * s, 3.2 * s, c)); sparkle(cx, b.y + b.h * 0.7, 6 * S, OR, frame * 0.02);
+      if (a > 0) ['🔥', '💧', '🌪️', '🪨', '❄️', '⚡'].forEach((e, i) => { const an = i / 6 * 6.28 + a * 6, d = 70 * s + a * 40 * s; emoji(e, cx + Math.cos(an) * d, cy + Math.sin(an) * d * 0.7, 26 * s); }); }],
+  ['musical', 'Musical Claude', '🎩', 'CONDUCT!', 'The Concert Hall (like Musical Robo in Robo Jump 11)', ['A conductor Claude in a tuxedo and a tall top hat!', 'There is a ticking metronome on top of his hat.', 'He conducts an orchestra of sparkles.'],
+    (cx, cy, s, a) => { const S = s * 2.2, b = CB(cx, cy, s, [OR2, '#212121', DARK, '#fff', '#212121', '#ffd740']); eyes(cx, b.ey, S * 0.5, 12, 8, '#fff');
+      tri(cx - 4 * s, b.y + b.h * 0.56, cx + 4 * s, b.y + b.h * 0.56, cx, b.y + b.h * 0.86, '#fff'); tri(cx - 9 * s, b.y + b.h * 0.52, cx - 9 * s, b.y + b.h * 0.62, cx, b.y + b.h * 0.57, OR); tri(cx + 9 * s, b.y + b.h * 0.52, cx + 9 * s, b.y + b.h * 0.62, cx, b.y + b.h * 0.57, OR);
+      rr(cx - 18 * s, b.y - 30 * s, 36 * s, 32 * s, 3 * s, '#212121'); rr(cx - 26 * s, b.y - 2 * s, 52 * s, 6 * s, 3 * s, '#212121'); ctx.fillStyle = OR; ctx.fillRect(cx - 18 * s, b.y - 10 * s, 36 * s, 5 * s);
+      tri(cx - 6 * s, b.y - 30 * s, cx + 6 * s, b.y - 30 * s, cx, b.y - 48 * s, '#a1887f'); ctx.strokeStyle = DARK; ctx.lineWidth = 1.5 * s; ctx.beginPath(); ctx.moveTo(cx, b.y - 32 * s); ctx.lineTo(cx + Math.sin(frame * 0.12) * 5 * s, b.y - 46 * s); ctx.stroke();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2 * s; ctx.beginPath(); ctx.moveTo(b.x + b.w + 4 * s, b.y + b.h * 0.5); ctx.lineTo(b.x + b.w + 22 * s, b.y + b.h * 0.2 + (a > 0 ? Math.sin(a * 30) * 10 * s : 0)); ctx.stroke();
+      if (a > 0) for (let i = 0; i < 5; i++) text(['♪', '♫', '♩'][i % 3], cx - 60 * s + i * 30 * s, cy - 70 * s - ((a * 200 + i * 20) % 50) * s, 22 * s, i % 2 ? GOLD : '#fff'); }],
+];
+CHARS.splice(CHARS.findIndex(c => c[0] === 'nova'), 0, ...CLAUDE_BOSSES);
+CHARS.forEach((c, i) => CI[c[0]] = i);
+</script>
+<script>
+// ---------- sounds ----------
+let AC = null;
+function beep(f, t = 0, d = 0.12, type = 'square', v = 0.06) {
+  try { AC = AC || new (window.AudioContext || window.webkitAudioContext)(); const o = AC.createOscillator(), g = AC.createGain(), n = AC.currentTime + t;
+    o.type = type; o.frequency.value = f; g.gain.setValueAtTime(v, n); g.gain.exponentialRampToValueAtTime(0.001, n + d); o.connect(g); g.connect(AC.destination); o.start(n); o.stop(n + d + 0.02); } catch (_) {}
+}
+const sfx = { click: () => beep(660, 0, 0.06, 'triangle'), stamp: () => { beep(180, 0, 0.12, 'square', 0.08); [784, 988, 1175].forEach((f, i) => beep(f, 0.1 + i * 0.07, 0.15, 'triangle', 0.07)); },
+  whoosh: () => beep(300, 0, 0.25, 'sine', 0.05),
+  act: k => ({ robo: () => [880, 660, 880, 660].forEach((f, i) => beep(f, i * 0.1, 0.08, 'square', 0.05)), baby: () => [1047, 1319, 1175, 1568].forEach((f, i) => beep(f, i * 0.08, 0.1, 'sine', 0.06)),
+    gloop: () => [220, 180, 240, 160].forEach((f, i) => beep(f, i * 0.09, 0.12, 'sine', 0.1)), cat: () => { for (let i = 0; i < 10; i++) beep(90 + (i % 2) * 15, i * 0.05, 0.06, 'sawtooth', 0.04); },
+    ghost: () => [392, 330, 262, 523].forEach((f, i) => beep(f, i * 0.15, 0.25, 'sine', 0.06)), dino: () => { beep(140, 0, 0.5, 'sawtooth', 0.08); beep(523, 0.5, 0.15, 'square', 0.05); beep(659, 0.62, 0.2, 'square', 0.05); },
+    saucer: () => { for (let i = 0; i < 8; i++) beep(400 + i * 80, i * 0.05, 0.08, 'sine', 0.05); }, dragon: () => { for (let i = 0; i < 12; i++) beep(1200 + Math.random() * 1200, i * 0.04, 0.05, 'triangle', 0.03); },
+    wizard: () => [523, 659, 784, 1047, 1319].forEach((f, i) => beep(f, i * 0.07, 0.2, 'triangle', 0.06)),
+    phantom: () => [523, 392, 262].forEach((f, i) => beep(f, i * 0.15, 0.3, 'sine', 0.06)), nega: () => [330, 440, 330, 440].forEach((f, i) => beep(f, i * 0.1, 0.1, 'square', 0.05)),
+    glitch: () => { for (let i = 0; i < 10; i++) beep(200 + Math.random() * 1800, i * 0.04, 0.04, 'square', 0.04); }, time: () => { for (let i = 0; i < 6; i++) beep(i % 2 ? 1200 : 900, i * 0.18, 0.04, 'square', 0.05); },
+    mirror: () => [784, 1047, 784, 1047].forEach((f, i) => beep(f, i * 0.09, 0.12, 'triangle', 0.05)), lock: () => { beep(600, 0, 0.05, 'square', 0.06); beep(900, 0.08, 0.08, 'square', 0.06); [1047, 1319].forEach((f, i) => beep(f, 0.2 + i * 0.1, 0.15, 'sine', 0.06)); },
+    element: () => [262, 330, 392, 523, 659, 784].forEach((f, i) => beep(f, i * 0.06, 0.15, 'sawtooth', 0.04)), musical: () => [523, 587, 659, 698, 784, 880, 988, 1047].forEach((f, i) => beep(f, i * 0.09, 0.15, 'triangle', 0.06)), nova: () => { for (let i = 0; i < 14; i++) beep(300 + Math.random() * 1500, i * 0.05, 0.1, ['square', 'triangle', 'sine'][i % 3], 0.05); } }[k] || (() => {}))() };
+
+// ---------- the museum ----------
+const HALLS = [
+  { name: '🏛️ HALL 1: CLAUDE FRIENDS', ids: ['robo', 'baby', 'gloop', 'cat', 'ghost'], wall: '#f3e5d8', trim: '#b85c3c' },
+  { name: '🏛️ HALL 2: CLAUDE CREATURES', ids: ['dino', 'saucer', 'dragon', 'wizard'], wall: '#e8eaf6', trim: '#5c6bc0' },
+  { name: '🦸 HALL 3: CLAUDE HERO SQUAD', ids: ['phantom', 'nega', 'glitch', 'time'], wall: '#e0f2f1', trim: '#00897b' },
+  { name: '🦸 HALL 4: MORE CLAUDE HEROES', ids: ['mirror', 'lock', 'element', 'musical'], wall: '#fce4ec', trim: '#ad1457' },
+  { name: '🌟 THE GRAND HALL', ids: ['nova'], wall: '#2a1d17', trim: GOLD, grand: true },
+  { name: '🎁 THE GIFT SHOP', ids: [], wall: '#fff3e0', trim: '#ef6c00', shop: true },
+];
+let state = 'title', hall = 0, tap = null, sel = 0, showI = 0, actT = 0, msg = '', msgT = 0, parts = [], posterPick = false;
+const seenCount = () => CHARS.filter(c => save.seen[c[0]]).length;
+const START = { x: 360, y: 400, w: 240, h: 70 };
+const BTN_PREV = { x: 14, y: 488, w: 130, h: 44 }, BTN_NEXT = { x: 816, y: 488, w: 130, h: 44 }, BTN_PASS = { x: 160, y: 488, w: 300, h: 44 }, BTN_SHOP = { x: 476, y: 488, w: 324, h: 44 };
+const BTN_BACK = { x: 14, y: 12, w: 110, h: 42 }, BTN_ACT = { x: 590, y: 400, w: 330, h: 64 };
+function exhibitPos(h, k) { const n = HALLS[h].ids.length; return HALLS[h].grand ? { x: W / 2, y: 250, s: 1.45 } : { x: (k + 0.5) * W / n, y: 232, s: n > 4 ? 1.05 : 1.2 }; }
+function exhibitRect(h, k) { const p = exhibitPos(h, k), w = HALLS[h].grand ? 360 : W / HALLS[h].ids.length - 14; return { x: p.x - w / 2, y: HALLS[h].grand ? 90 : 130, w, h: HALLS[h].grand ? 360 : 300 }; }
+function say(s) { msg = s; msgT = 150; }
+function confetti(x, y, n = 40) { for (let i = 0; i < n; i++) parts.push({ x, y, vx: (Math.random() - 0.5) * 9, vy: -Math.random() * 8 - 2, c: [OR, GOLD, CREAM, OR2, '#fff'][i % 5], life: 70 + Math.random() * 40 }); }
+function openExhibit(id) {
+  showI = CI[id]; state = 'close'; actT = 0; sfx.whoosh();
+  if (!save.seen[id]) { save.seen[id] = 1; writeSave(); sfx.stamp(); say('📘 NEW STAMP in your Museum Passport!'); confetti(W / 2, 120, 30);
+    if (seenCount() === CHARS.length && !save.allDone) { save.allDone = 1; writeSave(); trophy('claudeMuseum'); setTimeout(() => { say('🏆 You saw EVERY exhibit! Museum Master!'); confetti(W / 2, 200, 120); }, 600); } }
+}
+function goHall(h) { hall = (h + HALLS.length) % HALLS.length; sel = 0; posterPick = false; sfx.whoosh(); }
+</script>
+<script>
+// ---------- 🎁 souvenirs ----------
+const SOUV = [
+  { k: 'one', icon: '🖼️', name: 'Character Poster', tip: 'Pick ANY character!' },
+  { k: 'all', icon: '🏛️', name: 'Museum Poster', tip: 'Every character!' },
+  { k: 'cards', icon: '💌', name: 'Postcards', tip: 'Mail them to family!' },
+  { k: 'stickers', icon: '⭐', name: 'Sticker Sheet', tip: 'Cut them out!' },
+  { k: 'pass', icon: '📘', name: 'Museum Passport', tip: 'With your stamps!' },
+];
+const souvRect = i => ({ x: 18 + (i % 7) * 134, y: 126 + Math.floor(i / 7) * 176, w: 126, h: 166 });
+let pickKind = 'one';
+const pickRect = i => ({ x: 24 + (i % 6) * 154, y: 70 + Math.floor(i / 6) * 152, w: 146, h: 144 });
+// ---------- input ----------
+C.addEventListener('mousedown', e => { const r = C.getBoundingClientRect(); tap = { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height }; });
+const press = {};
+addEventListener('keydown', e => { press[e.key] = true; });
+function update() {
+  frame++; if (msgT > 0) msgT--; if (actT > 0) { actT++; if (actT > 150) actT = 0; }
+  for (const p of parts) { p.x += p.vx; p.y += p.vy; p.vy += 0.2; p.life--; } parts = parts.filter(p => p.life > 0);
+  const t = tap, k = Object.assign({}, press); tap = null; for (const key in press) delete press[key];
+  const ok = k.Enter || k[' '], esc = k.Escape;
+  if (state === 'title') { if (ok || inBox(t, START)) { state = 'hall'; sfx.click(); } return; }
+  if (state === 'close') { if (esc || inBox(t, BTN_BACK)) { state = 'hall'; sfx.click(); } else if (ok || inBox(t, BTN_ACT)) { actT = 1; sfx.act(CHARS[showI][0]); } return; }
+  if (state === 'pass') { if (esc || ok || inBox(t, BTN_BACK)) { state = 'hall'; sfx.click(); } return; }
+  const H0 = HALLS[hall];
+  if (k.ArrowRight) { if (!H0.shop && sel < H0.ids.length - 1) sel++; else goHall(hall + 1); }
+  if (k.ArrowLeft) { if (!H0.shop && sel > 0) sel--; else { goHall(hall - 1); sel = Math.max(0, HALLS[hall].ids.length - 1); } }
+  if (esc && posterPick) { posterPick = false; return; }
+  if (ok && !H0.shop && H0.ids[sel]) { openExhibit(H0.ids[sel]); return; }
+  if (!t) return;
+  if (posterPick) {
+    if (inBox(t, BTN_BACK)) { posterPick = false; sfx.click(); return; }
+    CHARS.forEach((c, i) => { if (inBox(t, pickRect(i))) { sfx.click(); openPrint(pickKind, i); } });
+    return;
+  }
+  if (inBox(t, BTN_PREV)) { goHall(hall - 1); return; }
+  if (inBox(t, BTN_NEXT)) { goHall(hall + 1); return; }
+  if (inBox(t, BTN_PASS)) { state = 'pass'; sfx.click(); return; }
+  if (inBox(t, BTN_SHOP)) { goHall(HALLS.length - 1); return; }
+  if (H0.shop) { SOUV.forEach((sv, i) => { if (inBox(t, souvRect(i))) { sfx.click(); if (sv.k === 'one' || sv.k === 'color') { posterPick = true; pickKind = sv.k; } else openPrint(sv.k); } }); return; }
+  H0.ids.forEach((id, i) => { if (inBox(t, exhibitRect(hall, i))) { sel = i; openExhibit(id); } });
+}
+// ---------- drawing ----------
+function drawHall() {
+  const H0 = HALLS[hall];
+  ctx.fillStyle = H0.wall; ctx.fillRect(0, 0, W, 420);
+  ctx.fillStyle = H0.trim; ctx.fillRect(0, 70, W, 6); ctx.fillRect(0, 410, W, 10);
+  ctx.fillStyle = H0.grand ? '#4e342e' : '#a1887f'; ctx.fillRect(0, 420, W, 62); ctx.fillStyle = 'rgba(0,0,0,.08)'; for (let x = 0; x < W; x += 60) ctx.fillRect(x, 420, 2, 62);
+  fit(H0.name, W / 2, 50, 32, 760, H0.grand ? GOLD : '#fff');
+  if (H0.shop) return drawShop();
+  if (H0.grand) {
+    const g = ctx.createRadialGradient(W / 2, 250, 20, W / 2, 250, 260); g.addColorStop(0, 'rgba(255,224,178,.55)'); g.addColorStop(1, 'rgba(255,224,178,0)'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, 420);
+    ctx.fillStyle = '#b71c1c'; ctx.beginPath(); ctx.moveTo(W / 2 - 90, 420); ctx.lineTo(W / 2 + 90, 420); ctx.lineTo(W / 2 + 160, 482); ctx.lineTo(W / 2 - 160, 482); ctx.fill();
+    ctx.strokeStyle = GOLD; ctx.lineWidth = 10; ctx.strokeRect(W / 2 - 190, 90, 380, 300); ctx.strokeStyle = '#ffe082'; ctx.lineWidth = 2; ctx.strokeRect(W / 2 - 180, 100, 360, 280);
+    drawChar(CI.nova, W / 2, 245, 1.2);
+    for (const x of [140, W - 140]) { rr(x - 6, 300, 12, 120, 4, GOLD); circle(x, 296, 12, GOLD); }
+    ctx.strokeStyle = '#c62828'; ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(140, 320); ctx.quadraticCurveTo(W / 2 - 200, 370, W / 2 - 200, 330); ctx.moveTo(W - 140, 320); ctx.quadraticCurveTo(W / 2 + 200, 370, W / 2 + 200, 330); ctx.stroke();
+    rr(W / 2 - 150, 396, 300, 52, 10, GOLD); text('CLAUDE NOVA', W / 2, 420, 22, '#5d4037', 'center', false); text('💡 Ben\'s idea!  ' + (save.seen.nova ? '✅' : 'Tap to visit!'), W / 2, 441, 15, '#5d4037', 'center', false);
+  } else H0.ids.forEach((id, k) => {
+    const p = exhibitPos(hall, k), seen = save.seen[id], selk = k === sel;
+    rr(p.x - 84, 92, 168, 212, 14, 'rgba(0,0,0,.07)');
+    if (selk) { const g = ctx.createRadialGradient(p.x, p.y, 10, p.x, p.y, 110); g.addColorStop(0, 'rgba(255,236,179,.7)'); g.addColorStop(1, 'rgba(255,236,179,0)'); ctx.fillStyle = g; ctx.fillRect(p.x - 110, p.y - 110, 220, 220); }
+    rr(p.x - 60, 312, 120, 98, 6, '#f5f5f5'); rr(p.x - 70, 300, 140, 16, 4, '#e0e0e0'); ctx.fillStyle = '#eeeeee'; ctx.fillRect(p.x - 40, 322, 6, 80); ctx.fillRect(p.x + 34, 322, 6, 80);
+    drawChar(CI[id], p.x, p.y - 20 + Math.sin(frame * 0.04 + k) * 2, p.s);
+    rr(p.x - 70, 424, 140, 46, 8, H0.trim); fit(CHARS[CI[id]][1], p.x, 446, 17, 130, '#fff', 'center', false); text(seen ? '✅ visited' : '👆 tap me!', p.x, 464, 13, '#fff', 'center', false);
+  });
+}
+function drawShop() {
+  if (posterPick) {
+    ctx.fillStyle = '#ffe0b2'; ctx.fillRect(0, 0, W, H); text(pickKind === 'color' ? '🖍️ Which Claude do you want to color?' : '🖼️ Which poster do you want?', W / 2, 46, 30, OR3, 'center', false);
+    CHARS.forEach((c, i) => { const b = pickRect(i); rr(b.x, b.y, b.w, b.h, 16, '#fff'); drawChar(i, b.x + b.w / 2, b.y + 64, c[0] === 'nova' ? 0.42 : 0.48); fit(c[1], b.x + b.w / 2, b.y + b.h - 10, 15, b.w - 10, OR3, 'center', false); });
+    button(BTN_BACK, '⬅ BACK', '#6d4c41', 18); return;
+  }
+  SOUV.forEach((sv, i) => { const b = souvRect(i); rr(b.x, b.y + 5, b.w, b.h, 16, 'rgba(0,0,0,.2)'); rr(b.x, b.y, b.w, b.h, 16, sv.ben ? '#fff59d' : '#fff');
+    if (sv.ben) { rr(b.x + 6, b.y - 10, b.w - 12, 20, 10, OR); text('💡 Ben\'s idea!', b.x + b.w / 2, b.y + 5, 12, '#fff', 'center', false); }
+    emoji(sv.icon, b.x + b.w / 2, b.y + 62, 46); const ln = wrap(sv.name, 15, b.w - 12).slice(0, 2); ln.forEach((l, j) => fit(l, b.x + b.w / 2, b.y + 96 + j * 17 - (ln.length - 1) * 4, 15, b.w - 10, OR3, 'center', false));
+    fit(sv.ben ? 'Fold it up!' : sv.tip, b.x + b.w / 2, b.y + 136, 12, b.w - 10, '#6d4c41', 'center', false); text('🖨️ PRINT', b.x + b.w / 2, b.y + 156, 13, '#43a047', 'center', false); });
+  text('Every gift is FREE! Tip: turn on color printing!', W / 2, 106, 18, OR3, 'center', false);
+}
+function drawBar() {
+  rr(0, 482, W, 58, 0, 'rgba(62,39,35,.92)');
+  button(BTN_PREV, '◀ BACK', '#8d6e63', 20); button(BTN_NEXT, 'NEXT ▶', '#8d6e63', 20);
+  button(BTN_PASS, `📘 PASSPORT  ${seenCount()}/${CHARS.length}`, '#5c6bc0', 20); button(BTN_SHOP, '🎁 GIFT SHOP', OR, 22);
+}
+function drawClose() {
+  const c = CHARS[showI], a = actT > 0 ? actT / 150 : 0;
+  ctx.fillStyle = '#1b1210'; ctx.fillRect(0, 0, W, H);
+  const g = ctx.createRadialGradient(290, 260, 20, 290, 260, 280); g.addColorStop(0, 'rgba(255,224,178,.6)'); g.addColorStop(1, 'rgba(255,224,178,0)'); ctx.fillStyle = g; ctx.fillRect(0, 0, 600, H);
+  drawChar(showI, 290, 270, c[0] === 'nova' ? 1.35 : 1.6, a);
+  rr(560, 60, 380, 420, 20, '#fff8e1'); rr(570, 70, 360, 66, 14, OR);
+  fit(c[2] + ' ' + c[1], 750, 113, 30, 340, '#fff'); fit('📍 Found: ' + c[4], 750, 162, 16, 350, '#6d4c41', 'center', false);
+  let y = 198; for (const f of c[5]) { for (const ln of wrap('• ' + f, 17, 340)) { text(ln, 580, y, 17, '#4e342e', 'left', false); y += 22; } y += 6; }
+  button(BTN_ACT, '✨ ' + c[3], '#43a047', 24);
+  button(BTN_BACK, '⬅ BACK', '#6d4c41', 18);
+  if (msgT > 0) { rr(140, 8, 400, 40, 12, 'rgba(0,0,0,.6)'); fit(msg, 340, 35, 18, 380, '#fff59d'); }
+}
+function drawPass() {
+  ctx.fillStyle = '#283593'; ctx.fillRect(0, 0, W, H); rr(60, 60, W - 120, 420, 20, '#fff8e1');
+  text('📘 MY MUSEUM PASSPORT', W / 2, 46, 30, '#fff');
+  CHARS.forEach((c, i) => { const x = 140 + (i % 6) * 136, y = 128 + Math.floor(i / 6) * 128, seen = save.seen[c[0]];
+    ctx.strokeStyle = seen ? '#c62828' : '#bdbdbd'; ctx.lineWidth = 4; ctx.setLineDash(seen ? [] : [8, 6]); ctx.beginPath(); ctx.arc(x, y, 46, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+    if (seen) drawChar(i, x, y + 2, c[0] === 'nova' ? 0.26 : 0.32); else text('?', x, y + 12, 32, '#bdbdbd', 'center', false);
+    fit(c[1], x, y + 64, 13, 128, '#4e342e', 'center', false); });
+  button(BTN_BACK, '⬅ BACK', '#6d4c41', 18);
+}
+function drawTitle() {
+  ctx.fillStyle = '#f3e5d8'; ctx.fillRect(0, 0, W, H);
+  for (let i = 0; i < 6; i++) { rr(70 + i * 150, 130, 24, 300, 6, '#efebe9'); }
+  tri(30, 130, W - 30, 130, W / 2, 30, OR3); rr(30, 124, W - 60, 16, 4, OR3); rr(30, 430, W - 60, 20, 4, OR3);
+  sparkle(W / 2, 86, 26, GOLD, frame * 0.02);
+  text('THE CLAUDE MUSEUM', W / 2, 200, 58, OR);
+  text('💡 Ben\'s idea!', W / 2, 240, 24, '#5d4037', 'center', false);
+  ['baby', 'gloop', 'dino', 'ghost', 'saucer'].forEach((id, i) => drawChar(CI[id], 140 + i * 170, 318 + Math.sin(frame * 0.05 + i) * 4, 0.72));
+  button(START, '▶ COME IN!', '#43a047', 30);
+  text('Tap the exhibits • collect stamps • print souvenirs!', W / 2, 500, 18, '#5d4037', 'center', false);
+}
+function draw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
+  if (state === 'title') drawTitle();
+  else if (state === 'close') drawClose();
+  else if (state === 'pass') drawPass();
+  else { drawHall(); if (!posterPick) drawBar(); if (msgT > 0 && !posterPick) { rr(W / 2 - 300, 84, 600, 40, 12, 'rgba(0,0,0,.6)'); fit(msg, W / 2, 111, 19, 580, '#fff59d'); } }
+  for (const p of parts) { ctx.globalAlpha = Math.min(1, p.life / 20); ctx.fillStyle = p.c; ctx.fillRect(p.x - 4, p.y - 4, 8, 8); }
+  ctx.globalAlpha = 1;
+}
+let last = performance.now(), acc = 0;
+function loop(now) { acc += Math.min(100, now - last); last = now; while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; } draw(); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+</script>
+<script>
+// ---------- 🖨️ printing the souvenirs ----------
+const PW = 850, PH = 1100, PAST = ['#fff3e0', '#fce4ec', '#e8eaf6', '#e0f2f1', '#fff8e1', '#f3e5f5', '#e1f5fe', '#fbe9e7', '#ede7f6', '#fffde7'];
+function makePage(fn) {
+  const cv = document.createElement('canvas'); cv.width = PW; cv.height = PH;
+  const old = ctx; ctx = cv.getContext('2d'); PRINTING = true;
+  try { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, PW, PH); fn(); } finally { ctx = old; PRINTING = false; }
+  return cv;
+}
+const ptext = (s, x, y, size, color = '#222', align = 'center') => text(s, x, y, size, color, align, false);
+function cutBox(x, y, w, h, r = 18) { ctx.save(); ctx.setLineDash([10, 7]); ctx.strokeStyle = '#9e9e9e'; ctx.lineWidth = 2; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); ctx.stroke(); ctx.restore(); }
+function bigTitle(str, x, y, size, fill, edge) { ctx.save(); ctx.font = `bold ${size}px "Trebuchet MS", Arial`; ctx.textAlign = 'center'; ctx.lineJoin = 'round'; ctx.strokeStyle = edge; ctx.lineWidth = size / 6; ctx.strokeText(str, x, y); ctx.fillStyle = fill; ctx.fillText(str, x, y); ctx.restore(); }
+const BOTS = { robo: 1, cat: 1, phantom: 1, nega: 1, glitch: 1, time: 1, mirror: 1, lock: 1, element: 1, musical: 1 };
+const scaleFor = (i, base) => CHARS[i][0] === 'nova' ? base * 0.85 : BOTS[CHARS[i][0]] ? base * 1.3 : base;
+function pageOne(i) {
+  const c = CHARS[i];
+  return makePage(() => {
+    const nova = c[0] === 'nova', g = ctx.createLinearGradient(0, 0, 0, PH); g.addColorStop(0, nova ? '#2a1d17' : '#fff3e0'); g.addColorStop(1, nova ? '#5d4037' : '#ffccbc'); ctx.fillStyle = g; ctx.fillRect(0, 0, PW, PH);
+    ctx.strokeStyle = nova ? GOLD : OR; ctx.lineWidth = 10; ctx.strokeRect(14, 14, PW - 28, PH - 28);
+    for (let k = 0; k < 14; k++) sparkle((k * 211) % PW, 160 + (k * 137) % 700, 10 + (k % 3) * 4, nova ? 'rgba(255,201,77,.4)' : 'rgba(217,119,87,.25)', k);
+    bigTitle(c[1].toUpperCase() + '!', PW / 2, 110, c[1].length > 11 ? 64 : 78, nova ? GOLD : '#fff', nova ? OR3 : OR);
+    ptext('THE CLAUDE MUSEUM  •  SOUVENIR POSTER', PW / 2, 160, 22, nova ? CREAM : OR3);
+    drawChar(i, PW / 2, 500, scaleFor(i, 3));
+    rr(70, 800, PW - 140, 230, 26, 'rgba(255,255,255,.92)');
+    let y = 850; for (const f of c[5].slice(0, 3)) { for (const ln of wrap('• ' + f, 24, PW - 200)) { ptext(ln, 100, y, 24, '#4e342e', 'left'); y += 32; } y += 6; }
+  });
+}
+function pageAll() {
+  return makePage(() => {
+    ctx.fillStyle = '#fff3e0'; ctx.fillRect(0, 0, PW, PH); ctx.strokeStyle = OR; ctx.lineWidth = 10; ctx.strokeRect(14, 14, PW - 28, PH - 28);
+    bigTitle('THE CLAUDE MUSEUM', PW / 2, 90, 60, '#fff', OR); ptext('💡 A museum invented by Ben', PW / 2, 132, 22, OR3);
+    CHARS.forEach((c, i) => { const x = 36 + (i % 3) * 262, y = 156 + Math.floor(i / 3) * 152, w = 252, h = 144;
+      rr(x, y, w, h, 16, PAST[i % PAST.length]); drawChar(i, x + w / 2, y + 62, scaleFor(i, 0.5)); fit(c[1], x + w / 2, y + 132, 20, w - 16, OR3, 'center', false); });
+  });
+}
+function pagesCards() {
+  const pages = [];
+  for (let pg = 0; pg < Math.ceil(CHARS.length / 4); pg++) pages.push(makePage(() => {
+    ptext(`✂️ CLAUDE MUSEUM POSTCARDS (page ${pg + 1})  Cut on the dotted lines!`, PW / 2, 30, 18, '#555');
+    CHARS.slice(pg * 4, pg * 4 + 4).forEach((c, k) => { const i = pg * 4 + k, x = 25 + (k % 2) * 405, y = 48 + Math.floor(k / 2) * 525, w = 395, h = 510;
+      rr(x, y, w, h, 14, PAST[i % PAST.length]); rr(x + 12, y + 12, w - 24, 250, 10, '#fff'); drawChar(i, x + w / 2, y + 140, scaleFor(i, 1.05));
+      ptext('Greetings from', x + w / 2, y + 300, 20, '#6d4c41'); fit('THE CLAUDE MUSEUM!', x + w / 2, y + 334, 28, w - 30, OR3, 'center', false); fit('Starring ' + c[1], x + w / 2, y + 364, 18, w - 30, '#6d4c41', 'center', false);
+      ['To: ______________________', 'Hi! ______________________', '__________________________', 'From: ____________________'].forEach((ln, j) => ptext(ln, x + 24, y + 404 + j * 28, 18, '#555', 'left'));
+      cutBox(x - 4, y - 4, w + 8, h + 8, 16); });
+  }));
+  return pages;
+}
+function pagesStickers() {
+  const all = CHARS.map((c, i) => i).concat(['logo', 'master']), pages = [];
+  for (let pg = 0; pg < Math.ceil(all.length / 12); pg++) pages.push(makePage(() => {
+    ptext(`⭐ CLAUDE MUSEUM STICKERS (page ${pg + 1})  Cut them out and stick them with tape!`, PW / 2, 34, 20, '#555');
+    all.slice(pg * 12, pg * 12 + 12).forEach((it, k) => { const x = 150 + (k % 3) * 275, y = 170 + Math.floor(k / 3) * 250, r = 110;
+      circle(x, y, r, typeof it === 'number' ? PAST[it % PAST.length] : '#ffe0b2'); ctx.strokeStyle = OR; ctx.lineWidth = 6; ctx.beginPath(); ctx.arc(x, y, r - 4, 0, 7); ctx.stroke();
+      if (it === 'logo') { sparkle(x, y - 14, 50, OR, 0, 12); ptext('CLAUDE MUSEUM', x, y + 66, 20, OR3); }
+      else if (it === 'master') { ptext('🏆', x, y + 8, 60); ptext('MUSEUM MASTER', x, y + 60, 19, OR3); }
+      else { drawChar(it, x, y - 8, scaleFor(it, 0.66)); fit(CHARS[it][1], x, y + 82, 18, 170, OR3, 'center', false); }
+      ctx.save(); ctx.setLineDash([9, 6]); ctx.strokeStyle = '#9e9e9e'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 8, 0, 7); ctx.stroke(); ctx.restore(); });
+  }));
+  return pages;
+}
+function pagePass() {
+  return makePage(() => {
+    ctx.fillStyle = '#283593'; ctx.fillRect(0, 0, PW, PH); rr(30, 30, PW - 60, PH - 60, 24, '#fff8e1');
+    bigTitle('MUSEUM PASSPORT', PW / 2, 110, 58, GOLD, '#283593'); ptext('THE CLAUDE MUSEUM  •  Name: Ben', PW / 2, 156, 24, '#283593');
+    CHARS.forEach((c, i) => { const x = 175 + (i % 3) * 250, y = 245 + Math.floor(i / 3) * 140, seen = save.seen[c[0]];
+      ctx.strokeStyle = seen ? '#c62828' : '#bdbdbd'; ctx.lineWidth = 4; ctx.setLineDash(seen ? [] : [10, 7]); ctx.beginPath(); ctx.arc(x, y, 52, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+      if (seen) { drawChar(i, x, y + 2, scaleFor(i, 0.36)); ptext('VISITED!', x, y + 46, 13, '#c62828'); } else ptext('stamp here', x, y + 6, 16, '#bdbdbd');
+      fit(c[1], x, y + 72, 17, 220, '#283593', 'center', false); });
+  });
+}
+let printBox = null;
+function openPrint(k, i) {
+  const pages = k === 'one' ? [pageOne(i)] : k === 'color' ? [pageColor(i)] : EXTRA_PRINT[k] ? EXTRA_PRINT[k]() : k === 'all' ? [pageAll()] : k === 'cards' ? pagesCards() : k === 'stickers' ? pagesStickers() : [pagePass()];
+  const name = k === 'one' ? CHARS[i][1] + ' Poster' : k === 'color' ? CHARS[i][1] + ' Coloring Page' : SOUV.find(s => s.k === k).name;
+  printBox = document.createElement('div'); printBox.id = 'printBox';
+  const bar = document.createElement('div'); bar.className = 'pbBar';
+  const back = document.createElement('button'); back.className = 'pbBack'; back.textContent = '⬅ BACK';
+  const pr = document.createElement('button'); pr.className = 'pbPrint'; pr.textContent = pages.length > 1 ? `🖨️ PRINT (${pages.length} pages)` : '🖨️ PRINT';
+  back.onclick = () => { if (printBox) { printBox.remove(); printBox = null; } sfx.click(); };
+  pr.onclick = () => { try { window.print(); } catch (_) {} };
+  bar.append(back, pr); printBox.appendChild(bar);
+  const tip = document.createElement('div'); tip.className = 'pbTip'; tip.textContent = '🎁 ' + name + '  •  Tip: turn on color printing!'; printBox.appendChild(tip);
+  for (const cv of pages) { const img = new Image(); img.className = 'pbPage'; img.alt = name; img.src = cv.toDataURL('image/png'); printBox.appendChild(img); }
+  document.body.appendChild(printBox);
+}
+</script>
+<script>
+// ---------- 🎁 MORE GIFT SHOP GIFTS (Ben picked all of them) + Ben's own idea: the FOLD-UP MINI CLAUDE CAT PET ----------
+const dash = (fn, col = '#9e9e9e', w = 2) => { ctx.save(); ctx.setLineDash([10, 7]); ctx.strokeStyle = col; ctx.lineWidth = w; ctx.beginPath(); fn(); ctx.stroke(); ctx.restore(); };
+const foldLine = (x1, y1, x2, y2) => { ctx.save(); ctx.setLineDash([4, 6]); ctx.strokeStyle = '#1e88e5'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.restore(); };
+function outlineOf(i, size, sc) {                            // 🖍️ turns a character into a coloring-book outline
+  const cv = document.createElement('canvas'); cv.width = size; cv.height = size;
+  const old = ctx; ctx = cv.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, size, size);
+  try { drawChar(i, size / 2, size / 2 + size * 0.06, sc); } finally { ctx = old; }
+  const c2 = cv.getContext('2d'), src = c2.getImageData(0, 0, size, size).data, out = c2.createImageData(size, size), o = out.data;
+  const lum = k => src[k] * 0.3 + src[k + 1] * 0.59 + src[k + 2] * 0.11;
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    const k = (y * size + x) * 4; let edge = false;
+    for (const [dx, dy] of [[1, 0], [0, 1], [2, 0], [0, 2]]) { if (x + dx >= size || y + dy >= size) continue; const k2 = ((y + dy) * size + x + dx) * 4;
+      if (Math.abs(lum(k) - lum(k2)) > 26 || Math.abs(src[k] - src[k2]) + Math.abs(src[k + 2] - src[k2 + 2]) > 70) { edge = true; break; } }
+    const v = edge ? 40 : 255; o[k] = o[k + 1] = o[k + 2] = v; o[k + 3] = 255;
+  }
+  c2.putImageData(out, 0, 0); return cv;
+}
+function outlineText(str, x, y, size) { ctx.save(); ctx.font = `bold ${size}px "Trebuchet MS", Arial`; ctx.textAlign = 'center'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#333'; ctx.lineWidth = 3; ctx.strokeText(str, x, y); ctx.restore(); }
+// 👑 1. CLAUDE NOVA CROWN (3 pieces, tape into a ring)
+function pageCrown() {
+  return makePage(() => {
+    ptext('👑 Cut out the 3 pieces, tape them together in a ring, and wear your CLAUDE NOVA CROWN!', PW / 2, 30, 18, '#555');
+    const faces = [['baby', 'cat', 'dino', 'ghost'], ['gloop', 'nova', 'element', 'robo'], ['dragon', 'wizard', 'saucer', 'musical']], words = ['CLAUDE', 'MUSEUM', 'BEN'];
+    words.forEach((wd, k) => {
+      const x = 25, y = 50 + k * 350, w = 800, h = 320, band = 120, pts = 4, pw = w / pts;
+      ctx.beginPath(); ctx.moveTo(x, y + h); for (let i = 0; i < pts; i++) { ctx.lineTo(x + i * pw, y + h - band); ctx.lineTo(x + i * pw + pw / 2, y + 40); ctx.lineTo(x + (i + 1) * pw, y + h - band); } ctx.lineTo(x + w, y + h); ctx.closePath();
+      const g = ctx.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, '#ffe0b2'); g.addColorStop(1, OR); ctx.fillStyle = g; ctx.fill(); ctx.setLineDash([10, 7]); ctx.strokeStyle = '#9e9e9e'; ctx.lineWidth = 2; ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = GOLD; ctx.fillRect(x, y + h - band, w, 8); ctx.fillRect(x, y + h - 10, w, 8);
+      faces[k].forEach((id, i) => { const gx = x + i * pw + pw / 2, gy = y + h - band - 42; circle(gx, gy, 46, '#fff'); circle(gx, gy, 42, PAST[(k * 4 + i) % PAST.length]); ctx.save(); ctx.beginPath(); ctx.arc(gx, gy, 42, 0, 7); ctx.clip(); drawChar(CI[id], gx, gy + 4, scaleFor(CI[id], 0.36)); ctx.restore(); sparkle(gx, y + 46, 14, GOLD, 0, 5); });
+      ptext(wd, x + w / 2, y + h - 34, 64, '#fff'); if (k < 2) ptext('tape →', x + w - 50, y + h - 52, 16, '#6d4c41');
+    });
+  });
+}
+// 🎭 2. CLAUDE MASKS (Cat, Dino, Baby Claude) with eye holes
+function maskPage(kind) {
+  return makePage(() => {
+    ptext({ cat: '🐱 CLAUDE CAT MASK', dino: '🦖 CLAUDE DINO MASK', baby: '👶 BABY CLAUDE MASK' }[kind], PW / 2, 60, 40, OR3);
+    const cx = PW / 2, cy = 470;
+    if (kind === 'cat') { tri(cx - 280, cy - 120, cx - 160, cy - 230, cx - 120, cy - 150, OR2); tri(cx + 280, cy - 120, cx + 160, cy - 230, cx + 120, cy - 150, OR2); rr(cx - 300, cy - 190, 600, 400, 160, OR2); rr(cx - 230, cy - 120, 460, 170, 80, DARK);
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.beginPath(); for (const d of [-1, 1]) for (const k of [-14, 0, 14]) { ctx.moveTo(cx + d * 130, cy + 110); ctx.lineTo(cx + d * 290, cy + 100 + k * 2); } ctx.stroke(); circle(cx, cy + 90, 18, '#ff8a80'); }
+    if (kind === 'dino') { for (let i = 0; i < 5; i++) sparkle(cx - 200 + i * 100, cy - 220 + Math.abs(i - 2) * 16, 34, GOLD, i, 12); rr(cx - 300, cy - 200, 600, 410, 120, OR); rr(cx - 220, cy + 60, 440, 130, 60, OR2); circle(cx - 70, cy + 110, 12, OR3); circle(cx + 70, cy + 110, 12, OR3); ctx.strokeStyle = DARK; ctx.lineWidth = 6; ctx.beginPath(); ctx.arc(cx, cy + 120, 90, 0.3, Math.PI - 0.3); ctx.stroke(); }
+    if (kind === 'baby') { sparkle(cx, cy, 330, OR, 0, 70); circle(cx, cy, 230, CREAM); circle(cx - 130, cy + 80, 30, 'rgba(255,128,128,.45)'); circle(cx + 130, cy + 80, 30, 'rgba(255,128,128,.45)'); ctx.strokeStyle = DARK; ctx.lineWidth = 7; ctx.beginPath(); ctx.arc(cx, cy + 70, 50, 0.2, Math.PI - 0.2); ctx.stroke(); }
+    for (const d of [-1, 1]) { const ex = cx + d * 110, ey = kind === 'dino' ? cy - 60 : cy - 40; circle(ex, ey, 52, '#fff'); dash(() => ctx.arc(ex, ey, 52, 0, 7), '#555', 3); ptext('cut', ex, ey + 6, 18, '#999'); }
+    for (const d of [-1, 1]) { const tx = d < 0 ? 20 : PW - 100; rr(tx, cy - 40, 80, 80, 10, '#eeeeee'); ptext('tape', tx + 40, cy - 4, 15, '#777'); ptext('strip', tx + 40, cy + 16, 15, '#777'); }
+    dash(() => { ctx.rect(14, cy - 300, PW - 28, 560); }, '#bdbdbd');
+    ptext('Cut on the dotted line, cut out the eyes, then tape a long paper strip to both sides!', PW / 2, PH - 60, 20, '#555');
+  });
+}
+// 🧍 3. STAND-UP CLAUDE FIGURES (fold in half, they stand up like a tent)
+function pagesStandups() {
+  const pages = [];
+  for (let pg = 0; pg < Math.ceil(CHARS.length / 4); pg++) pages.push(makePage(() => {
+    ptext(`🧍 STAND-UP CLAUDES (page ${pg + 1})  Cut out, fold on the blue line, and stand them up!`, PW / 2, 30, 18, '#555');
+    CHARS.slice(pg * 4, pg * 4 + 4).forEach((c, k) => { const i = pg * 4 + k, x = 30 + (k % 2) * 400, y = 50 + Math.floor(k / 2) * 520, w = 390, h = 500;
+      rr(x, y, w, h, 10, PAST[i % PAST.length]);
+      ctx.save(); ctx.translate(x + w / 2, y + h / 4); ctx.rotate(Math.PI); drawChar(i, 0, 0, scaleFor(i, 0.95)); ptext(c[1], 0, 110, 22, OR3); ctx.restore();
+      drawChar(i, x + w / 2, y + h * 0.75 - 10, scaleFor(i, 0.95)); ptext(c[1], x + w / 2, y + h - 14, 22, OR3);
+      foldLine(x, y + h / 2, x + w, y + h / 2); dash(() => ctx.rect(x, y, w, h)); });
+  }));
+  return pages;
+}
+// 🃏 4. CLAUDE TRADING CARDS (9 per page)
+function pagesTrading() {
+  const pages = [], per = 9;
+  for (let pg = 0; pg < Math.ceil(CHARS.length / per); pg++) pages.push(makePage(() => {
+    ptext(`🃏 CLAUDE TRADING CARDS (page ${pg + 1})  Cut on the dotted lines!`, PW / 2, 32, 20, '#555');
+    CHARS.slice(pg * per, pg * per + per).forEach((c, k) => { const i = pg * per + k, x = 37 + (k % 3) * 263, y = 50 + Math.floor(k / 3) * 345, w = 250, h = 330;
+      rr(x, y, w, h, 18, c[0] === 'nova' ? '#b8860b' : OR); rr(x + 8, y + 48, w - 16, h - 56, 12, '#fff');
+      fit(c[1], x + w / 2, y + 33, 22, w - 20, '#fff', 'center', false);
+      ctx.fillStyle = PAST[i % PAST.length]; ctx.fillRect(x + 14, y + 54, w - 28, 150); ctx.save(); ctx.beginPath(); ctx.rect(x + 14, y + 54, w - 28, 150); ctx.clip(); drawChar(i, x + w / 2, y + 128, scaleFor(i, 0.62)); ctx.restore();
+      fit('✨ ' + c[3], x + w / 2, y + 226, 16, w - 24, '#2e7d32', 'center', false);
+      wrap(c[5][0], 13, w - 30).slice(0, 3).forEach((ln, j) => ptext(ln, x + w / 2, y + 250 + j * 17, 13, '#333'));
+      ptext(`#${i + 1} of ${CHARS.length}`, x + w / 2, y + h - 14, 14, '#c62828');
+      dash(() => { ctx.roundRect ? ctx.roundRect(x - 5, y - 5, w + 10, h + 10, 20) : ctx.rect(x - 5, y - 5, w + 10, h + 10); }); });
+  }));
+  return pages;
+}
+</script>
+<script>
+// 🔖 5. BOOKMARKS (6 long strips)
+function pageBookmarks() {
+  return makePage(() => {
+    ptext('🔖 CLAUDE BOOKMARKS  Cut on the dotted lines!', PW / 2, 32, 20, '#555');
+    ['nova', 'baby', 'dino', 'cat', 'dragon', 'wizard'].forEach((id, k) => { const i = CI[id], x = 30 + k * 135, y = 56, w = 120, h = 1010;
+      const g = ctx.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, PAST[k]); g.addColorStop(1, '#ffccbc'); rr(x, y, w, h, 14, g);
+      drawChar(i, x + w / 2, y + 110, scaleFor(i, 0.62)); for (let j = 0; j < 6; j++) sparkle(x + w / 2 + (j % 2 ? 26 : -26), y + 250 + j * 70, 12, j % 2 ? GOLD : OR, j, 4);
+      ctx.save(); ctx.translate(x + w / 2 + 8, y + 720); ctx.rotate(-Math.PI / 2); fit(CHARS[i][1].toUpperCase(), 0, 0, 30, 360, OR3, 'center', false); ctx.restore();
+      circle(x + w / 2, y + h - 40, 12, '#fff'); dash(() => ctx.arc(x + w / 2, y + h - 40, 12, 0, 7)); dash(() => { ctx.roundRect ? ctx.roundRect(x, y, w, h, 14) : ctx.rect(x, y, w, h); }); });
+  });
+}
+// 🧩 6. CLAUDE PUZZLE (a big picture with jigsaw lines)
+function pagePuzzle() {
+  return makePage(() => {
+    ptext('🧩 CLAUDE MUSEUM PUZZLE  Color it (if you want), cut on the lines, mix it up, and put it back together!', PW / 2, 30, 16, '#555');
+    const X = 40, Y = 50, Wd = 770, Hd = 1000;
+    const g = ctx.createLinearGradient(0, Y, 0, Y + Hd); g.addColorStop(0, '#2a1d17'); g.addColorStop(1, '#8d3b22'); ctx.fillStyle = g; ctx.fillRect(X, Y, Wd, Hd);
+    for (let k = 0; k < 30; k++) sparkle(X + (k * 157) % Wd, Y + (k * 97) % Hd, 8 + k % 3 * 4, 'rgba(255,201,77,.5)', k);
+    bigTitle('THE CLAUDE MUSEUM', PW / 2, Y + 90, 54, GOLD, OR3);
+    drawChar(CI.nova, PW / 2, Y + 380, 1.7);
+    [['baby', 140, 700], ['gloop', 330, 760], ['cat', 520, 740], ['dino', 690, 700], ['ghost', 140, 900], ['dragon', 400, 920], ['wizard', 660, 900]].forEach(([id, x, y]) => drawChar(CI[id], X + x - 40, Y + y - 50, scaleFor(CI[id], 0.85)));
+    ctx.save(); ctx.strokeStyle = 'rgba(255,255,255,.95)'; ctx.lineWidth = 3; ctx.setLineDash([8, 6]);
+    const cols = 4, rows = 5, cw = Wd / cols, chh = Hd / rows;
+    const seg = (x1, y1, x2, y2, flip) => { const mx = (x1 + x2) / 2, my = (y1 + y2) / 2, vert = x1 === x2, r = 22;
+      ctx.beginPath(); ctx.moveTo(x1, y1); if (vert) { ctx.lineTo(x1, my - r); ctx.arc(x1 + flip * 0, my, r, -Math.PI / 2, Math.PI / 2, flip < 0); } else { ctx.lineTo(mx - r, y1); ctx.arc(mx, y1, r, Math.PI, 0, flip < 0); } ctx.lineTo(x2, y2); ctx.stroke(); };
+    for (let c = 1; c < cols; c++) for (let r = 0; r < rows; r++) seg(X + c * cw, Y + r * chh, X + c * cw, Y + (r + 1) * chh, (c + r) % 2 ? 1 : -1);
+    for (let r = 1; r < rows; r++) for (let c = 0; c < cols; c++) seg(X + c * cw, Y + r * chh, X + (c + 1) * cw, Y + r * chh, (c + r) % 2 ? 1 : -1);
+    ctx.restore(); ctx.strokeStyle = '#9e9e9e'; ctx.lineWidth = 2; ctx.strokeRect(X, Y, Wd, Hd);
+    ptext('20 pieces!', PW / 2, PH - 22, 18, '#555');
+  });
+}
+// 🖍️ 7. COLORING PAGES (any character, as an outline)
+function pageColor(i) {
+  return makePage(() => {
+    outlineText('COLOR ME!', PW / 2, 110, 90);
+    const cv = outlineOf(i, 700, scaleFor(i, 3.3)); ctx.drawImage(cv, (PW - 700) / 2, 160);
+    outlineText(CHARS[i][1].toUpperCase(), PW / 2, 960, 64);
+    ptext('The Claude Museum  •  Coloring Page', PW / 2, 1040, 20, '#999');
+  });
+}
+// 💳 8. MUSEUM MEMBER CARD (fold in half: front + back)
+function pageMember() {
+  return makePage(() => {
+    ptext('💳 MUSEUM MEMBER CARD  Cut it out, fold on the blue line, and glue it shut!', PW / 2, 34, 20, '#555');
+    const x = 75, y = 70, w = 700, h = 440;
+    const g = ctx.createLinearGradient(x, y, x + w, y + h); g.addColorStop(0, OR); g.addColorStop(1, '#8d3b22'); rr(x, y + h, w, h, 0, g); rr(x, y + h, w, 16, 0, GOLD);
+    ctx.fillStyle = 'rgba(255,255,255,.08)'; for (let k = 0; k < 12; k++) sparkle(x + 40 + (k * 131) % (w - 80), y + h + 40 + (k * 67) % (h - 80), 16, 'rgba(255,255,255,.18)', k);
+    bigTitle('THE CLAUDE MUSEUM', x + w / 2, y + h + 80, 42, '#fff', OR3); ptext('⭐ OFFICIAL MEMBER ⭐', x + w / 2, y + h + 124, 26, GOLD);
+    rr(x + 40, y + h + 150, 230, 250, 18, CREAM); drawChar(CI.nova, x + 155, y + h + 270, 0.75);
+    [['NAME:', 'BEN'], ['MEMBER #:', '0001'], ['LEVEL:', 'SUPER VIP'], ['MEMBER SINCE:', '2026']].forEach(([a, b], j) => { ptext(a, x + 300, y + h + 190 + j * 56, 20, CREAM, 'left'); ptext(b, x + 480, y + h + 190 + j * 56, 30, '#fff', 'left'); });
+    ctx.save(); ctx.translate(x + w / 2, y + h / 2); ctx.rotate(Math.PI);           // the back (upside down, so it reads right after folding)
+    rr(-w / 2, -h / 2, w, h, 0, CREAM); ptext('This member can visit the', 0, -h / 2 + 80, 28, OR3); ptext('CLAUDE MUSEUM any time!', 0, -h / 2 + 118, 32, OR3);
+    ptext(`📘 Passport stamps: ${seenCount()} of ${CHARS.length}`, 0, -h / 2 + 190, 26, '#4e342e'); ptext('Favorite Claude: ____________________', 0, -h / 2 + 250, 24, '#4e342e');
+    ptext('Signature: ____________________', 0, -h / 2 + 310, 24, '#4e342e'); for (let k = 0; k < 4; k++) drawChar(CI[['baby', 'gloop', 'cat', 'dino'][k]], -240 + k * 160, -h / 2 + 390, scaleFor(CI[['baby', 'gloop', 'cat', 'dino'][k]], 0.35)); ctx.restore();
+    foldLine(x, y + h, x + w, y + h); dash(() => ctx.rect(x, y, w, h * 2)); ptext('(fold here)', x + w + 8, y + h + 6, 14, '#1e88e5', 'left');
+  });
+}
+</script>
+<script>
+// 🐱 9. BEN'S IDEA: THE FOLD-UP MINI PRETEND CLAUDE CAT PET (a paper box cat + ears + tail + an adoption certificate)
+function catFace(cx, cy, S) {                                  // the front of the box: Claude Cat's face
+  rr(cx - 70 * S, cy - 50 * S, 140 * S, 80 * S, 34 * S, DARK);
+  for (const d of [-1, 1]) { circle(cx + d * 34 * S, cy - 10 * S, 15 * S, '#a5d6a7'); circle(cx + d * 34 * S + 5 * S, cy - 16 * S, 5 * S, '#fff'); }
+  circle(cx, cy + 46 * S, 7 * S, '#ff8a80'); ctx.strokeStyle = DARK; ctx.lineWidth = 3 * S; ctx.beginPath(); ctx.arc(cx - 9 * S, cy + 52 * S, 9 * S, 0.2, Math.PI - 0.6); ctx.arc(cx + 9 * S, cy + 52 * S, 9 * S, 0.6, Math.PI - 0.2); ctx.stroke();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2 * S; ctx.beginPath(); for (const d of [-1, 1]) for (const k of [-6, 0, 6]) { ctx.moveTo(cx + d * 22 * S, cy + 50 * S); ctx.lineTo(cx + d * 70 * S, cy + 46 * S + k * S); } ctx.stroke();
+  sparkle(cx, cy - 66 * S, 10 * S, CREAM, 0, 3 * S);
+}
+function pagesPet() {
+  const p1 = makePage(() => {
+    bigTitle('MINI CLAUDE CAT PET', PW / 2, 64, 50, '#fff', OR); ptext('💡 Ben\'s idea!  Cut on the gray dotted lines  •  fold on the blue lines  •  tape the tabs', PW / 2, 100, 18, '#555');
+    const Q = 180, ox = 65, oy = 140;                    // a box net: top / left front right back / bottom
+    const sq = (c, r) => ({ x: ox + c * Q, y: oy + r * Q });
+    const faces = [[1, 0, 'top'], [0, 1, 'left'], [1, 1, 'front'], [2, 1, 'right'], [3, 1, 'back'], [1, 2, 'bottom']];
+    const tab = (x1, y1, x2, y2, nx, ny) => { ctx.fillStyle = '#ffe0b2'; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x1 + nx * 26 + (x2 - x1) * 0.15, y1 + ny * 26 + (y2 - y1) * 0.15); ctx.lineTo(x2 + nx * 26 - (x2 - x1) * 0.15, y2 + ny * 26 - (y2 - y1) * 0.15); ctx.lineTo(x2, y2); ctx.closePath(); ctx.fill(); dash(() => { ctx.moveTo(x1, y1); ctx.lineTo(x1 + nx * 26 + (x2 - x1) * 0.15, y1 + ny * 26 + (y2 - y1) * 0.15); ctx.lineTo(x2 + nx * 26 - (x2 - x1) * 0.15, y2 + ny * 26 - (y2 - y1) * 0.15); ctx.lineTo(x2, y2); }); };
+    let p = sq(0, 1); tab(p.x, p.y, p.x + Q, p.y, 0, -1); tab(p.x, p.y + Q, p.x + Q, p.y + Q, 0, 1);
+    p = sq(2, 1); tab(p.x, p.y, p.x + Q, p.y, 0, -1); tab(p.x, p.y + Q, p.x + Q, p.y + Q, 0, 1);
+    p = sq(3, 1); tab(p.x + Q, p.y, p.x + Q, p.y + Q, 1, 0);
+    for (const [c, r, kind] of faces) { const { x, y } = sq(c, r); rr(x, y, Q, Q, 0, OR2);
+      if (kind === 'front') catFace(x + Q / 2, y + Q / 2, 1);
+      if (kind === 'top' || kind === 'back') { ctx.fillStyle = OR3; for (let k = 0; k < 3; k++) ctx.fillRect(x + 40 + k * 40, y + 20, 14, 60); }
+      if (kind === 'left' || kind === 'right') { rr(x + 30, y + 40, Q - 60, Q - 70, 30, CREAM); sparkle(x + Q / 2, y + Q / 2 + 10, 34, OR, 0, 9); }
+      if (kind === 'bottom') { for (const d of [-1, 1]) { circle(x + Q / 2 + d * 40, y + 110, 20, CREAM); for (let t = -1; t <= 1; t++) circle(x + Q / 2 + d * 40 + t * 13, y + 82, 7, CREAM); } ptext('paws', x + Q / 2, y + 40, 18, CREAM); }
+      if (kind === 'back') ptext('tape tail here', x + Q / 2, y + Q - 20, 16, CREAM);
+      if (kind === 'top') ptext('tape ears here', x + Q / 2, y + Q - 20, 16, CREAM); }
+    for (const [c, r] of [[0, 1], [1, 1], [2, 1]]) { const { x, y } = sq(c, r); foldLine(x + Q, y, x + Q, y + Q); }
+    let t = sq(1, 1); foldLine(t.x, t.y, t.x + Q, t.y); foldLine(t.x, t.y + Q, t.x + Q, t.y + Q);
+    dash(() => { for (const [c, r] of faces) { const { x, y } = sq(c, r); ctx.rect(x, y, Q, Q); } });
+    for (let k = 0; k < 2; k++) { const x = 560 + k * 130, y = 160;                // 2 ears
+      tri(x, y + 110, x + 100, y + 110, x + 50, y, OR2); tri(x + 25, y + 100, x + 75, y + 100, x + 50, y + 40, '#ff8a80'); rr(x + 10, y + 110, 80, 26, 4, '#ffe0b2'); foldLine(x + 10, y + 110, x + 90, y + 110);
+      dash(() => { ctx.moveTo(x, y + 110); ctx.lineTo(x + 50, y); ctx.lineTo(x + 100, y + 110); ctx.lineTo(x + 90, y + 136); ctx.lineTo(x + 10, y + 136); ctx.closePath(); }); }
+    ctx.strokeStyle = OR2; ctx.lineWidth = 36; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(130, 780); ctx.bezierCurveTo(300, 700, 420, 860, 600, 760); ctx.stroke(); ctx.lineCap = 'butt';   // the tail
+    ctx.strokeStyle = OR3; ctx.lineWidth = 10; ctx.setLineDash([16, 22]); ctx.beginPath(); ctx.moveTo(130, 780); ctx.bezierCurveTo(300, 700, 420, 860, 600, 760); ctx.stroke(); ctx.setLineDash([]);
+    ptext('← the tail: cut around it, tape this end to the back →', 380, 850, 17, '#6d4c41');
+    ['1. Cut out the box, 2 ears and the tail.', '2. Fold on every blue line.', '3. Tape the tabs inside to make a little box.', '4. Tape on the ears and the tail.', '5. Give your pet a name!'].forEach((ln, j) => ptext(ln, 90, 900 + j * 34, 22, '#4e342e', 'left'));
+    drawChar(CI.cat, 730, 990, 0.9);
+  });
+  const p2 = makePage(() => {
+    ctx.fillStyle = '#fff8e1'; ctx.fillRect(0, 0, PW, PH); ctx.strokeStyle = OR; ctx.lineWidth = 12; ctx.strokeRect(20, 20, PW - 40, PH - 40); ctx.strokeStyle = GOLD; ctx.lineWidth = 4; ctx.strokeRect(40, 40, PW - 80, PH - 80);
+    bigTitle('ADOPTION CERTIFICATE', PW / 2, 120, 50, GOLD, OR3); ptext('Official Mini Claude Cat Pet  •  💡 invented by Ben', PW / 2, 162, 22, OR3);
+    drawChar(CI.cat, PW / 2, 330, 1.3);
+    ['Pet\'s name: ______________________', 'Owner: Ben', 'Adoption day: __________________', 'Favorite toy: __________________'].forEach((ln, j) => ptext(ln, 120, 500 + j * 52, 28, '#4e342e', 'left'));
+    rr(100, 720, PW - 200, 300, 20, '#ffe0b2'); ptext('🐾 PET CARE CHECKLIST', PW / 2, 768, 28, OR3);
+    ['☐  Pat it 3 times a day', '☐  Feed it pretend sparkles', '☐  Tell it a joke (cats love jokes)', '☐  Tuck it in at bedtime', '☐  Take it to visit the Claude Museum'].forEach((ln, j) => ptext(ln, 150, 812 + j * 40, 24, '#4e342e', 'left'));
+    circle(680, 610, 60, '#90caf9'); circle(680, 610, 44, '#e3f2fd'); for (let k = 0; k < 7; k++) sparkle(660 + (k % 3) * 18, 596 + Math.floor(k / 3) * 14, 7, k % 2 ? GOLD : OR, k, 2.5); ptext('sparkle food bowl', 680, 694, 15, '#555');
+  });
+  return [p1, p2];
+}
+// ---------- the new gifts on the Gift Shop shelves ----------
+SOUV.push(
+  { k: 'crown', icon: '👑', name: 'Claude Nova Crown', tip: 'Wear it!' },
+  { k: 'masks', icon: '🎭', name: 'Claude Masks', tip: 'Cat, Dino, Baby!' },
+  { k: 'stand', icon: '🧍', name: 'Stand-Up Claudes', tip: 'Fold + stand!' },
+  { k: 'trading', icon: '🃏', name: 'Trading Cards', tip: 'All 18!' },
+  { k: 'bookmarks', icon: '🔖', name: 'Bookmarks', tip: 'For your books!' },
+  { k: 'puzzle', icon: '🧩', name: 'Claude Puzzle', tip: '20 pieces!' },
+  { k: 'color', icon: '🖍️', name: 'Coloring Pages', tip: 'Pick ANY Claude!' },
+  { k: 'member', icon: '💳', name: 'Member Card', tip: 'Super VIP!' },
+  { k: 'pet', icon: '🐱', name: 'Mini Claude Cat Pet', tip: '💡 Ben\'s idea!', ben: true },
+);
+const EXTRA_PRINT = { crown: () => [pageCrown()], masks: () => ['cat', 'dino', 'baby'].map(maskPage), stand: pagesStandups, trading: pagesTrading, bookmarks: () => [pageBookmarks()], puzzle: () => [pagePuzzle()], member: () => [pageMember()], pet: pagesPet };
+</script>
