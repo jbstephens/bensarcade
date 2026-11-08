@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>🎵 Robo Jump 4 Remix Studio</title>
+<script src="touchpad.js?v=9"></script>
+<style>
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: #05060f; display: flex;
+    align-items: center; justify-content: center; overflow: hidden;
+  }
+  canvas {
+    width: min(100vw, calc(100vh * 960 / 520));
+    height: auto; display: block; border-radius: 12px;
+    box-shadow: 0 10px 40px rgba(0,0,0,.5);
+  }
+</style>
+<canvas id="game" width="960" height="520"></canvas>
+<script>
+// 🎵 ROBO JUMP 4 REMIX STUDIO
+// Robo Jump 4's REAL main theme (copied note for note from robojump4.html) played in 7 brand-new styles,
+// plus BEN'S OWN IDEA: the MEGA BOSS MASH (Robo Jump 4's boss music with the boss songs of Robo Jump 1, 2, 3, 5, 6, 7, 8 and 9 mashed in).
+// Tap a remix to play it. Arrows pick, SPACE / ENTER play, ESC stop, X = Mix it!
+const C = document.getElementById('game'), ctx = C.getContext('2d');
+const W = 960, H = 520;
+const JB = window.JUKEBOX || null;                    // 🎶 jukebox mode (the book plays our music in a hidden copy)
+
+// ---------- Saves + trophies ----------
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }
+let save = { heard: {}, loop: false, music: true };
+try { const s = JSON.parse(localStorage.getItem('rj4Remix') || 'null'); if (s && typeof s === 'object') save = Object.assign(save, s); } catch (_) {}
+if (!save.heard || typeof save.heard !== 'object') save.heard = {};
+function writeSave() { try { localStorage.setItem('rj4Remix', JSON.stringify(save)); } catch (_) {} }
+const heardCount = () => Object.keys(save.heard).filter(k => REMIX_IDS.includes(k)).length;
+let trophyFlash = 0;
+
+// ---------- Audio setup ----------
+let actx = null, master = null, musicBus = null, sfxBus = null, noiseBuf = null, distCurve = null;
+let musicOn = true;
+const midi = n => 440 * Math.pow(2, (n - 69) / 12);
+function setupAudio() {
+  master = actx.createGain(); master.gain.value = 0.9;
+  if (actx.createDynamicsCompressor) {
+    const comp = actx.createDynamicsCompressor();
+    comp.threshold.value = -14; comp.ratio.value = 4; comp.attack.value = 0.005; comp.release.value = 0.2;
+    master.connect(comp); comp.connect(actx.destination);
+  } else master.connect(actx.destination);
+  musicBus = actx.createGain(); musicBus.gain.value = 0.62; musicBus.connect(master);
+  sfxBus = actx.createGain(); sfxBus.gain.value = 0.7; sfxBus.connect(master);
+  noiseBuf = actx.createBuffer(1, actx.sampleRate, actx.sampleRate);
+  const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  distCurve = new Float32Array(1024);                  // 🎸 soft-clip curve for the rock guitars
+  for (let i = 0; i < 1024; i++) { const x = i / 511.5 - 1; distCurve[i] = Math.tanh(x * 6) * 0.8; }
+}
+function wakeAudio() {
+  if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); setupAudio(); } catch (_) { actx = null; } }
+  else if (actx.state === 'suspended' && actx.resume) actx.resume();
+}
+function blip(freq, dur = 0.08, wave = 'square', vol = 0.06, slideTo = null) {   // little click sounds for the buttons
+  if (!actx || !sfxBus || JB) return;
+  const t = actx.currentTime, o = actx.createOscillator(), g = actx.createGain();
+  o.type = wave; o.frequency.setValueAtTime(freq, t); if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+  g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.005); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g); g.connect(sfxBus); o.start(t); o.stop(t + dur + 0.02);
+}
+
+// ---------- Instrument building blocks (from Robo Jump 4's music engine) ----------
+// a smooth gain envelope: 0 -> peak (attack) -> sustain level -> 0 (release). No clicks!
+function envGain(t, a, peak, sus, dur, rel, out) {
+  const g = actx.createGain(), hold = t + Math.max(a + 0.002, dur);
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(peak, t + a);
+  if (sus < 1) g.gain.setTargetAtTime(peak * sus, t + a, Math.max(0.03, dur * 0.35));
+  g.gain.setTargetAtTime(0, hold, rel / 4);
+  g.connect(out);
+  return g;
+}
+function osc(type, f, t, end, detune = 0) {
+  const o = actx.createOscillator(); o.type = type; o.frequency.setValueAtTime(f, t);
+  if (detune) o.detune.setValueAtTime(detune, t);
+  o.start(t); o.stop(end + 0.05); return o;
+}
+function lowpass(f, q, t) { const b = actx.createBiquadFilter(); b.type = 'lowpass'; b.frequency.setValueAtTime(f, t); b.Q.value = q; return b; }
+function gainNode(v) { const g = actx.createGain(); g.gain.value = v; return g; }
+function vibrato(t, end, f, rate, depth, delay, oscs) {
+  const lfo = osc('sine', rate, t, end), lg = actx.createGain();
+  lg.gain.setValueAtTime(0, t); lg.gain.linearRampToValueAtTime(0, t + delay); lg.gain.linearRampToValueAtTime(f * depth, t + delay + 0.3);
+  lfo.connect(lg); for (const o of oscs) lg.connect(o.frequency);
+}
+// 🎺 LEAD voices: synths, brass, flute, bells, steel drum, music box, chiptune pulse, a wobbly theremin, a horn
+function leadVoice(m, t, dur, vol, kind, out, echo, prev) {
+  const f = midi(m), end = t + dur + 0.3;
+  let g;
+  if (kind === 'steel' || kind === 'bell' || kind === 'musicbox') {        // hit-and-ring voices
+    const ring = kind === 'musicbox' ? 1.2 : 0.6;
+    g = envGain(t, 0.004, vol, 0.25, Math.min(dur, ring), kind === 'musicbox' ? 0.8 : 0.25, out);
+    const parts = kind === 'steel' ? [[1, 1], [2, 0.35], [3.01, 0.12]] : kind === 'musicbox' ? [[1, 1], [3.99, 0.22], [8.1, 0.06]] : [[1, 1], [2.01, 0.25], [4.02, 0.12], [5.4, 0.05]];
+    for (const [k, v] of parts) { const pg = gainNode(v); osc('sine', f * k, t, end + 0.6).connect(pg); pg.connect(g); }
+  } else if (kind === 'chip') {                                           // 🕹️ raw pulse wave, like an old game console
+    g = envGain(t, 0.003, vol * 0.8, 0.7, dur, 0.03, out);
+    const o1 = osc('square', f, t, end), o2 = osc('square', f, t, end, 12), mix = gainNode(0.5);
+    o1.connect(mix); o2.connect(mix); mix.connect(g);
+    if (dur > 0.3) vibrato(t, end, f, 6.5, 0.012, 0.15, [o1, o2]);
+  } else if (kind === 'theremin') {                                       // 🎃 ooo-wee-ooo: slides between notes + a big wobble
+    g = envGain(t, 0.06, vol, 0.9, dur, 0.18, out);
+    const o1 = osc('sine', prev ? midi(prev) : f, t, end), o2 = osc('triangle', prev ? midi(prev) : f, t, end, 4);
+    o1.frequency.setTargetAtTime(f, t, 0.05); o2.frequency.setTargetAtTime(f, t, 0.05);
+    const mix = gainNode(0.6); o1.connect(mix); o2.connect(mix); mix.connect(g);
+    vibrato(t, end, f, 6.2, 0.022, 0.04, [o1, o2]);
+  } else {
+    const soft = kind === 'flute' || kind === 'glass' || kind === 'horn';
+    g = envGain(t, soft ? 0.04 : 0.012, vol, 0.8, dur, kind === 'horn' ? 0.2 : 0.12, out);
+    const types = { saw: ['sawtooth', 'sawtooth'], square: ['square', 'square'], brass: ['sawtooth', 'sawtooth'], horn: ['sawtooth', 'triangle'],
+                    flute: ['sine', 'triangle'], glass: ['triangle', 'sine'] }[kind] || ['sawtooth', 'square'];
+    const cut = { saw: 3000, square: 2600, brass: 1400, horn: 900, flute: 4000, glass: 3500 }[kind] || 2800;
+    const lp = lowpass(cut, kind === 'brass' ? 3 : 1.5, t);
+    if (kind === 'brass' || kind === 'horn') { lp.frequency.linearRampToValueAtTime(cut * 2.5, t + 0.06); lp.frequency.setTargetAtTime(cut * 1.2, t + 0.08, 0.2); }
+    lp.connect(g);
+    const o1 = osc(types[0], f, t, end, -7), o2 = osc(types[1], kind === 'glass' ? f * 2 : f, t, end, 7);
+    const mix = gainNode(kind === 'glass' ? 0.6 : 0.5);
+    o1.connect(mix); o2.connect(mix); mix.connect(lp);
+    if (dur > 0.28) vibrato(t, end, f, 5.6, 0.009, 0.12, [o1, o2]);
+  }
+  if (echo && P && P.delayIn) g.connect(P.delayIn);
+}
+// 🎹 PAD voices: strings, choir "aah", ghostly "ooo", organ, a soft lullaby pad
+function padVoice(notes, t, dur, vol, kind, out) {
+  for (const m of notes) {
+    const f = midi(m), end = t + dur + 0.8;
+    const att = { choir: 0.35, ooo: 0.6, strings: 0.5, soft: 0.5, organ: 0.03 }[kind] || 0.22;
+    const g = envGain(t, Math.min(att, dur * 0.6), vol, 0.85, dur, kind === 'organ' ? 0.15 : 0.6, out);
+    if (kind === 'organ') {
+      osc('sine', f, t, end).connect(g);
+      for (const [k, v] of [[2, 0.45], [3, 0.2], [4, 0.15]]) { const g2 = gainNode(v); osc('sine', f * k, t, end).connect(g2); g2.connect(g); }
+    } else if (kind === 'choir' || kind === 'ooo') {                      // vowel filters on detuned saws
+      const src = gainNode(0.5), o1 = osc('sawtooth', f, t, end, -9), o2 = osc('sawtooth', f, t, end, 9);
+      o1.connect(src); o2.connect(src);
+      const fm = kind === 'ooo' ? [[320, 7, 1.3], [800, 8, 0.4], [2300, 9, 0.1]] : [[730, 6, 1], [1090, 7, 0.6], [2440, 8, 0.25]];
+      for (const [ff, q, v] of fm) {
+        const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = ff; bp.Q.value = q;
+        const bg = gainNode(v * 2.2); src.connect(bp); bp.connect(bg); bg.connect(g);
+      }
+      vibrato(t, end, f, kind === 'ooo' ? 3.2 : 4.8, kind === 'ooo' ? 0.012 : 0.006, 0.1, [o1, o2]);
+    } else if (kind === 'soft') {
+      const lp = lowpass(900, 0.5, t); lp.connect(g);
+      osc('triangle', f, t, end, -6).connect(lp); osc('sine', f, t, end, 6).connect(lp);
+    } else {                                                              // 'saw' or 'strings' (3 detuned saws + slow vibrato)
+      const str = kind === 'strings', lp = lowpass(str ? 2200 : 1500, 0.7, t); lp.connect(g);
+      const os = [osc('sawtooth', f, t, end, -11), osc('sawtooth', f, t, end, 11)];
+      if (str) os.push(osc('sawtooth', f, t, end, 0));
+      for (const o of os) o.connect(lp);
+      if (str) vibrato(t, end, f, 5, 0.004, 0.2, os);
+    }
+  }
+}
+// 🎸 BASS voices: punchy synth, slap, sub, tuba, chip, dance synth
+function bassVoice(m, t, dur, vol, kind, out) {
+  const f = midi(m), end = t + dur + 0.1;
+  if (kind === 'chip') { const g = envGain(t, 0.003, vol * 1.1, 0.9, dur, 0.02, out); osc('triangle', f, t, end).connect(g); return; }
+  if (kind === 'tuba') {                                                  // 🎺 oom-pah tuba
+    const g = envGain(t, 0.03, vol * 1.2, 0.7, dur, 0.08, out), lp = lowpass(420, 2, t);
+    lp.frequency.linearRampToValueAtTime(800, t + 0.05); lp.frequency.setTargetAtTime(380, t + 0.06, 0.1); lp.connect(g);
+    osc('sawtooth', f, t, end).connect(lp); const sg = gainNode(0.7); osc('sine', f, t, end).connect(sg); sg.connect(g); return;
+  }
+  const g = envGain(t, 0.006, vol, 0.7, dur, 0.06, out);
+  const slap = kind === 'slap', syn = kind === 'synth';
+  const lp = lowpass(slap ? 3200 : syn ? 2400 : 1600, slap ? 8 : syn ? 12 : 5, t);
+  lp.frequency.setTargetAtTime(slap ? 380 : syn ? 300 : 260, t + 0.01, slap ? 0.05 : syn ? 0.07 : 0.09);
+  lp.connect(g);
+  osc(kind === 'square' ? 'square' : 'sawtooth', f, t, end).connect(lp);
+  const sg = gainNode(0.6); osc(kind === 'sub' ? 'triangle' : 'sine', f, t, end).connect(sg); sg.connect(g);
+}
+// 🎨 PLUCK / arpeggio voices
+function pluckVoice(m, t, dur, vol, kind, out) {
+  const f = midi(m), end = t + dur + 0.3;
+  if (kind === 'chip') { const g = envGain(t, 0.002, vol, 0.6, dur * 0.7, 0.02, out); osc('square', f, t, end).connect(g); return; }
+  const g = envGain(t, 0.004, vol, 0.35, dur, kind === 'musicbox' ? 0.6 : 0.12, out);
+  if (kind === 'bell' || kind === 'musicbox') { osc('sine', f, t, end).connect(g); const g2 = gainNode(kind === 'musicbox' ? 0.2 : 0.3); osc('sine', f * (kind === 'musicbox' ? 3.99 : 3.01), t, end).connect(g2); g2.connect(g); }
+  else if (kind === 'harp') { const lp = lowpass(3000, 1, t); lp.frequency.setTargetAtTime(1200, t, 0.15); lp.connect(g); osc('triangle', f, t, end).connect(lp); osc('sine', f * 2, t, end).connect(lp); }
+  else { const lp = lowpass(2600, 1, t); lp.frequency.setTargetAtTime(900, t, 0.08); lp.connect(g); osc(kind === 'square' ? 'square' : 'triangle', f, t, end).connect(lp); osc('sawtooth', f, t, end, 5).connect(lp); }
+}
+// 🎸 POWER CHORD: root + fifth + octave, into the crunchy guitar amp (P.amp)
+function guitarChord(root, t, dur, vol, mute) {
+  const end = t + dur + 0.1, g = envGain(t, 0.004, vol, mute ? 0.3 : 0.85, dur, mute ? 0.03 : 0.1, P.amp);
+  for (const [k, d] of [[0, -6], [7, 6], [12, 0]]) osc('sawtooth', midi(root + k), t, end, d).connect(g);
+}
+function noiseHit(t, type, freq, q, vol, decay, out) {
+  const s = actx.createBufferSource(); s.buffer = noiseBuf;
+  const fl = actx.createBiquadFilter(); fl.type = type; fl.frequency.value = freq; fl.Q.value = q;
+  const g = actx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.002); g.gain.exponentialRampToValueAtTime(0.001, t + decay);
+  s.connect(fl); fl.connect(g); g.connect(out); s.start(t); s.stop(t + decay + 0.05);
+}
+function thump(t, f0, f1, drop, vol, decay, out, type = 'sine') {
+  const o = osc(type, f0, t, t + decay + 0.05); o.frequency.exponentialRampToValueAtTime(f1, t + drop);
+  const g = actx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.003); g.gain.exponentialRampToValueAtTime(0.001, t + decay);
+  o.connect(g); g.connect(out);
+}
+// 🥁 DRUMS. k kick, s snare, h hat, o open hat, c clap, x crash, r rim, t tom, T timpani (tuned), K big dance kick,
+// n chip noise snare, q chip hat, b chip kick, z snare ROLL (4 fast hits), w wood block, g gong-ish boom
+function drumHit(kind, t, vol, out, sd, root) {
+  if (kind === 'k') thump(t, 150, 42, 0.12, vol, 0.32, out);
+  else if (kind === 'K') { thump(t, 180, 40, 0.15, vol * 1.15, 0.45, out); noiseHit(t, 'highpass', 3000, 0.7, vol * 0.12, 0.02, out); }
+  else if (kind === 'b') thump(t, 220, 50, 0.06, vol * 0.7, 0.12, out, 'square');
+  else if (kind === 's' || kind === 'z') {
+    const hits = kind === 'z' ? 4 : 1;
+    for (let i = 0; i < hits; i++) {
+      const tt = t + i * (sd || 0.1) / 4, v = kind === 'z' ? vol * (0.45 + i * 0.12) : vol;
+      noiseHit(tt, 'highpass', 1400, 0.7, v * 0.8, kind === 'z' ? 0.07 : 0.16, out);
+      thump(tt, 200, 180, 0.05, v * 0.5, 0.09, out, 'triangle');
+    }
+  }
+  else if (kind === 'n') noiseHit(t, 'bandpass', 2500, 0.6, vol, 0.09, out);
+  else if (kind === 'q') noiseHit(t, 'highpass', 9000, 1, vol, 0.025, out);
+  else if (kind === 'h') noiseHit(t, 'highpass', 7500, 1, vol, 0.04, out);
+  else if (kind === 'o') noiseHit(t, 'highpass', 6500, 1, vol, 0.22, out);
+  else if (kind === 'c') { for (let i = 0; i < 3; i++) noiseHit(t + i * 0.011, 'bandpass', 1500, 2, vol, 0.03 + (i === 2 ? 0.1 : 0), out); }
+  else if (kind === 'x') noiseHit(t, 'highpass', 4000, 0.5, vol, 1.4, out);
+  else if (kind === 'r') thump(t, 2400, 2300, 0.03, vol, 0.04, out);
+  else if (kind === 'w') thump(t, 1200, 1150, 0.02, vol, 0.06, out, 'triangle');
+  else if (kind === 't') thump(t, 140, 75, 0.25, vol, 0.28, out);
+  else if (kind === 'T') { const f = midi(((root || 0) % 12 + 12) % 12 + 38); thump(t, f * 1.08, f, 0.08, vol, 0.9, out); noiseHit(t, 'lowpass', 300, 1, vol * 0.4, 0.15, out); }
+  else if (kind === 'g') { thump(t, 90, 45, 0.6, vol, 1.6, out); noiseHit(t, 'lowpass', 900, 0.5, vol * 0.3, 0.8, out); }
+}
+
+// ---------- Robo Jump 4's real music, in Robo Jump 4's own note language ----------
+// Melody tokens (one per 8th note): 1-7 = scale degree, ' = octave up, , = octave down, b/# = flat/sharp, - = hold, . = rest.
+// Chords: one per bar ("4/5" = two), degree number, M = major, m = minor, b = flat root, 7 = add the 7th.
+const SCALES = { major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10], dorian: [0, 2, 3, 5, 7, 9, 10] };
+const degS = (sc, k) => sc[((k - 1) % 7 + 7) % 7] + 12 * Math.floor((k - 1) / 7);
+function parseMel(str, sc) {
+  return str.replace(/\|/g, ' ').trim().split(/\s+/).filter(Boolean).map(tk => {
+    if (tk === '.') return null;
+    if (tk === '-') return 'h';
+    const m = tk.match(/^([b#]?)([1-7])([',]*)$/);
+    if (!m) return null;
+    const acc = m[1] === 'b' ? -1 : m[1] === '#' ? 1 : 0, d = +m[2];
+    const oct = (m[3].match(/'/g) || []).length - (m[3].match(/,/g) || []).length;
+    let hd = d - 2, ho = oct; if (hd < 1) { hd += 7; ho--; }
+    return { s: sc[d - 1] + acc + 12 * oct, hs: sc[hd - 1] + 12 * ho };
+  });
+}
+function parseChord(tk, sc) {
+  let flat = false; if (tk[0] === 'b') { flat = true; tk = tk.slice(1); }
+  const r = +tk[0], q = tk.slice(1), root = sc[r - 1] - (flat ? 1 : 0);
+  let third = flat ? root + 4 : root + ((degS(sc, r + 2) - sc[r - 1]) % 12 + 12) % 12;
+  if (q.includes('M')) third = root + 4;
+  if (q.includes('m')) third = root + 3;
+  const ch = [root, third, root + 7];
+  if (q.includes('7')) ch.push(root + ((degS(sc, r + 6) - sc[r - 1]) % 12 + 12) % 12);
+  return ch;
+}
+const parseChords = (str, sc) => str.trim().split(/\s+/).map(b => b.split('/').map(c => parseChord(c, sc)));
+function melEvents(arr) {                              // onset -> length in 8ths (holds tie notes together)
+  const ev = new Array(arr.length).fill(null);
+  for (let i = 0; i < arr.length; i++) if (arr[i] && arr[i] !== 'h') { let n = 1; while (arr[i + n] === 'h') n++; ev[i] = Object.assign({ len: n }, arr[i]); }
+  return ev;
+}
+// 🤖 ROBO JUMP 4 MAIN THEME (copied exactly from robojump4.html: A major, 140 BPM)
+const RJ4_TITLE = {
+  I: { ch: '1 6 4 5', mel: "5, . 1 . 2 . 3 - | 6 - 5 . 3 . 1 . | 4 - 3 . 4 . 6 . | 5 - - - 5 . 7 ." },
+  V: { ch: '6 4 1 5 6 4 2 5',
+       mel: ". 3 3 3 - 2 1 . | 1 . 6, . 1 - 2 . | 3 - 3 2 3 . 5 . | 2 - - 1 7, - 5, . | . 3 3 3 - 2 1 . | 1 . 6, . 1 - 4 . | 4 - 3 . 4 . 6 . | 5 - - . . 5 6 7" },
+  C: { ch: '1 5 6 4 1 5 4/5 1',
+       mel: "1' - 7 1' - 5 - . | 2' - 1' 2' - 7 - . | 3' - 2' 3' - 1' - 6 | 1' - 6 - 4 - 5 6 | 1' - 7 1' - 5 - . | 2' - 1' 2' - 7 5 . | 4 - 6 1' - 7 - 2' | 1' - - - . . 5 5" },
+  B: { ch: '4 5 3 6 2 5 4 5',
+       mel: "6 . 6 . 6 5 6 1' | 7 - 5 - 2 - . . | 7 . 7 . 7 6 7 2' | 1' - 6 - 3 - . . | 4 . 4 5 6 . 4 . | 5 . 5 6 7 . 2' . | 1' - 6 - 1' - 2' - | 2' - - - 5 5 6 7" } };
+// 👾 ROBO JUMP 4 BOSS MUSIC (copied exactly: D minor, 168 BPM)
+const RJ4_BOSS = {
+  I: { ch: '1 1 6 5M', mel: "1 . 1 . 1 . 1 . | 1 . 1 . b2 . 1 . | 6 . 6 . 6 . 6 . | #7 . 2' . #7 . 5 ." },
+  V: { ch: '1 1 6 7 1 1 6 5M',
+       mel: "5 . 1' . 5 . 3' 2' | 1' - 7 - 5 - . . | 6 . 1' . 6 . 4' 3' | 2' - 1' - 7 - . . | 5 . 1' . 5 . 3' 2' | 1' - 7 - 5 - 3' 4' | 5' - 4' - 3' - 1' - | #7 - - - 5 - #7 -" },
+  C: { ch: '6 7 1 1 6 7 5M 5M',
+       mel: "3' - 3' 4' 5' - 3' - | 2' - 2' 3' 4' - 2' - | 1' - 1' 2' 3' - 5' - | 1'' - - - 5' - - - | 3' - 3' 4' 5' - 3' - | 2' - 2' 3' 4' - 2' - | #7 - 2' - 5' - 4' - | #7' - - - 2'' - - -" },
+  B: { ch: '4 4 1 1 4 4 5M 5M',
+       mel: "4 - - - 6 - - - | 1' - - - 4' - - - | 3' - - - 1' - - - | 5 - - - 3' - - - | 4' - - - 6' - - - | 4' - - - 1' - - - | #7 - - - 2' - - - | 5' - - - #7' - - -" } };
+// 🌑👑 ROBO JUMP 4 FINAL BOSS chorus (copied exactly: G minor -> used in D minor for the big finale)
+const RJ4_FINAL_C = { ch: '1 7 6 7 1 7 6 5M',
+  mel: "5' - - 4' 3' - 2' - | 2' - - 1' 7 - 2' - | 1' - - 7 6 - 1' - | 7 - 2' - 4' - - - | 5' - - 4' 3' - 2' - | 2' - - 1' 7 - 4' - | 3' - 1' - 6 - 1' - | #7 - - - 2' - - -" };
+
+// ---------- Boss music from the other Robo Jump games (copied from each game, for the MEGA BOSS MASH) ----------
+// Robo Jump 1, 2 and 3 store their songs as plain note numbers (8th notes, 4 chords x 2), so they get moved into D minor here.
+const RJ1_BOSS = { from: 'Robo Jump 1', shift: -7,          // platformer.html: A minor theme, played FAST at 165 BPM for the boss
+  chords: [[69, 72, 76], [65, 69, 72], [60, 64, 67], [67, 71, 74]],
+  mel: [81,0,0,0, 79,0,76,0, 77,0,0,0, 76,0,72,0, 76,0,0,0, 74,0,72,0, 74,0,0,0, 0,0,0,0,
+        81,0,0,0, 84,0,83,0, 81,0,0,0, 77,0,76,0, 79,0,0,0, 76,0,72,0, 71,0,0,0, 0,0,0,0] };
+const RJ2_BOSS = { from: 'Robo Jump 2', shift: -2,          // robojump2.html: E minor, played FAST at 165 BPM for the boss
+  chords: [[64, 67, 71], [60, 64, 67], [62, 66, 69], [59, 62, 66]],
+  mel: [76,0,79,0, 83,0,81,79, 76,0,0,74, 76,0,0,0, 72,0,76,0, 79,0,77,76, 72,0,0,71, 72,0,0,0,
+        74,0,78,0, 81,0,79,78, 74,0,76,0, 78,0,81,0, 83,0,81,0, 78,0,74,0, 71,0,74,0, 78,0,0,0] };
+const RJ3_BOSS = { from: 'Robo Jump 3', shift: 0,           // robojump3.html: the Goo Castle march (D minor), sped up for the boss
+  chords: [[50, 53, 57], [46, 50, 53], [48, 52, 55], [45, 49, 52]],
+  mel: [62,0,65,0, 69,0,0,68, 69,0,65,0, 62,0,0,0, 70,0,69,0, 67,0,65,0, 64,0,0,0, 61,0,0,0,
+        62,0,0,62, 65,0,62,0, 69,0,0,0, 74,0,0,0, 72,0,70,0, 69,0,67,0, 69,0,0,0, 0,0,0,0] };
+// Robo Jump 5 - 9 use the same note language as Robo Jump 4 (minor key), so they fit right in.
+const OTHER_BOSS = {
+  rj5: { from: 'Robo Jump 5', icon: '👻', li: 'saw', ch: '1 7 6 5M 1 7 6 5M',           // robojump5.html "boss" chorus
+    mel: "1' - - 5 1' - 3' - | 2' - - 7 2' - 4' - | 3' - 1' - 6 - 1' - | #7 - - - - . . . | 1' - - 5 1' - 3' - | 2' - - 7 2' - 5' - | 6' - 5' - 4' - 3' - | #7' - - - 2'' - . ." },
+  rj6: { from: 'Robo Jump 6', icon: '💾', li: 'square', ch: '1 1 7 7 6 6 5M 5M',        // robojump6.html "boss" verse
+    mel: "5 . 1' . 5 . 3' . | 2' - 1' - 5 - . . | 4 . 7 . 4 . 2' . | 1' - 7 - 4 - . . | 3 . 6 . 3 . 1' . | 3' - 1' - 6 - . . | #7 . 2' . 5 . #7 . | 2' - 5' - 4' - 2' -" },
+  rj7: { from: 'Robo Jump 7', icon: '⏰', li: 'brass', ch: '6 7 1 1 6 7 5M 5M',          // robojump7.html "boss" chorus
+    mel: "3' - 6' - 1'' - 6' - | 4' - 7' - 2'' - 7' - | 5' - 3' - 1' - 3' - | 5' - - - 1'' - . . | 3' - 6' - 1'' - 6' - | 2'' - 7' - 4' - 7' - | #7' - 5' - 2' - 5' - | #7' - - - . 5 6 #7" },
+  rj8: { from: 'Robo Jump 8', icon: '🔒', li: 'saw', ch: '6 7 1 1 6 7 5M 5M',            // robojump8.html "boss" chorus
+    mel: "6' - - - 5' - 3' - | 7' - - - 6' - 4' - | 5' - 3' - 1' - 3' - | 5' - - - . . 5' 6' | 1'' - 6' - 3' - 1'' - | 7' - 4' - 2' - 7' - | #7' - - - 5' - 2' - | #7' - - - . 5 6 #7" },
+  rj9: { from: 'Robo Jump 9', icon: '💗', li: 'square', ch: '1 6 4 5M 1 6 4 5M',         // robojump9.html "eraboss" verse
+    mel: "5' . 3' . 1' . 3' . | 6' - 3' - 1' - . . | 4' . 6' . 1'' . 6' . | #7' - 5' - 2' - . . | 5' . 3' . 1' . 5 . | 6 . 1' . 3' . 6' . | 4' - 2' - 6 - 1' - | #7 - 2' - 5' - - -" },
+};
+// (Robo Jump 10's boss song "Element Guardians" already IS Robo Jump 4's boss tune, so it's in here too!)
+
+// ---------- Moving tunes into one key (the same trick as Robo Jump 11's Mix Maker) ----------
+const mod12 = v => ((v % 12) + 12) % 12;
+function octFit(mel, target) {                         // move a whole tune by octaves (so it stays the very same tune)
+  const ns = mel.filter(n => n && n !== 'h'), avg = ns.length ? ns.reduce((a, n) => a + n.s, 0) / ns.length : target;
+  const sh = Math.round((target - avg) / 12) * 12;
+  return mel.map(n => n && n !== 'h' ? { s: n.s + sh, hs: n.hs + sh } : n);
+}
+function fromNumbers(src) {                            // Robo Jump 1-3 note numbers -> D minor, relative to D (62)
+  const ch = [], mel = [];
+  for (let b = 0; b < 8; b++) ch.push([src.chords[b % 4].map(n => n + src.shift - 62)]);
+  src.mel.forEach((n, i) => {
+    if (n) mel.push({ s: n + src.shift - 62, hs: n + src.shift - 62 - 3 });
+    else { const prev = mel[i - 1], prev2 = mel[i - 2]; mel.push((prev && (prev !== 'h' || (prev2 && prev2 !== 'h'))) ? 'h' : null); }   // hold up to 3 8ths, like the original
+  });
+  return { ch, mel };
+}
+// make a counter-melody fit the chords: a note that bumps a half step (or a tritone) slides onto a chord note
+function snapCm(cm, ch) {
+  return cm.map((n, j) => {
+    if (!n || n === 'h') return n;
+    const bar = ch[Math.min(ch.length - 1, Math.floor(j / 8))], chord = bar[(j % 8) < 4 || bar.length < 2 ? 0 : 1], pcs = chord.slice(0, 3).map(mod12), pc = mod12(n.s);
+    if (pcs.includes(pc)) return n;
+    const bad = pcs.some(c => { const d = Math.min(mod12(pc - c), mod12(c - pc)); return d === 1 || d === 6; });
+    if (!bad) return n;
+    let best = n.s, bd = 99;
+    for (let d = -6; d <= 6; d++) if (pcs.includes(mod12(n.s + d)) && Math.abs(d) < bd) { bd = Math.abs(d); best = n.s + d; }
+    return { s: best, hs: best - 3 };
+  });
+}
+
+// ---------- The remix compiler: a remix = Robo Jump 4's tune + a style (tempo, instruments, drum patterns, form) ----------
+// Form letters: I intro, V verse, C chorus, B bridge, U build-up (dance), K KEY CHANGE chorus, T tag. An ending chord is added at the end.
+function compileRemix(R) {
+  const sc = SCALES[R.scale || 'major'], secs = {};
+  if (R.secs) Object.assign(secs, R.secs);
+  else for (const k in R.src) {
+    const S = R.src[k], chs = R.chordFix ? R.chordFix(S.ch) : S.ch;
+    secs[k] = { ch: parseChords(chs, sc), mel: parseMel(S.mel, sc) };
+  }
+  for (const k in secs) {
+    const s = secs[k];
+    s.bars = s.ch.length;
+    s.ev = melEvents((s.mel || []).map(n => n && n !== 'h' ? { s: n.s + 12 * (R.leadOct || 0), hs: n.hs + 12 * (R.leadOct || 0) } : n));
+    s.cmsEv = (s.cms || []).map(c => ({ ev: melEvents(c.mel), inst: c.inst, vol: c.vol || 0.5 }));
+  }
+  const minor = R.scale === 'minor';
+  secs.END = { ch: [[[0, minor ? 3 : 4, 7]]], bars: 1, ev: melEvents([{ s: 12 + 12 * (R.leadOct || 0), hs: 7 }, 'h', 'h', 'h', 'h', 'h', 'h', 'h']), cmsEv: [] };
+  secs.END.ch = [[[0, minor ? 3 : 4, 7]]];
+  const bars = [], reps = {};
+  for (const f of R.form.concat(['END'])) {
+    const it = typeof f === 'string' ? f : f.key;
+    let key = it, tag = it, tr = 0, b0 = 0, b1 = null, noLead = false;
+    if (it === 'K') { key = 'C'; tag = 'C'; tr = R.kc != null ? R.kc : 2; }
+    if (it === 'T') { key = 'I'; tag = 'T'; tr = R.kc != null ? R.kc : 2; }
+    if (it === 'U') { key = 'C'; tag = 'U'; b1 = 4; noLead = true; }
+    if (it === 'END') tr = R.endTr != null ? R.endTr : (R.form.includes('T') || R.form.includes('K')) ? (R.kc != null ? R.kc : 2) : 0;
+    if (typeof f === 'object') { tag = f.tag || tag; if (f.tr != null) tr = f.tr; }
+    const S = secs[key]; if (!S) continue;
+    reps[it] = (reps[it] || 0) + 1;
+    const n = b1 == null ? S.bars : Math.min(b1, S.bars);
+    for (let i = b0; i < n; i++) bars.push({ key, tag, f: it, i, ii: i - b0, tr, rep: reps[it], noLead, last: i === n - 1, first: i === b0, len: n - b0 });
+  }
+  return Object.assign({}, R, { secs, bars, total: bars.length * 16, minor });
+}
+const stepDur = R => 60 / R.bpm / 4;
+const songSeconds = R => R.total * stepDur(R);
+const pat = (p, bar) => Array.isArray(p) ? p[bar.ii % p.length] : p;
+
+// ---------- The player ----------
+let P = null;                                          // the remix that's playing right now
+let MUSIC_LOG = null;                                  // tests set this to an array to see every scheduled note
+let visQ = [], bounceQ = [];                           // 🎆 notes waiting to light up the visualizer
+function logNote(track, m, t) {
+  if (MUSIC_LOG) MUSIC_LOG.push({ id: P.R.id, track, m, t });
+  if (visQ.length < 400) visQ.push({ t, lane: Math.max(0, Math.min(23, Math.floor((m - 30) / 2.5))), amp: track === 'lead' ? 1 : track === 'bass' ? 0.8 : 0.55, track });
+}
+function startRemix(R, opts = {}) {
+  stopMusic(true);
+  wakeAudio();
+  if (!actx || !musicBus) return;
+  const out = actx.createGain(), t0 = actx.currentTime;
+  out.gain.setValueAtTime(0, t0); out.gain.linearRampToValueAtTime(1, t0 + 0.03); out.connect(musicBus);
+  P = { R, out, pos: 0, nextT: t0 + 0.08, startT: t0 + 0.08, prevLead: 0, done: false, endAt: 0, played: 0, loop: opts.loop };
+  if (R.echo !== false) {                              // dotted-8th echo (inside this remix, so STOP silences it too)
+    P.delayIn = gainNode(R.echoAmt || 0.26);
+    const dn = actx.createDelay(2); dn.delayTime.value = stepDur(R) * 3;
+    const fb = gainNode(0.32), dlp = lowpass(2400, 0.7, t0);
+    P.delayIn.connect(dn); dn.connect(dlp); dlp.connect(fb); fb.connect(dn); dlp.connect(out);
+  }
+  if (R.inst.gtr || R.inst.lead === 'gtr') {           // 🎸 the guitar amp: drive -> crunch -> speaker filter
+    const drive = gainNode(3), sh = actx.createWaveShaper(); sh.curve = distCurve;
+    const cab = lowpass(3200, 1, t0), cab2 = lowpass(5200, 0.7, t0), lvl = gainNode(0.32);
+    drive.connect(sh); sh.connect(cab); cab.connect(cab2); cab2.connect(lvl); lvl.connect(out);
+    P.amp = drive;
+  }
+  visQ = []; bounceQ = [];
+}
+function stopMusic(quick) {
+  if (!P) return;
+  const g = P.out;
+  if (actx) { const t = actx.currentTime; try { g.gain.cancelScheduledValues(t); g.gain.setValueAtTime(g.gain.value, t); g.gain.linearRampToValueAtTime(0, t + (quick ? 0.05 : 0.15)); } catch (_) {} }
+  setTimeout(() => { try { g.disconnect(); } catch (_) {} }, 400);
+  P = null; visQ = []; bounceQ = [];
+}
+function playMusic() {                                 // books the next notes a little ahead, so the timing is rock steady
+  if (!P || !actx || !musicOn) return;
+  const R = P.R, sd = stepDur(R);
+  if (P.nextT < actx.currentTime) P.nextT = actx.currentTime + 0.03;
+  while (!P.done && P.nextT < actx.currentTime + 0.2) {
+    scheduleStep(R, P.pos, P.nextT);
+    P.nextT += sd; P.pos++;
+    if (P.pos >= R.total) {
+      if (P.loop || save.loop || JB) { P.pos = 0; P.loops = (P.loops || 0) + 1; }
+      else { P.done = true; P.endAt = P.nextT + 1.6; }
+    }
+  }
+}
+function chordAt(sec, i, st) { const c = sec.ch[Math.min(i, sec.ch.length - 1)]; return c[st < 8 || c.length < 2 ? 0 : 1]; }
+function scheduleStep(R, pos, t) {
+  const bar = R.bars[Math.floor(pos / 16)], st = pos % 16, sd = stepDur(R), sec = R.secs[bar.key], key = R.base + bar.tr;
+  const out = P.out, inst = R.inst, V = R.vol || {};
+  const end = bar.key === 'END';
+  const sty = end ? (R.sty.END || { k: 'x...............' }) : (R.sty[bar.tag] || (bar.tag === 'T' ? R.sty.I : R.sty.V) || {});
+  const swing = st % 2 ? (R.swing || 0) * sd : 0, tt = t + swing;
+  const ch = chordAt(sec, bar.i, st), root = mod12(key + ch[0]);
+  // 🥁 drums
+  for (const d of ['k', 'K', 'b', 's', 'z', 'n', 'h', 'q', 'o', 'c', 'r', 'w', 't', 'T', 'g']) {
+    let p = pat(sty[d], bar);
+    if (!end && R.fill && bar.last && st >= 12 && (d === R.fill) && bar.tag !== 'T' && bar.tag !== 'U') p = 'xxxxxxxxxxxxxxxx';   // drum fill at the end of each part
+    if (bar.tag === 'V' && bar.rep === 1 && bar.ii < 2 && (d === 's' || d === 'n' || d === 'z') && !R.loud) continue;          // verse 1 starts gently
+    if (p && p[st] === 'x') {
+      const v = (R.drumVol || 1) * (DRUM_VOL[d] || 0.1) * (d === R.fill && bar.last && st >= 12 ? 0.6 + (st - 12) * 0.12 : 1);
+      drumHit(d, tt, v, out, sd, root); logNote('drum', 40, tt);
+      if (d === 'k' || d === 'K' || d === 'b' || d === 'T') bounceQ.push(tt);
+    }
+  }
+  if (st === 0 && bar.first && (bar.tag === 'C' || bar.tag === 'B' || bar.tag === 'F') && R.crash !== false) drumHit('x', t, 0.1 * (R.drumVol || 1), out);
+  if (st === 0 && end) { drumHit('x', t, 0.12 * (R.drumVol || 1), out); if (R.endBoom) drumHit('g', t, 0.4, out); }
+  if (st === 0 && bar.tag === 'U' && bar.ii === 0) riser(t, sd * 16 * bar.len, out);
+  if (sty.X && sty.X[st] === 'x') drumHit('x', t, 0.09 * (R.drumVol || 1), out);
+  // 🎸 bass
+  const bp = pat(sty.bass, bar);
+  if (bp && bp[st] && bp[st] !== '.' && bp[st] !== '-') {
+    let n = 1; while (bp[st + n] === '-') n++;
+    const r = root + (R.bassLow || 33), off = { R: 0, O: 12, 5: 7, 3: ch[1] - ch[0], L: -12 }[bp[st]] || 0;
+    bassVoice(r + off, tt, n * sd * 0.92, 0.17 * (V.bass || 1), inst.bass, out); logNote('bass', r + off, tt);
+  }
+  // 🎸 power-chord guitars (x = ring out, m = palm mute)
+  const gp = pat(sty.gtr, bar);
+  if (gp && P.amp && (gp[st] === 'x' || gp[st] === 'm')) {
+    let n = 1; while (gp[st + n] === '-') n++;
+    guitarChord(root + 40, tt, n * sd * (gp[st] === 'm' ? 0.5 : 0.95), 0.09 * (V.gtr || 1), gp[st] === 'm'); logNote('gtr', root + 40, tt);
+  }
+  // 🎹 pads (on each chord change)
+  const c = sec.ch[Math.min(bar.i, sec.ch.length - 1)];
+  if (inst.pad && (st === 0 || (st === 8 && c.length > 1)) && !sty.noPad) {
+    const len = c.length > 1 ? 8 : 16, base = R.base - 12;
+    const notes = ch.map(s => { let m = key + s; while (m < base - 9) m += 12; while (m > base + 4) m -= 12; return m; });
+    const pv = 0.034 * (V.pad || 1) * (bar.tag === 'I' ? 0.8 : 1);
+    padVoice(notes, t, len * sd * (end ? 2.5 : 0.98), pv, inst.pad, out); logNote('pad', notes[0], t);
+    if (inst.pad2) padVoice(notes.map(m => m + 12), t, len * sd * 0.98, pv * (V.pad2 || 0.7), inst.pad2, out);
+  }
+  // 🎨 arpeggio / stabs
+  const ap = pat(sty.arp, bar);
+  if (ap && ap[st] && ap[st] !== '.' && ap[st] !== '-') {
+    const tones = ch.slice(0, 3).map(s => { let m = key + s; while (m < R.base - 7) m += 12; while (m >= R.base + 5) m -= 12; return m; }).sort((a, b) => a - b);
+    if (ap[st] === 's') { for (const m of tones) leadVoice(m, tt, sd * 1.2, 0.035 * (V.arp || 1), inst.stab || 'brass', out, false); logNote('arp', tones[0], tt); }
+    else {
+      const k = +ap[st], m = (k === 3 ? tones[0] + 12 : tones[k]) + (inst.arpOct || 0) * 12;
+      pluckVoice(m, tt, sd * (inst.arpLen || 1.6), 0.045 * (V.arp || 1), inst.arp, out); logNote('arp', m, tt);
+    }
+  }
+  // 🎺 lead melody (+ harmony a third below, + octave doubling after the KEY CHANGE) and counter-melodies
+  if (st % 2 === 0) {
+    const j = bar.i * 8 + st / 2, e = bar.noLead ? null : sec.ev[j];
+    if (e) {
+      const m = key + e.s, dur = e.len * sd * 2 * (R.legato || 0.94), lv = 0.12 * (V.lead || 1) * (bar.tag === 'I' || bar.tag === 'T' ? 0.85 : 1);
+      const li = sec.li || inst.lead;
+      if (li === 'gtr') gtrLead(m, tt, dur, lv); else leadVoice(m, tt, dur, lv, li, out, R.echo !== false, P.prevLead);
+      P.prevLead = m; logNote('lead', m, tt);
+      if (inst.harm && (R.harmOn || 'C').includes(bar.f)) { leadVoice(key + e.hs, tt, dur, lv * 0.42, inst.harm, out, false); logNote('harm', key + e.hs, tt); }
+      if (bar.f === 'K' && R.oct8 !== false) { leadVoice(m + 12, tt, dur, lv * 0.28, inst.glock || li, out, false); logNote('lead8', m + 12, tt); }
+      else if (inst.glock && bar.tag === 'C') leadVoice(m + 12, tt, Math.min(dur, 0.4), lv * 0.4, inst.glock, out, false);
+    }
+    for (const cm of sec.cmsEv) {
+      const e2 = cm.ev[j];
+      if (e2) { const m2 = key + e2.s; leadVoice(m2, tt, e2.len * sd * 2 * 0.9, 0.12 * cm.vol * (V.cm || 1), cm.inst, out, false); logNote('cm', m2, tt); }
+    }
+  }
+}
+const DRUM_VOL = { k: 0.55, K: 0.6, b: 0.5, s: 0.3, z: 0.26, n: 0.18, h: 0.07, q: 0.06, o: 0.06, c: 0.22, r: 0.09, w: 0.12, t: 0.32, T: 0.45, g: 0.4 };
+function riser(t, dur, out) {                          // 🚀 the whoosh before the drop
+  const s = actx.createBufferSource(); s.buffer = noiseBuf; s.loop = true;
+  const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 2; bp.frequency.setValueAtTime(300, t); bp.frequency.exponentialRampToValueAtTime(7000, t + dur);
+  const g = actx.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.12, t + dur * 0.95); g.gain.linearRampToValueAtTime(0, t + dur);
+  s.connect(bp); bp.connect(g); g.connect(out); s.start(t); s.stop(t + dur + 0.05);
+}
+function gtrLead(m, t, dur, vol) {                     // 🎸 screaming lead guitar (through the amp) with a big vibrato
+  const f = midi(m), end = t + dur + 0.2, g = envGain(t, 0.006, vol * 0.9, 0.85, dur, 0.1, P.amp || P.out);
+  const o1 = osc('sawtooth', f, t, end, -5), o2 = osc('square', f, t, end, 5);
+  o1.connect(g); o2.connect(g);
+  if (dur > 0.25) vibrato(t, end, f, 6, 0.014, 0.12, [o1, o2]);
+  if (P.delayIn) g.connect(P.delayIn);
+}
+
+// ---------- THE 8 REMIXES (all brand-new arrangements of Robo Jump 4's real tunes) ----------
+const REMIX_DEFS = [
+  // 🎸 ROCK: crunchy power chords, a screaming lead guitar, big drums, driving 8th-note bass
+  { id: 'rock', name: 'Rock Remix', icon: '🎸', col: '#e53935', bpm: 150, base: 69, kc: 2, src: RJ4_TITLE, fill: 's', harmOn: 'CK', echoAmt: 0.18, drumVol: 1.15,
+    form: ['I', 'V', 'C', 'B', 'C', 'K', 'T'], vol: { lead: 1.1, pad: 0.5, bass: 1.1, gtr: 1 },
+    inst: { lead: 'gtr', harm: 'saw', pad: 'saw', bass: 'saw', gtr: true },
+    sty: {
+      I: { k: 'x.......x.......', s: '....x.......x...', o: 'x...x...x...x...', gtr: 'x-------x-----x-', bass: 'R-------R-----R-' },
+      V: { k: 'x.....x.x.....x.', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', gtr: 'm.m.m.m.m.m.m.m.', bass: 'R.R.R.R.R.R.R.R.' },
+      C: { k: 'x.x...x.x.x...x.', s: '....x.......x...', o: 'x.x.x.x.x.x.x.x.', gtr: 'x-------x---x-x-', bass: 'R.R.R.R.R.R.O.R.' },
+      B: { k: 'x.......x.......', s: '....x.......x...', h: 'x...x...x...x...', t: '............x.xx', gtr: 'x---------------', bass: 'R-------5-------' },
+      END: { k: 'x...............', gtr: 'x---------------', bass: 'R---------------' } } },
+  // 🌙 LULLABY: slow and soft. A music box sings the tune over a gentle pad and a little harp
+  { id: 'lullaby', name: 'Lullaby Remix', icon: '🌙', col: '#5c6bc0', bpm: 76, base: 62, kc: 0, src: RJ4_TITLE, leadOct: 1, legato: 0.98, crash: false, harmOn: 'C', echoAmt: 0.3,
+    form: ['I', 'V', 'C', 'T'], vol: { lead: 0.85, pad: 1.3, arp: 0.6, bass: 0.55, harm: 0.8 },
+    inst: { lead: 'musicbox', harm: 'flute', pad: 'soft', bass: 'sub', arp: 'harp' },
+    sty: {
+      I: { bass: 'R---------------', arp: '0...1...2...3...' },
+      V: { bass: 'R-------5-------', arp: '0...1...2...1...' },
+      C: { bass: 'R-------5-------', arp: '0.1.2.3.2.1.0.1.' },
+      END: { bass: 'R---------------', arp: '0...1...2...3...' } } },
+  // 🕹️ 8-BIT: pulse waves, super-fast arpeggios and noise drums, like an old game console
+  { id: 'chip', name: '8-Bit Remix', icon: '🕹️', col: '#43a047', bpm: 160, base: 69, kc: 2, src: RJ4_TITLE, echo: false, fill: 'n', harmOn: 'CK', crash: false,
+    form: ['I', 'V', 'C', 'V', 'C', 'B', 'K', 'T'], vol: { lead: 0.8, harm: 0.8, bass: 1.2, arp: 0.7 },
+    inst: { lead: 'chip', harm: 'chip', bass: 'chip', arp: 'chip', arpOct: 1, arpLen: 0.9 },
+    sty: {
+      I: { b: 'x.......x.......', q: 'x.x.x.x.x.x.x.x.', bass: 'R.O.R.O.R.O.R.O.', arp: '0123012301230123' },
+      V: { b: 'x.....x.x.......', n: '....x.......x...', q: 'x.x.x.x.x.x.x.x.', bass: 'R.O.R.O.R.O.R.O.', arp: '0121012101210121' },
+      C: { b: 'x...x...x...x...', n: '....x.......x...', q: 'xxxxxxxxxxxxxxxx', bass: 'R.O.R.O.5.O.R.O.', arp: '0123012301230123' },
+      B: { b: 'x.......x.......', n: '....x.......x...', q: 'x.x.x.x.x.x.x.x.', bass: 'R...R...5...5...', arp: '3210321032103210' },
+      END: { b: 'x...............', n: 'x...............', bass: 'R---------------', arp: '0123...........' } } },
+  // 🎺 MARCHING BAND: brass tune, oom-pah tuba, brass "pah" chords, snare rolls, cymbals and a glockenspiel
+  { id: 'march', name: 'Marching Band Remix', icon: '🎺', col: '#fb8c00', bpm: 120, base: 70, kc: 2, src: RJ4_TITLE, fill: 'z', harmOn: 'CK', echo: false,
+    form: ['I', 'C', 'V', 'C', 'K', 'T'], vol: { lead: 1.1, harm: 1, bass: 1.1, arp: 1 },
+    inst: { lead: 'brass', harm: 'brass', bass: 'tuba', arp: 'stab', stab: 'brass', glock: 'bell' },
+    sty: {
+      I: { k: 'x.......x.......', s: 'x..x..x.x.x.x.xx', bass: 'R-------5-------' },
+      V: { k: 'x.......x.......', s: '....x..x....x.xx', bass: 'R.......5.......', arp: '....s.......s...' },
+      C: { k: 'x...x...x...x...', s: 'z...x..xz...x.xx', X: 'x...............', bass: 'R.......5.......', arp: '....s.......s...' },
+      END: { k: 'x...............', z: 'xxxxxxxxxxxx....', bass: 'R---------------' } } },
+  // 🎃 SPOOKY: the tune in a MINOR key, a creepy organ, a wobbly theremin, a ghostly "ooo" choir and tick-tock wood blocks
+  { id: 'spooky', name: 'Spooky Remix', icon: '🎃', col: '#7b1fa2', bpm: 108, base: 69, scale: 'minor', kc: 0, src: RJ4_TITLE, legato: 1, harmOn: 'C', endBoom: true,
+    chordFix: s => s.replace(/(^|[\s/])5(?=\s|\/|$)/g, '$15M'),    // the 5 chord turns MAJOR: that's the spooky "uh-oh!" sound
+    form: ['I', 'V', 'C', 'B', 'T'], vol: { lead: 1.05, pad: 1.1, pad2: 0.8, arp: 0.7, bass: 0.9, harm: 0.7 },
+    inst: { lead: 'theremin', harm: 'glass', pad: 'organ', pad2: 'ooo', bass: 'sub', arp: 'bell', arpOct: 1, arpLen: 2 },
+    sty: {
+      I: { w: '....x.......x...', bass: 'R---------------', arp: '0...2...1...3...' },
+      V: { k: 'x.......x.......', w: '..x...x...x...x.', bass: 'R.....R.R.......', arp: '0.2.1.2.0.2.1.2.' },
+      C: { k: 'x.....x.x.......', s: '....x.......x...', w: 'x.x.x.x.x.x.x.x.', bass: 'R.....R.R...5...', arp: '0213021302130213' },
+      B: { k: 'x...............', t: '........x.x.x...', w: '..x...x...x...x.', bass: 'R-------R-------', arp: '3...2...1...0...' },
+      END: { k: 'x...............', bass: 'R---------------' } } },
+  // 🎉 DANCE PARTY: four-on-the-floor kick, offbeat hats, synth bass, a BUILD-UP... and the DROP!
+  { id: 'dance', name: 'Dance Party Remix', icon: '🎉', col: '#ec407a', bpm: 128, base: 69, kc: 2, src: RJ4_TITLE, harmOn: 'CK', loud: true,
+    form: ['I', 'V', 'U', 'C', 'B', 'U', 'K', 'T'], vol: { lead: 1, pad: 0.9, bass: 1.15, arp: 0.9 },
+    inst: { lead: 'saw', harm: 'square', pad: 'saw', bass: 'synth', arp: 'pluck', arpOct: 1, arpLen: 1 },
+    sty: {
+      I: { K: 'x...x...x...x...', o: '..x...x...x...x.', bass: '..R...R...R...R.', arp: '0.1.2.1.0.1.2.1.' },
+      V: { K: 'x...x...x...x...', c: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', o: '..x...x...x...x.', bass: '..R...R...R...R.', arp: '0.1.2.1.0.1.2.1.' },
+      U: { s: ['x...x...x...x...', 'x.x.x.x.x.x.x.x.', 'xxxxxxxxxxxxxxxx', 'xxxxxxxxxxxx....'], arp: '0123012301230123' },
+      C: { K: 'x...x...x...x...', c: '....x.......x...', h: 'xxxxxxxxxxxxxxxx', o: '..x...x...x...x.', bass: '..RO..RO..RO..RO', arp: '0123210301232103' },
+      B: { K: 'x.......x.......', o: '..x...x...x...x.', c: '....x.......x...', bass: 'R-------R-------', arp: '0...1...2...3...' },
+      END: { K: 'x...............', bass: 'R---------------' } } },
+  // 🎻 ORCHESTRA: a big string section, a french horn sings the tune, flutes harmonize, harp, and BOOMING timpani
+  { id: 'orchestra', name: 'Orchestra Remix', icon: '🎻', col: '#8d6e63', bpm: 112, base: 62, kc: 2, src: RJ4_TITLE, fill: 'T', harmOn: 'CKB', endBoom: true, echoAmt: 0.2, legato: 0.98,
+    form: ['I', 'V', 'C', 'B', 'K', 'T'], vol: { lead: 1.25, pad: 2.3, arp: 0.7, bass: 1, harm: 0.9 },
+    inst: { lead: 'horn', harm: 'flute', pad: 'strings', bass: 'sub', arp: 'harp', arpOct: 1, arpLen: 2 },
+    sty: {
+      I: { T: 'x...............', bass: 'R---------------', arp: '0123012301230123' },
+      V: { T: 'x.......x.......', bass: 'R-------5-------', arp: '0...1...2...1...' },
+      C: { T: 'x...x...x...x...', s: '....x.......x...', bass: 'R...R...5...O...', arp: '0.1.2.3.2.1.0.1.' },
+      B: { T: ['x.......x.......', 'x...x...x...x...', 'x.x.x.x.x.x.x.x.', 'xxxxxxxxxxxxxxxx'], bass: 'R-------R-------', arp: '0123012301230123' },
+      END: { T: 'xxxxxxxxxxxx....', bass: 'R---------------' } } },
+];
+// 👹 MEGA BOSS MASH (BEN'S IDEA!): Robo Jump 4's boss music is the backbone (D minor, 170 BPM).
+// Every 8 bars a different Robo Jump game's BOSS riff takes the lead, while Robo Jump 4's boss riff growls underneath.
+// Then the huge finale: ALL the boss riffs at the SAME TIME, with a key change!
+function buildBossMash() {
+  const mn = SCALES.minor, deg = (S, target) => ({ ch: parseChords(S.ch, mn), mel: octFit(parseMel(S.mel, mn), target) });
+  const rj4V = deg(RJ4_BOSS.V, 7), rj4C = deg(RJ4_BOSS.C, 10);
+  const under = (lead, src, target) => snapCm(octFit(src.mel, target), lead.ch);        // RJ4's riff, fitted under another game's chords
+  const sec = {};
+  sec.I = { ch: parseChords(RJ4_BOSS.I.ch, mn), mel: parseMel(RJ4_BOSS.I.mel, mn), li: 'square', label: "👾 Robo Jump 4's boss is coming..." };
+  sec.A = { ch: rj4V.ch, mel: rj4V.mel, li: 'square', label: "👾 Robo Jump 4's BOSS music!" };
+  const guests = [['rj1', RJ1_BOSS, 'square', '🚀'], ['rj2', RJ2_BOSS, 'saw', '👾'], ['rj3', RJ3_BOSS, 'brass', '🌌']];
+  for (const [id, src, li, icon] of guests) {
+    const g = fromNumbers(src), mel = octFit(g.mel, 9);
+    sec[id] = { ch: g.ch, mel, li, label: icon + ' ' + src.from + "'s boss takes the lead!", cms: [{ mel: under(g, rj4V, -3), inst: 'saw', vol: 0.5 }] };
+  }
+  for (const id of ['rj5', 'rj6', 'rj7', 'rj8', 'rj9']) {
+    const o = OTHER_BOSS[id], d = deg(o, 9), same = o.ch === RJ4_BOSS.C.ch;
+    sec[id] = { ch: d.ch, mel: d.mel, li: o.li, label: o.icon + ' ' + o.from + "'s boss takes the lead!",
+                cms: [{ mel: under(d, same ? rj4C : rj4V, -3), inst: 'saw', vol: 0.5 }] };
+  }
+  // 💥 FINALE 1: Robo Jump 4's boss chorus on top, with Robo Jump 7 + 8 (same chords!) and Robo Jump 5 + 2 all at once
+  const r7 = deg(OTHER_BOSS.rj7, 5), r8 = deg(OTHER_BOSS.rj8, -4), r5 = deg(OTHER_BOSS.rj5, 0), r2 = fromNumbers(RJ2_BOSS);
+  sec.F1 = { ch: rj4C.ch, mel: rj4C.mel, li: 'brass', label: '💥 ALL THE BOSSES AT ONCE!',
+    cms: [{ mel: snapCm(r7.mel, rj4C.ch), inst: 'bell', vol: 0.45 }, { mel: snapCm(r8.mel, rj4C.ch), inst: 'saw', vol: 0.38 },
+          { mel: snapCm(r5.mel, rj4C.ch), inst: 'glass', vol: 0.35 }, { mel: snapCm(octFit(r2.mel, -8), rj4C.ch), inst: 'square', vol: 0.3 }] };
+  // 👑 FINALE 2 (key change!): Robo Jump 4's FINAL boss chorus + Robo Jump 4's boss chorus + Robo Jump 9, 6, 1 and 3
+  const fin = deg(RJ4_FINAL_C, 10), r9 = deg(OTHER_BOSS.rj9, 2), r6 = deg(OTHER_BOSS.rj6, -2), r1 = fromNumbers(RJ1_BOSS), r3 = fromNumbers(RJ3_BOSS);
+  sec.F2 = { ch: fin.ch, mel: fin.mel, li: 'brass', label: '👑 THE MEGA BOSS FINALE!',
+    cms: [{ mel: snapCm(octFit(rj4C.mel, 0), fin.ch), inst: 'saw', vol: 0.42 }, { mel: snapCm(r9.mel, fin.ch), inst: 'bell', vol: 0.36 },
+          { mel: snapCm(r6.mel, fin.ch), inst: 'square', vol: 0.3 }, { mel: snapCm(octFit(r1.mel, -6), fin.ch), inst: 'glass', vol: 0.3 },
+          { mel: snapCm(octFit(r3.mel, -10), fin.ch), inst: 'saw', vol: 0.28 }] };
+  return sec;
+}
+REMIX_DEFS.push({ id: 'bossmash', name: 'MEGA BOSS MASH', icon: '👹', col: '#b71c1c', ben: true, bpm: 170, base: 62, scale: 'minor', kc: 1, fill: 't', harmOn: 'F1F2', loud: true, drumVol: 1.1, endBoom: true, echoAmt: 0.16,
+  secs: buildBossMash(), endTr: 1,
+  form: ['I', { key: 'A', tag: 'V' }, { key: 'rj1', tag: 'C' }, { key: 'rj2', tag: 'C' }, { key: 'rj3', tag: 'C' }, { key: 'rj5', tag: 'C' }, { key: 'rj6', tag: 'C' },
+         { key: 'rj7', tag: 'C' }, { key: 'rj8', tag: 'C' }, { key: 'rj9', tag: 'C' }, { key: 'F1', tag: 'F' }, { key: 'F2', tag: 'F', tr: 1 }, { key: 'I', tag: 'T', tr: 1 }],
+  vol: { lead: 1.05, pad: 0.8, bass: 1.15, arp: 0.8, cm: 1, harm: 0.8 },
+  inst: { lead: 'square', harm: 'saw', pad: 'choir', bass: 'saw', arp: 'pluck', arpLen: 1 },
+  sty: {
+    I: { k: 'x...x...x...x...', h: 'xxxxxxxxxxxxxxxx', bass: 'R.R.R.R.R.R.R.R.' },
+    T: { k: 'x...x...x...x...', s: '....x.......x...', h: 'xxxxxxxxxxxxxxxx', bass: 'R.R.R.R.R.R.R.R.' },
+    V: { k: 'x...x...x...x...', s: '....x.......x...', h: 'xxxxxxxxxxxxxxxx', bass: 'R.R.O.R.R.R.O.R.', arp: '0.1.2.1.0.1.2.1.' },
+    C: { k: 'x.x.x...x.x.x...', s: '....x.......x.x.', h: 'xxxxxxxxxxxxxxxx', o: '..x...x...x...x.', bass: 'R.R.O.R.R.R.O.R.', arp: '0121012101210121' },
+    F: { k: 'x.xxx.x.x.xxx.x.', s: '....x.......x...', h: 'xxxxxxxxxxxxxxxx', o: '..x...x...x...x.', X: 'x.......x.......', bass: 'R.R.O.R.R.R.O.R.', arp: '0123012301230123' },
+    END: { k: 'x...............', t: 'xxxx............', bass: 'R---------------' } } });
+const REMIX_IDS = REMIX_DEFS.map(r => r.id);
+const REMIXES = {}; for (const r of REMIX_DEFS) REMIXES[r.id] = compileRemix(r);
+
+// 🎛️ MIX IT!: a silly mash of two remixes. One remix's tune + lead instrument, the other's drums, bass and band.
+function makeMix(a, b) {
+  const A = REMIX_DEFS.find(r => r.id === a), B = REMIX_DEFS.find(r => r.id === b);
+  const def = Object.assign({}, A, {
+    id: 'mix', mix: [a, b], name: A.name.replace(' Remix', '') + ' + ' + B.name.replace(' Remix', ''), icon: A.icon + B.icon, col: '#00897b',
+    bpm: Math.round((A.bpm + B.bpm) / 2), sty: B.sty, fill: B.fill, crash: B.crash, echo: A.echo === false && B.echo === false ? false : true,
+    inst: Object.assign({}, B.inst, { lead: A.inst.lead, harm: A.inst.harm || B.inst.harm }), vol: Object.assign({}, B.vol, { lead: (A.vol || {}).lead || 1 }) });
+  return compileRemix(def);
+}
+function randomMix() {
+  const ids = REMIX_IDS.filter(i => i !== 'bossmash');
+  const a = ids[Math.floor(Math.random() * ids.length)]; let b = a;
+  while (b === a) b = ids[Math.floor(Math.random() * ids.length)];
+  return makeMix(a, b);
+}
+
+// ---------- Studio screen ----------
+const TILE_W = 213, TILE_H = 86, TILE_GAP = 12, TILE_X0 = (W - (4 * TILE_W + 3 * TILE_GAP)) / 2;
+const tileBox = i => ({ x: TILE_X0 + (i % 4) * (TILE_W + TILE_GAP), y: 62 + Math.floor(i / 4) * (TILE_H + 10), w: TILE_W, h: TILE_H });
+const PLAY_BTN = { x: 36, y: 434, w: 230, h: 58 }, LOOP_BTN = { x: 280, y: 434, w: 180, h: 58 }, MIX_BTN = { x: 474, y: 434, w: 220, h: 58 };
+const BTNS = [PLAY_BTN, LOOP_BTN, MIX_BTN];
+let sel = 0, lastTile = 0, frame = 0, lv = new Array(24).fill(0), notes = [];
+const robo = { y: 0, vy: 0, squash: 1 };
+const inBox = (p, b) => p && p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
+function playTile(i) {
+  const R = REMIXES[REMIX_IDS[i]]; lastTile = i;
+  if (P && P.R.id === R.id) { stopMusic(); blip(300, 0.1, 'square', 0.05); return; }
+  startRemix(R); blip(880, 0.06, 'square', 0.04);
+}
+function activate(i) {
+  wakeAudio();
+  if (i < 8) { sel = i; playTile(i); return; }
+  if (i === 8) { if (P) { stopMusic(); blip(300, 0.1); } else playTile(lastTile); }
+  else if (i === 9) { save.loop = !save.loop; writeSave(); blip(save.loop ? 990 : 500, 0.08, 'triangle', 0.06); }
+  else if (i === 10) { startRemix(randomMix()); blip(600, 0.25, 'sine', 0.06, 1500); }
+}
+function moveSel(dx, dy) {
+  if (sel < 8) {
+    const r = Math.floor(sel / 4), c = sel % 4;
+    if (dx) sel = r * 4 + (c + dx + 4) % 4;
+    if (dy < 0 && r === 1) sel = c;
+    if (dy > 0) sel = r === 0 ? 4 + c : 8 + Math.min(2, c);
+  } else {
+    const b = sel - 8;
+    if (dx) sel = 8 + (b + dx + 3) % 3;
+    if (dy < 0) sel = 4 + b;
+  }
+  blip(660, 0.04, 'square', 0.03);
+}
+addEventListener('keydown', e => {
+  wakeAudio();
+  const k = e.key;
+  if (k === 'ArrowLeft') moveSel(-1, 0);
+  else if (k === 'ArrowRight') moveSel(1, 0);
+  else if (k === 'ArrowUp') moveSel(0, -1);
+  else if (k === 'ArrowDown') moveSel(0, 1);
+  else if ((k === ' ' || k === 'Enter') && !e.repeat) activate(sel);
+  else if (k === 'Escape') { if (P) { stopMusic(); blip(300, 0.1); } }
+  else if ((k === 'x' || k === 'X') && !e.repeat) activate(10);
+  else return;
+  if (e.preventDefault) e.preventDefault();
+});
+function tapAt(x, y) {
+  wakeAudio();
+  const p = { x, y };
+  for (let i = 0; i < 8; i++) if (inBox(p, tileBox(i))) { activate(i); return; }
+  BTNS.forEach((b, i) => { if (inBox(p, b)) { sel = 8 + i; activate(8 + i); } });
+}
+C.addEventListener('mousedown', e => {
+  const r = C.getBoundingClientRect();
+  tapAt((e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height);
+});
+
+// ---------- Update: trophies, the end of a song, the light show ----------
+function update() {
+  frame++;
+  if (JB && !P && actx && musicBus && musicOn) {      // 🎶 jukebox mode: play the song the book asked for, over and over
+    const want = JB.song === 'title' || !REMIXES[JB.song] ? 'rock' : JB.song;
+    startRemix(REMIXES[want], { loop: true });
+  }
+  const now = actx ? actx.currentTime : 0;
+  if (P && actx) {
+    const heardFor = now - P.startT;
+    if (!JB && !P.R.mix && !save.heard[P.R.id] && (heardFor >= 20 || P.done)) {
+      save.heard[P.R.id] = 1; writeSave();
+      if (heardCount() >= 5 && !save.trophy) { save.trophy = 1; writeSave(); trophy('rj4Remix'); trophyFlash = 300; [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => blip(f, 0.2, 'square', 0.06), i * 110)); }
+    }
+    if (P.done && now > P.endAt) stopMusic();
+  }
+  for (let i = 0; i < 24; i++) lv[i] *= 0.9;
+  while (visQ.length && visQ[0].t <= now) {
+    const v = visQ.shift();
+    lv[v.lane] = Math.max(lv[v.lane], v.amp);
+    if (v.lane > 0) lv[v.lane - 1] = Math.max(lv[v.lane - 1], v.amp * 0.5);
+    if (v.lane < 23) lv[v.lane + 1] = Math.max(lv[v.lane + 1], v.amp * 0.5);
+    if (v.track === 'lead' && notes.length < 30) notes.push({ x: W / 2 + (Math.random() - 0.5) * 30, y: 330, vx: (Math.random() - 0.5) * 3, vy: -1.5 - Math.random(), life: 70, hue: (v.lane * 15 + frame) % 360, ch: Math.random() < 0.5 ? '♪' : '♫' });
+  }
+  while (bounceQ.length && bounceQ[0] <= now) { bounceQ.shift(); if (robo.y >= -2) { robo.vy = -5.5; robo.squash = 0.8; } }
+  robo.vy += 0.6; robo.y = Math.min(0, robo.y + robo.vy); if (robo.y === 0) robo.vy = 0;
+  robo.squash += (1 - robo.squash) * 0.2;
+  for (const n of notes) { n.x += n.vx; n.y += n.vy; n.life--; }
+  notes = notes.filter(n => n.life > 0);
+  if (trophyFlash > 0) trophyFlash--;
+}
+
+// ---------- Drawing ----------
+function roundRect(x, y, w, h, r, fill) {
+  ctx.fillStyle = fill; ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, Math.max(0, w), Math.max(0, h), r); else ctx.rect(x, y, Math.max(0, w), Math.max(0, h));
+  ctx.fill();
+}
+function text(str, x, y, size, color = '#fff', align = 'center') {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`;
+  ctx.textAlign = align; ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = Math.max(3, size / 6);
+  ctx.strokeText(str, x, y); ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, 7); ctx.fill(); }
+const PAL_ROBO = { head: '#ffffff', body: '#f5f7ff', visor: '#111827', eye: '#40c4ff', legs: '#3d5afe', pod: '#2979ff' };
+function drawRobo(x0, yb, s, squash) {                 // 🤖 Robo, the same as always (white round robot, dark visor, blue eyes, blue ear pods)
+  const pal = PAL_ROBO, w = 30 * s / squash, h = 40 * s * squash, x = x0 - w / 2, y = yb - h;
+  ctx.fillStyle = pal.legs;
+  ctx.fillRect(x + 4 * s, y + h - 7 * (h / 40), 8 * s, 7 * (h / 40)); ctx.fillRect(x + w - 12 * s, y + h - 7 * (h / 40), 8 * s, 7 * (h / 40));
+  roundRect(x + 2, y + h * 0.5, w - 4, h * 0.4, 6 * (w / 30), pal.body);
+  circle(x + w / 2, y + h * 0.7, 3 * (w / 30), pal.pod);
+  roundRect(x - 5 * s, y + h * 0.3 - 3 * s, 6 * s, 9 * (h / 40), 3 * s, pal.pod);
+  roundRect(x + w - 1 * s, y + h * 0.3 - 3 * s, 6 * s, 9 * (h / 40), 3 * s, pal.pod);
+  roundRect(x - 2 * s, y, w + 4 * s, h * 0.55, 12 * (w / 30), pal.head);
+  roundRect(x + 2 * s, y + 4 * s, w - 4 * s, h * 0.55 - 9 * s, 9 * (w / 30), pal.visor);
+  const ex = x + w / 2, ey = y + h * 0.27, blink = frame % 180 < 6 ? 1 : 5 * (h / 40), es = w / 30;
+  ctx.fillStyle = pal.eye;
+  ctx.beginPath(); ctx.ellipse(ex - 6 * es, ey, 3.5 * es, Math.max(0.5, blink), 0, 0, 7); ctx.ellipse(ex + 6 * es, ey, 3.5 * es, Math.max(0.5, blink), 0, 0, 7); ctx.fill();
+  if (P) {                                             // 🎧 headphones while the music plays!
+    ctx.strokeStyle = '#ff4081'; ctx.lineWidth = 4 * s; ctx.beginPath(); ctx.arc(x + w / 2, y + h * 0.3, w * 0.62, Math.PI * 1.05, Math.PI * 1.95); ctx.stroke();
+    roundRect(x - 8 * s, y + h * 0.2, 9 * s, 14 * s, 4 * s, '#ff4081'); roundRect(x + w - 1 * s, y + h * 0.2, 9 * s, 14 * s, 4 * s, '#ff4081');
+  }
+}
+function fmtTime(s) { s = Math.max(0, Math.floor(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+function nowSection() {
+  if (!P) return null;
+  const raw = Math.max(0, Math.floor((actx.currentTime - P.startT) / stepDur(P.R))), pos = P.done && raw >= P.R.total ? P.R.total - 1 : raw % P.R.total;
+  const bar = P.R.bars[Math.floor(pos / 16)];
+  return { pos, sec: P.R.secs[bar.key], bar };
+}
+function draw() {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#1a0b3d'); g.addColorStop(1, '#0b2a4a');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  for (let i = 0; i < 40; i++) circle((i * 197 + frame * 0.2) % W, (i * 89) % 250, 1.5, 'rgba(255,255,255,.35)');
+  text('🎵 Robo Jump 4 Remix Studio', W / 2, 44, 32, '#ffd740');
+  // the 8 remix tiles
+  for (let i = 0; i < 8; i++) {
+    const R = REMIX_DEFS[i], b = tileBox(i), on = P && P.R.id === R.id, pulse = on ? Math.sin(frame * 0.2) * 3 : 0;
+    if (sel === i) roundRect(b.x - 5, b.y - 5, b.w + 10, b.h + 10, 20, '#fff176');
+    roundRect(b.x - pulse / 2, b.y - pulse / 2, b.w + pulse, b.h + pulse, 16, R.col);
+    roundRect(b.x, b.y + b.h - 10, b.w, 10, 6, 'rgba(0,0,0,.18)');
+    ctx.font = '40px sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = '#fff'; ctx.fillText(R.icon, b.x + 36, b.y + 56);
+    const nm = R.name.replace(' Remix', '');
+    text(nm, b.x + 128, b.y + (R.ben ? 36 : 44), nm.length > 12 ? 19 : 23);
+    if (R.ben) text("⭐ Ben's idea! ⭐", b.x + 128, b.y + 64, 17, '#fff59d');
+    else text('REMIX', b.x + 128, b.y + 68, 14, 'rgba(255,255,255,.85)');
+    if (save.heard[R.id]) text('✔', b.x + b.w - 14, b.y + 22, 18, '#b9f6ca');
+    if (on) text('🔊', b.x + 16, b.y + 22, 16);
+  }
+  // 🎆 visualizer panel
+  roundRect(36, 258, W - 72, 142, 18, 'rgba(0,0,0,.4)');
+  const bw = (W - 112) / 24;
+  for (let i = 0; i < 24; i++) {
+    const h = 6 + lv[i] * 100 + (P ? Math.abs(Math.sin(frame * 0.05 + i)) * 4 : 0);
+    roundRect(56 + i * bw + 2, 392 - h, bw - 4, h, 5, `hsl(${(i * 15 + frame) % 360}, 85%, 60%)`);
+  }
+  for (const n of notes) { ctx.globalAlpha = Math.max(0, Math.min(1, n.life / 30)); text(n.ch, n.x, n.y, 24, `hsl(${n.hue}, 90%, 70%)`); }
+  ctx.globalAlpha = 1;
+  drawRobo(W / 2, 392 + robo.y, 1.5, robo.squash);
+  const ns = nowSection();
+  if (P) {
+    text('▶ Now playing: ' + P.R.icon + ' ' + P.R.name, W / 2, 286, 22, '#fff');
+    if (ns && ns.sec.label) text(ns.sec.label, W / 2, 312, 18, '#ffd740');
+    else if (P.R.mix) text('🎛️ A silly mash-up of two remixes!', W / 2, 312, 18, '#a7ffeb');
+  } else text(JB ? '' : '👆 Tap a remix to hear Robo Jump 4 in a brand new style!', W / 2, 292, 21, '#e1f5fe');
+  // progress bar
+  roundRect(36, 408, W - 72, 16, 8, 'rgba(255,255,255,.18)');
+  if (P && ns) {
+    const len = songSeconds(P.R), el = ns.pos * stepDur(P.R);
+    roundRect(36, 408, (W - 72) * Math.max(0, Math.min(1, ns.pos / P.R.total)), 16, 8, P.R.col);
+    text(fmtTime(el) + ' / ' + fmtTime(len), W - 44, 402, 14, '#fff', 'right');
+  }
+  // buttons
+  BTNS.forEach((b, i) => { if (sel === 8 + i) roundRect(b.x - 5, b.y - 5, b.w + 10, b.h + 10, 20, '#fff176'); });
+  roundRect(PLAY_BTN.x, PLAY_BTN.y, PLAY_BTN.w, PLAY_BTN.h, 16, P ? '#e53935' : '#43a047');
+  text(P ? '⏹ STOP' : '▶ PLAY', PLAY_BTN.x + PLAY_BTN.w / 2, PLAY_BTN.y + 39, 28);
+  roundRect(LOOP_BTN.x, LOOP_BTN.y, LOOP_BTN.w, LOOP_BTN.h, 16, save.loop ? '#00acc1' : '#546e7a');
+  text('🔁 LOOP ' + (save.loop ? 'ON' : 'OFF'), LOOP_BTN.x + LOOP_BTN.w / 2, LOOP_BTN.y + 38, 23);
+  roundRect(MIX_BTN.x, MIX_BTN.y, MIX_BTN.w, MIX_BTN.h, 16, '#8e24aa');
+  text('🎛️ Mix it!', MIX_BTN.x + MIX_BTN.w / 2, MIX_BTN.y + 39, 27);
+  const hc = heardCount();
+  text(save.trophy ? '🏆 Remix Master!' : '🏆 ' + Math.min(hc, 5) + ' / 5 remixes', 812, 470, 20, save.trophy ? '#ffd740' : '#fff');
+  text('Tap a remix!   ← → ↑ ↓ pick   SPACE play   ESC stop   X mix it', W / 2, 512, 14, '#cfd8dc');
+  if (trophyFlash > 0) {
+    ctx.globalAlpha = Math.min(1, trophyFlash / 40);
+    roundRect(W / 2 - 280, 180, 560, 130, 24, '#ffb300');
+    text('🏆 TROPHY! Remix Master!', W / 2, 236, 36);
+    text('You listened to 5 different remixes!', W / 2, 280, 22);
+    ctx.globalAlpha = 1;
+  }
+}
+function loop() {
+  try { update(); playMusic(); draw(); } catch (err) { if (window.__TEST__) throw err; }
+  requestAnimationFrame(loop);
+}
+if (!JB && heardCount() >= 5 && !save.trophy) { save.trophy = 1; writeSave(); trophy('rj4Remix'); }
+loop();
+</script>
