@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Origami Pet Studio</title>
+<script src="touchpad.js?v=9"></script>
+<style>
+  html, body { height: 100%; }
+  body { margin: 0; background: #1a2a3a; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  canvas { width: min(100vw, calc(100vh * 960 / 540)); height: auto; display: block; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
+  #printBox { position: fixed; inset: 0; overflow: auto; -webkit-overflow-scrolling: touch; background: #fff3e0; z-index: 99999; text-align: center; padding: 12px 12px 40px; box-sizing: border-box; font-family: "Trebuchet MS", Arial, sans-serif; }
+  #printBox .pbBar { position: sticky; top: 0; display: flex; gap: 14px; justify-content: center; padding: 8px; background: #fff3e0; z-index: 2; }
+  #printBox button { font: bold 26px "Trebuchet MS", Arial, sans-serif; border: 0; border-radius: 16px; padding: 14px 30px; color: #fff; cursor: pointer; box-shadow: 0 5px 0 rgba(0,0,0,.25); }
+  #printBox .pbPrint { background: #43a047; } #printBox .pbBack { background: #6d4c41; }
+  #printBox .pbTip { font-size: 20px; color: #5d4037; margin: 6px 0 4px; }
+  #printBox .pbPage { display: block; width: min(94vw, 720px); margin: 16px auto; background: #fff; box-shadow: 0 6px 20px rgba(0,0,0,.25); border-radius: 6px; }
+  @media print {
+    @page { size: letter portrait; margin: 0.3in; }
+    html, body { display: block !important; height: auto !important; overflow: visible !important; background: #fff !important; }
+    body > *:not(#printBox) { display: none !important; }
+    #printBox { position: static; overflow: visible; background: #fff; padding: 0; }
+    #printBox .pbBar, #printBox .pbTip { display: none !important; }
+    #printBox .pbPage { width: 100%; margin: 0; box-shadow: none; border-radius: 0; break-after: page; page-break-after: always; }
+    #printBox .pbPage:last-child { break-after: auto; page-break-after: auto; }
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+<canvas id="game" width="960" height="540"></canvas>
+<script>
+// 🦢 ORIGAMI PET STUDIO — Ben asked for origami Game Factory pets (and let Claude pick 15).
+// 5 REAL easy folds (Cat Face, Puppy, Square Face, Blob, Heart) for printer paper. Each pet has its own printable
+// paper (with the pet's colors, printed so the right parts end up on the front) + a sheet of face stickers to cut out.
+const C = document.getElementById('game');
+let ctx = C.getContext('2d');
+const W = 960, H = 540;
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }
+let save = { made: {} };
+try { const s = JSON.parse(localStorage.getItem('origamiPets') || 'null'); if (s && s.made) save = s; } catch (_) {}
+function writeSave() { try { localStorage.setItem('origamiPets', JSON.stringify(save)); } catch (_) {} }
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+let frame = 0;
+
+// ---------- drawing helpers ----------
+function rr(x, y, w, h, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(x, y, Math.max(0, w), Math.max(0, h), r); else ctx.rect(x, y, w, h); ctx.fill(); }
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, 7); ctx.fill(); }
+function tri(a, b, c, d, e, f, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.lineTo(e, f); ctx.closePath(); ctx.fill(); }
+function text(str, x, y, size, color = '#fff', align = 'center', outline = true) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; ctx.textAlign = align; ctx.lineJoin = 'round';
+  if (outline) { ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = Math.max(3, size / 6); ctx.strokeText(str, x, y); }
+  ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function fit(str, x, y, size, maxW, color, align, outline) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; const w = ctx.measureText(str).width || 0;
+  text(str, x, y, w > maxW ? Math.max(9, Math.floor(size * maxW / w)) : size, color, align, outline);
+}
+function emoji(e, x, y, size) { ctx.font = `${size}px Arial`; ctx.textAlign = 'center'; ctx.fillStyle = '#000'; ctx.fillText(e, x, y); }
+function star(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, q = i % 2 ? r * 0.45 : r; ctx.lineTo(x + Math.cos(a) * q, y + Math.sin(a) * q); } ctx.closePath(); ctx.fill(); }
+function wrap(str, size, maxW) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; const out = []; let line = '';
+  for (const wd of String(str).split(' ')) { const t = line ? line + ' ' + wd : wd; if (line && ctx.measureText(t).width > maxW) { out.push(line); line = wd; } else line = t; }
+  if (line) out.push(line); return out;
+}
+function button(b, label, fill, size = 22) {
+  rr(b.x, b.y + 4, b.w, b.h, 14, 'rgba(0,0,0,.35)'); rr(b.x, b.y, b.w, b.h, 14, fill);
+  fit(label, b.x + b.w / 2, b.y + b.h / 2 + size * 0.36, size, b.w - 12);
+}
+const inBox = (t, b) => t && t.x >= b.x && t.x <= b.x + b.w && t.y >= b.y && t.y <= b.y + b.h;
+
+</script>
+<script>
+// ---------- THE 15 PETS ----------
+// model: cat | puppy | square | blob | heart.  pat = the paper's pattern.  eye = eye color.  bits = extra face stickers.
+const PETS = [
+  { id: 'sammy', name: 'Sammy', from: 'Ben\'s real cat (Robo Jump 8)', model: 'cat', col: '#8d6e63', ear: '#6d4c41', pat: 'stripes', eye: '#ffca28', bits: ['nose'] },
+  { id: 'rocky', name: 'Rocky', from: 'Rocky\'s Outdoor Fun', model: 'cat', col: '#9e9e9e', ear: '#757575', pat: 'stripes', eye: '#aed581', bits: ['nose'] },
+  { id: 'mimo', name: 'Mimo', from: 'Rocky\'s Outdoor Fun', model: 'cat', col: '#212121', ear: '#111', pat: 'shine', eye: '#76ff03', bits: ['nose', 'bell'] },
+  { id: 'claudecat', name: 'Claude Cat', from: 'The Claude Museum', model: 'cat', col: '#e8956f', ear: '#d97757', pat: 'sparkles', eye: '#a5d6a7', bits: ['visor', 'sparkle'] },
+  { id: 'ninjacat', name: 'Ninja Cat', from: 'Robo Jump 8', model: 'cat', col: '#262626', ear: '#424242', pat: 'plain', eye: '#ffeb3b', bits: ['band', 'nose'] },
+  { id: 'sparks', name: 'Sparks', from: 'Sparks to the Rescue', model: 'puppy', col: '#ffd600', ear: '#8e24aa', pat: 'sparks', eye: '#3e2723', bits: ['dognose', 'tongue'] },
+  { id: 'robo', name: 'Robo', from: 'Robo Jump', model: 'square', col: '#eceff1', ear: '#2979ff', pat: 'bolts', eye: '#40c4ff', bits: ['visor', 'antenna'] },
+  { id: 'robo2', name: 'Robo 2.0', from: 'Robo Jump 6', model: 'square', col: '#f3e5f5', ear: '#d500f9', pat: 'bolts', eye: '#00e676', bits: ['visor', 'antenna'] },
+  { id: 'lockrobo', name: 'Lock Robo', from: 'Robo Jump 8', model: 'square', col: '#90a4ae', ear: '#ffc400', pat: 'bolts', eye: '#ffd740', bits: ['visor', 'lock'] },
+  { id: 'timerobo', name: 'Time Robo', from: 'Robo Jump 7', model: 'square', col: '#ffca28', ear: '#8d6e63', pat: 'gears', eye: '#fff', bits: ['visor', 'clock'] },
+  { id: 'shark', name: 'Shark Robo', from: 'The Secret Print Shop', model: 'square', col: '#78909c', ear: '#546e7a', pat: 'waves', eye: '#fff', bits: ['visor', 'fin', 'teeth'] },
+  { id: 'kinggloop', name: 'King Gloop', from: 'Robo Jump', model: 'blob', col: '#7c4dff', ear: '#5e35b1', pat: 'dots', eye: '#fff', bits: ['eyes', 'crown'] },
+  { id: 'babygloop', name: 'Baby Gloop', from: 'Robo Jump 3D', model: 'blob', col: '#b388ff', ear: '#9575cd', pat: 'dots', eye: '#fff', bits: ['eyes', 'tinycrown'] },
+  { id: 'claudegloop', name: 'Claude Gloop', from: 'The Claude Museum', model: 'blob', col: '#e8956f', ear: '#b85c3c', pat: 'sparkles', eye: '#fff', bits: ['eyes', 'sparkle'] },
+  { id: 'laserheart', name: 'Laserheart', from: 'Robo Jump 9', model: 'heart', col: '#ff4081', ear: '#c51162', pat: 'shine', eye: '#fff', bits: ['eyes', 'tinycrown'] },
+];
+const MODELS = { cat: { name: 'Cat Face', stars: 1 }, puppy: { name: 'Puppy Face', stars: 1 }, square: { name: 'Square Face', stars: 1 }, blob: { name: 'Blob', stars: 1 }, heart: { name: 'Heart', stars: 2 } };
+let PRINTING = false;
+// ---------- shapes (in a 200 x 200 box) ----------
+const poly = (pts, fill, line) => { ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath(); if (fill) { ctx.fillStyle = fill; ctx.fill(); } if (line) { ctx.strokeStyle = line; ctx.lineWidth = 2; ctx.stroke(); } };
+function heartPath() { ctx.beginPath(); ctx.moveTo(100, 165); ctx.bezierCurveTo(30, 120, 25, 70, 55, 52); ctx.bezierCurveTo(78, 40, 96, 52, 100, 70); ctx.bezierCurveTo(104, 52, 122, 40, 145, 52); ctx.bezierCurveTo(175, 70, 170, 120, 100, 165); ctx.closePath(); }
+function blobPath() { ctx.beginPath(); ctx.moveTo(28, 150); ctx.lineTo(172, 150); ctx.bezierCurveTo(176, 105, 150, 74, 100, 74); ctx.bezierCurveTo(50, 74, 24, 105, 28, 150); ctx.closePath(); }
+function patternFill(p, x0, y0, w, h, sc = 1) {          // the paper's pattern (used on screen AND on the printed paper)
+  ctx.fillStyle = p.col; ctx.fillRect(x0, y0, w, h);
+  const step = 22 * sc;
+  if (p.pat === 'stripes') { ctx.fillStyle = 'rgba(0,0,0,.22)'; for (let x = x0 - h; x < x0 + w; x += step * 1.4) { ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x + 7 * sc, y0); ctx.lineTo(x + 7 * sc + h * 0.35, y0 + h); ctx.lineTo(x + h * 0.35, y0 + h); ctx.fill(); } }
+  if (p.pat === 'dots') for (let y = y0; y < y0 + h; y += step) for (let x = x0 + ((y - y0) / step % 2) * step / 2; x < x0 + w; x += step) circle(x, y, 4 * sc, 'rgba(255,255,255,.25)');
+  if (p.pat === 'shine') { ctx.fillStyle = 'rgba(255,255,255,.12)'; for (let x = x0; x < x0 + w; x += step * 3) ctx.fillRect(x, y0, 8 * sc, h); }
+  if (p.pat === 'sparkles') for (let y = y0 + step; y < y0 + h; y += step * 1.6) for (let x = x0 + step; x < x0 + w; x += step * 1.6) sparkleAt(x, y, 6 * sc, 'rgba(255,255,255,.35)');
+  if (p.pat === 'bolts') for (let y = y0 + step; y < y0 + h; y += step * 2) for (let x = x0 + step; x < x0 + w; x += step * 2) { circle(x, y, 3 * sc, 'rgba(0,0,0,.15)'); }
+  if (p.pat === 'gears') for (let y = y0 + step; y < y0 + h; y += step * 2.2) for (let x = x0 + step; x < x0 + w; x += step * 2.2) { circle(x, y, 6 * sc, 'rgba(141,110,99,.3)'); circle(x, y, 2.5 * sc, p.col); }
+  if (p.pat === 'waves') { ctx.strokeStyle = 'rgba(255,255,255,.25)'; ctx.lineWidth = 2 * sc; for (let y = y0 + 10; y < y0 + h; y += step) { ctx.beginPath(); for (let x = x0; x <= x0 + w; x += 4) ctx.lineTo(x, y + Math.sin(x / (10 * sc)) * 4 * sc); ctx.stroke(); } }
+  if (p.pat === 'sparks') { ctx.fillStyle = 'rgba(255,255,255,.2)'; for (let y = y0; y < y0 + h; y += step * 2) for (let x = x0; x < x0 + w; x += step * 2) star(x + step, y + step, 5 * sc, 'rgba(255,255,255,.35)'); }
+}
+function sparkleAt(cx, cy, r, col) { ctx.save(); ctx.strokeStyle = col; ctx.lineCap = 'round'; ctx.lineWidth = Math.max(1.5, r * 0.3); ctx.beginPath(); for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4, q = i % 2 ? 0.65 : 1; ctx.moveTo(cx + Math.cos(a) * r * 0.25, cy + Math.sin(a) * r * 0.25); ctx.lineTo(cx + Math.cos(a) * r * q, cy + Math.sin(a) * r * q); } ctx.stroke(); ctx.restore(); }
+function clipShape(model) {                                  // the finished pet's outline
+  if (model === 'cat') { ctx.beginPath(); [[40, 95], [55, 62], [42, 16], [86, 61], [114, 61], [158, 16], [145, 62], [160, 95], [125, 135], [75, 135]].forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath(); }
+  else if (model === 'puppy') { ctx.beginPath(); [[56, 62], [144, 62], [118, 146], [82, 146]].forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath(); }
+  else if (model === 'square') { ctx.beginPath(); ctx.rect(45, 45, 110, 110); }
+  else if (model === 'blob') blobPath(); else heartPath();
+}
+</script>
+<script>
+// ---------- the face pieces (drawn on the finished pet, AND printed as stickers to cut out) ----------
+const DK = '#263238';
+const BITS = {
+  catEyes: (p, u) => [[-20, 0], [20, 0]].map(([dx]) => () => { circle(dx * u, 0, 7 * u, p.eye); ctx.fillStyle = '#000'; ctx.beginPath(); ctx.ellipse(dx * u, 0, 2 * u, 5.5 * u, 0, 0, 7); ctx.fill(); circle(dx * u + 2 * u, -2.5 * u, 1.5 * u, '#fff'); }),
+  nose: (p, u) => { tri(-5 * u, -3 * u, 5 * u, -3 * u, 0, 4 * u, '#ff8a80'); },
+  whiskers: (p, u) => { ctx.strokeStyle = p.col === '#212121' || p.col === '#262626' ? '#bdbdbd' : '#fff'; ctx.lineWidth = 1.2 * u; ctx.beginPath(); for (const d of [-1, 1]) for (const k of [-3, 0, 3]) { ctx.moveTo(d * 10 * u, 0); ctx.lineTo(d * 34 * u, k * u - 2 * u); } ctx.stroke(); },
+  bell: (p, u) => { rr(-30 * u, -4 * u, 60 * u, 8 * u, 4 * u, '#ff80ab'); circle(0, 7 * u, 6 * u, '#ffc400'); ctx.fillStyle = '#8d6e63'; ctx.fillRect(-0.8 * u, 7 * u, 1.6 * u, 5 * u); },
+  band: (p, u) => { rr(-46 * u, -5 * u, 92 * u, 10 * u, 3 * u, '#e53935'); tri(-46 * u, -4 * u, -62 * u, 4 * u, -58 * u, -10 * u, '#e53935'); },
+  visor: (p, u, w = 76, h = 34) => { rr(-w / 2 * u, -h / 2 * u, w * u, h * u, 14 * u, DK); for (const d of [-1, 1]) { circle(d * 16 * u, 0, 7 * u, p.eye); circle(d * 16 * u + 2 * u, -2.5 * u, 2 * u, '#fff'); } },
+  sparkle: (p, u) => { circle(0, 0, 11 * u, p.col); sparkleAt(0, 0, 9 * u, '#fbe3d3'); },
+  dogEyes: (p, u) => [[-16], [16]].map(([dx]) => () => { circle(dx * u, 0, 6 * u, '#fff'); circle(dx * u, 0.5 * u, 4 * u, p.eye); circle(dx * u + 1.5 * u, -1.5 * u, 1.3 * u, '#fff'); }),
+  dognose: (p, u) => { ctx.fillStyle = '#212121'; ctx.beginPath(); ctx.ellipse(0, 0, 8 * u, 5.5 * u, 0, 0, 7); ctx.fill(); circle(-2.5 * u, -2 * u, 1.5 * u, '#fff'); },
+  tongue: (p, u) => { rr(-5 * u, -6 * u, 10 * u, 12 * u, 5 * u, '#ff80ab'); },
+  antenna: (p, u) => { ctx.fillStyle = '#90a4ae'; ctx.fillRect(-2 * u, -10 * u, 4 * u, 22 * u); circle(0, -12 * u, 6 * u, p.ear); },
+  lock: (p, u) => { ctx.strokeStyle = '#ffc400'; ctx.lineWidth = 3.5 * u; ctx.beginPath(); ctx.arc(0, -4 * u, 8 * u, Math.PI, 0); ctx.stroke(); rr(-12 * u, -4 * u, 24 * u, 18 * u, 4 * u, '#ffc400'); circle(0, 3 * u, 2.5 * u, '#5d4037'); },
+  clock: (p, u) => { circle(0, 0, 12 * u, '#fff8e1'); ctx.strokeStyle = '#3e2723'; ctx.lineWidth = 1.8 * u; ctx.beginPath(); ctx.arc(0, 0, 12 * u, 0, 7); ctx.moveTo(0, 0); ctx.lineTo(0, -8 * u); ctx.moveTo(0, 0); ctx.lineTo(6 * u, 2 * u); ctx.stroke(); },
+  fin: (p, u) => { tri(-14 * u, 12 * u, 14 * u, 12 * u, 6 * u, -18 * u, p.col); ctx.strokeStyle = p.ear; ctx.lineWidth = 1.5 * u; ctx.stroke(); },
+  teeth: (p, u) => { rr(-22 * u, -5 * u, 44 * u, 10 * u, 2 * u, '#37474f'); for (let k = 0; k < 6; k++) tri(-20 * u + k * 7 * u, -5 * u, -14 * u + k * 7 * u, -5 * u, -17 * u + k * 7 * u, 2 * u, '#fff'); },
+  blobEyes: (p, u, angry) => [[-20], [20]].map(([dx]) => () => { circle(dx * u, 0, 11 * u, '#fff'); circle(dx * u + 2 * u, 2 * u, 5 * u, '#212121'); circle(dx * u + 3.5 * u, 0.5 * u, 1.6 * u, '#fff'); if (angry) { ctx.fillStyle = '#212121'; ctx.save(); ctx.translate(dx * u, -13 * u); ctx.rotate(dx < 0 ? 0.35 : -0.35); ctx.fillRect(-10 * u, -2 * u, 20 * u, 4 * u); ctx.restore(); } }),
+  crown: (p, u, k = 1) => { ctx.fillStyle = '#ffc400'; ctx.beginPath(); ctx.moveTo(-30 * k * u, 12 * k * u); ctx.lineTo(-30 * k * u, -6 * k * u); ctx.lineTo(-17 * k * u, 4 * k * u); ctx.lineTo(0, -14 * k * u); ctx.lineTo(17 * k * u, 4 * k * u); ctx.lineTo(30 * k * u, -6 * k * u); ctx.lineTo(30 * k * u, 12 * k * u); ctx.closePath(); ctx.fill(); circle(0, 2 * k * u, 3 * k * u, '#e53935'); },
+  smile: (p, u) => { ctx.strokeStyle = '#212121'; ctx.lineWidth = 2.5 * u; ctx.lineCap = 'round'; ctx.beginPath(); ctx.arc(0, -4 * u, 8 * u, 0.3, Math.PI - 0.3); ctx.stroke(); ctx.lineCap = 'butt'; },
+};
+const at = (x, y, fn) => { ctx.save(); ctx.translate(x, y); fn(); ctx.restore(); };
+function drawFace(p, u) {                                    // face pieces placed on the finished pet (box coords, u = 1)
+  const b = p.bits;
+  if (p.model === 'cat') { BITS.catEyes(p, u).forEach(f => at(100, 92, f)); if (b.includes('visor')) at(100, 92, () => BITS.visor(p, u, 72, 26)); at(100, 108, () => BITS.nose(p, u)); at(100, 110, () => BITS.whiskers(p, u));
+    if (b.includes('bell')) at(100, 128, () => BITS.bell(p, u)); if (b.includes('band')) at(100, 74, () => BITS.band(p, u)); if (b.includes('sparkle')) at(100, 70, () => BITS.sparkle(p, u * 0.7)); }
+  if (p.model === 'puppy') { BITS.dogEyes(p, u).forEach(f => at(100, 98, f)); at(100, 118, () => BITS.dognose(p, u)); at(100, 134, () => BITS.tongue(p, u)); }
+  if (p.model === 'square') { at(100, 86, () => BITS.visor(p, u)); if (b.includes('antenna')) at(100, 38, () => BITS.antenna(p, u)); if (b.includes('lock')) at(100, 130, () => BITS.lock(p, u)); if (b.includes('clock')) at(100, 86, () => BITS.clock(p, u * 0.9));
+    if (b.includes('fin')) at(100, 34, () => BITS.fin(p, u)); if (b.includes('teeth')) at(100, 124, () => BITS.teeth(p, u)); }
+  if (p.model === 'blob') { BITS.blobEyes(p, u, p.id === 'kinggloop').forEach(f => at(100, 114, f)); at(100, 136, () => BITS.smile(p, u)); if (b.includes('crown')) at(100, 70, () => BITS.crown(p, u)); if (b.includes('tinycrown')) at(100, 74, () => BITS.crown(p, u, 0.5)); if (b.includes('sparkle')) at(100, 70, () => BITS.sparkle(p, u)); }
+  if (p.model === 'heart') { BITS.blobEyes(p, u * 0.85).forEach(f => at(100, 96, f)); at(100, 124, () => BITS.smile(p, u)); at(100, 60, () => BITS.crown(p, u, 0.5)); }
+}
+function drawPet(i, cx, cy, size, bob = 0) {                // the FINISHED origami pet
+  const p = PETS[i]; ctx.save(); ctx.translate(cx - size / 2, cy - size / 2 + bob); ctx.scale(size / 200, size / 200);
+  if (p.model === 'puppy') for (const e of [[[50, 60], [80, 60], [40, 136]], [[120, 60], [150, 60], [160, 136]]]) poly(e, p.ear, 'rgba(0,0,0,.35)');
+  ctx.save(); clipShape(p.model); ctx.clip(); patternFill(p, 0, 0, 200, 200);
+  if (p.model === 'cat') for (const e of [[[42, 16], [55, 62], [86, 61]], [[158, 16], [145, 62], [114, 61]]]) { poly(e, p.ear); poly([[e[0][0] + (e[0][0] < 100 ? 6 : -6), e[0][1] + 14], [e[1][0] + (e[0][0] < 100 ? 6 : -6), e[1][1] - 4], [e[2][0] + (e[0][0] < 100 ? -10 : 10), e[2][1] - 2]], '#ffab91'); }
+  if (p.model === 'puppy') { ctx.fillStyle = p.ear; ctx.fillRect(0, 60, 200, 22); }
+  if (p.model === 'square') { ctx.strokeStyle = 'rgba(0,0,0,.18)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(45, 45); ctx.lineTo(155, 155); ctx.moveTo(155, 45); ctx.lineTo(45, 155); ctx.stroke(); }
+  ctx.restore(); clipShape(p.model); ctx.strokeStyle = 'rgba(0,0,0,.45)'; ctx.lineWidth = 3; ctx.stroke();
+  drawFace(p, 1); ctx.restore();
+}
+function stickerList(p) {                                    // the pieces to cut out for one pet: [width, height, draw] in box units
+  const L = [], b = p.bits;
+  const pair = (fn, dx, w, h) => [0, 1].forEach(k => L.push([w, h, u => { ctx.translate((k ? -dx : dx) * u, 0); fn(u)[k](); }]));
+  if (p.model === 'cat') { if (!b.includes('visor')) pair(u => BITS.catEyes(p, u), 20, 20, 20); L.push([16, 12, u => BITS.nose(p, u)]); if (b.includes('visor')) L.push([80, 32, u => BITS.visor(p, u, 72, 26)]); if (b.includes('bell')) L.push([64, 24, u => BITS.bell(p, u)]); if (b.includes('band')) L.push([112, 20, u => BITS.band(p, u)]); if (b.includes('sparkle')) L.push([24, 24, u => BITS.sparkle(p, u)]); }
+  if (p.model === 'puppy') { pair(u => BITS.dogEyes(p, u), 16, 16, 16); L.push([20, 14, u => BITS.dognose(p, u)]); L.push([14, 16, u => BITS.tongue(p, u)]); }
+  if (p.model === 'square') { L.push([80, 38, u => BITS.visor(p, u)]); if (b.includes('antenna')) L.push([16, 40, u => BITS.antenna(p, u)]); if (b.includes('lock')) L.push([30, 34, u => BITS.lock(p, u)]); if (b.includes('clock')) L.push([28, 28, u => BITS.clock(p, u)]); if (b.includes('fin')) L.push([32, 34, u => BITS.fin(p, u)]); if (b.includes('teeth')) L.push([48, 14, u => BITS.teeth(p, u)]); }
+  if (p.model === 'blob') { pair(u => BITS.blobEyes(p, u, p.id === 'kinggloop'), 20, 26, 34); if (b.includes('crown')) L.push([64, 32, u => BITS.crown(p, u)]); if (b.includes('tinycrown')) L.push([34, 18, u => BITS.crown(p, u, 0.5)]); if (b.includes('sparkle')) L.push([24, 24, u => BITS.sparkle(p, u)]); }
+  if (p.model === 'heart') { pair(u => BITS.blobEyes(p, u * 0.85), 17, 22, 22); L.push([34, 18, u => BITS.crown(p, u, 0.5)]); }
+  return L;
+}
+</script>
+<script>
+// ---------- 📖 THE FOLDING STEPS (real, easy origami folds; pictures drawn in a 200 x 200 box) ----------
+const WHITE = '#fafafa';
+function dline(x1, y1, x2, y2) { ctx.save(); ctx.setLineDash([7, 6]); ctx.strokeStyle = '#1e88e5'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.restore(); }
+function arrow(x1, y1, x2, y2, bend = 0.3) {
+  const mx = (x1 + x2) / 2 - (y2 - y1) * bend, my = (y1 + y2) / 2 + (x2 - x1) * bend;
+  ctx.strokeStyle = '#e53935'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.quadraticCurveTo(mx, my, x2, y2); ctx.stroke();
+  const a = Math.atan2(y2 - my, x2 - mx); tri(x2, y2, x2 - Math.cos(a - 0.45) * 12, y2 - Math.sin(a - 0.45) * 12, x2 - Math.cos(a + 0.45) * 12, y2 - Math.sin(a + 0.45) * 12, '#e53935');
+}
+const paper = (pts, p, white) => { if (white) poly(pts, WHITE, '#9e9e9e'); else { ctx.save(); poly(pts); ctx.clip(); patternFill(p, 0, 0, 200, 200, 0.6); ctx.restore(); poly(pts, null, 'rgba(0,0,0,.4)'); } };
+const DIAMOND = [[100, 10], [190, 100], [100, 190], [10, 100]], SQ = [[20, 20], [180, 20], [180, 180], [20, 180]];
+const STEPS = {
+  cat: [
+    ['Cut out your paper. Put it COLOR side DOWN, as a diamond (the way it was printed).', p => { paper(DIAMOND, p, 1); dline(10, 100, 190, 100); arrow(100, 25, 100, 172, 0.25); }],
+    ['Fold the TOP corner down to the BOTTOM corner. Now it\'s a triangle!', p => { paper([[10, 60], [190, 60], [100, 150]], p); dline(72, 61, 44, 102); dline(128, 61, 156, 102); arrow(20, 66, 44, 22, -0.3); arrow(180, 66, 156, 22, 0.3); }],
+    ['Fold the LEFT and RIGHT corners UP to make 2 ears.', p => { paper([[40, 95], [55, 62], [42, 16], [86, 61], [114, 61], [158, 16], [145, 62], [160, 95], [100, 150]], p); dline(76, 128, 124, 128); arrow(100, 147, 100, 112, 0.6); }],
+    ['Fold the bottom point UP a little bit to make the chin.', p => { paper([[40, 95], [55, 62], [42, 16], [86, 61], [114, 61], [158, 16], [145, 62], [160, 95], [125, 135], [75, 135]], p); }],
+    ['Stick on the face pieces. MEOW! You made it! 🎉', null]],
+  puppy: [
+    ['Cut out your paper. Put it COLOR side DOWN, as a diamond (the way it was printed).', p => { paper(DIAMOND, p, 1); dline(10, 100, 190, 100); arrow(100, 25, 100, 172, 0.25); }],
+    ['Fold the TOP corner down to the BOTTOM corner. Now it\'s a triangle!', p => { paper([[10, 60], [190, 60], [100, 150]], p); dline(80, 61, 52, 118); dline(120, 61, 148, 118); arrow(18, 66, 40, 128, 0.3); arrow(182, 66, 160, 128, -0.3); }],
+    ['Fold the LEFT and RIGHT corners DOWN to make floppy ears.', p => { paper([[56, 62], [144, 62], [100, 150]], p); poly([[50, 60], [80, 60], [40, 136]], p.ear, 'rgba(0,0,0,.4)'); poly([[120, 60], [150, 60], [160, 136]], p.ear, 'rgba(0,0,0,.4)'); dline(60, 80, 140, 80); arrow(100, 64, 100, 92, 0.6); }],
+    ['Fold the TOP edge down a little so his head is flat.', p => { paper([[60, 80], [140, 80], [100, 150]], p); poly([[50, 60], [80, 60], [40, 136]], p.ear, 'rgba(0,0,0,.4)'); poly([[120, 60], [150, 60], [160, 136]], p.ear, 'rgba(0,0,0,.4)'); dline(86, 134, 114, 134); arrow(100, 149, 100, 122, 0.6); }],
+    ['Fold the bottom point UP a tiny bit for the nose.', p => { paper([[60, 80], [140, 80], [114, 134], [86, 134]], p); poly([[50, 60], [80, 60], [40, 136]], p.ear, 'rgba(0,0,0,.4)'); poly([[120, 60], [150, 60], [160, 136]], p.ear, 'rgba(0,0,0,.4)'); }],
+    ['Stick on the face pieces. WOOF! You made it! 🎉', null]],
+  square: [
+    ['Put your paper COLOR side DOWN. Fold it in half corner to corner, both ways, then open it up. It makes an X!', p => { paper(SQ, p, 1); dline(20, 20, 180, 180); dline(180, 20, 20, 180); }],
+    ['Fold all 4 corners into the middle, where the X crosses.', p => { poly(SQ, null, '#bdbdbd'); paper(DIAMOND.map(([x, y]) => [x, y + 0]), p); ctx.strokeStyle = 'rgba(0,0,0,.3)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(55, 55); ctx.lineTo(145, 145); ctx.moveTo(145, 55); ctx.lineTo(55, 145); ctx.stroke(); arrow(22, 22, 70, 70, 0.2); arrow(178, 22, 130, 70, -0.2); arrow(22, 178, 70, 130, -0.2); arrow(178, 178, 130, 130, 0.2); }],
+    ['Turn it so it looks like a square, not a diamond.', p => { paper([[45, 45], [155, 45], [155, 155], [45, 155]], p); ctx.strokeStyle = 'rgba(0,0,0,.3)'; ctx.beginPath(); ctx.moveTo(45, 45); ctx.lineTo(155, 155); ctx.moveTo(155, 45); ctx.lineTo(45, 155); ctx.stroke(); }],
+    ['Stick on the face pieces. BEEP BOOP! You made it! 🎉', null]],
+  blob: [
+    ['Cut out your paper. Put it COLOR side DOWN, as a diamond (the way it was printed).', p => { paper(DIAMOND, p, 1); dline(10, 100, 190, 100); arrow(100, 175, 100, 28, 0.25); }],
+    ['Fold the BOTTOM corner UP to the TOP corner. Now it\'s a triangle pointing up!', p => { paper([[10, 140], [190, 140], [100, 50]], p); dline(70, 82, 130, 82); arrow(100, 56, 100, 104, 0.6); }],
+    ['Fold the top point DOWN.', p => { paper([[10, 140], [190, 140], [130, 82], [70, 82]], p); paper([[70, 82], [130, 82], [100, 112]], p); dline(40, 140, 58, 100); dline(160, 140, 142, 100); arrow(14, 134, 50, 128, 0.4); arrow(186, 134, 150, 128, -0.4); }],
+    ['Fold the 2 side corners to the BACK so it gets round, like a blob.', p => { ctx.save(); blobPath(); ctx.clip(); patternFill(p, 0, 0, 200, 200, 0.6); ctx.restore(); blobPath(); ctx.strokeStyle = 'rgba(0,0,0,.4)'; ctx.lineWidth = 2; ctx.stroke(); }],
+    ['Stick on the face pieces. BLOOP! You made it! 🎉', null]],
+  heart: [
+    ['Put your paper COLOR side DOWN, like a square. Fold it in half both ways, then open it up. It makes a +!', p => { paper(SQ, p, 1); dline(100, 20, 100, 180); dline(20, 100, 180, 100); }],
+    ['Fold the TOP edge down to the middle line.', p => { paper([[20, 100], [180, 100], [180, 180], [20, 180]], p, 1); paper([[20, 60], [180, 60], [180, 100], [20, 100]], p); }],
+    ['Fold the BOTTOM edge up to the TOP edge.', p => { paper([[20, 60], [180, 60], [180, 120], [20, 120]], p); dline(100, 60, 100, 120); }],
+    ['Fold the bottom LEFT corner and bottom RIGHT corner UP, so the bottom edges line up with the middle line. It makes a V!', p => { paper([[100, 170], [30, 100], [30, 40], [100, 40], [170, 40], [170, 100]], p); dline(100, 40, 100, 170); }],
+    ['Flip it over. Fold the top corners and the side corners back a little so it gets round.', p => { ctx.save(); heartPath(); ctx.clip(); patternFill(p, 0, 0, 200, 200, 0.6); ctx.restore(); heartPath(); ctx.strokeStyle = 'rgba(0,0,0,.4)'; ctx.lineWidth = 2; ctx.stroke(); }],
+    ['Stick on the face pieces. You made a heart! 🎉', null]],
+};
+function drawStep(pi, k, cx, cy, size) {                    // one step picture
+  const p = PETS[pi], st = STEPS[p.model][k];
+  if (!st[1]) { drawPet(pi, cx, cy, size); return; }
+  ctx.save(); ctx.translate(cx - size / 2, cy - size / 2); ctx.scale(size / 200, size / 200); st[1](p); ctx.restore();
+}
+</script>
+<script>
+// ---------- sounds ----------
+let AC = null;
+function beep(f, t = 0, d = 0.12, type = 'triangle', v = 0.06) {
+  try { AC = AC || new (window.AudioContext || window.webkitAudioContext)(); const o = AC.createOscillator(), g = AC.createGain(), n = AC.currentTime + t;
+    o.type = type; o.frequency.value = f; g.gain.setValueAtTime(v, n); g.gain.exponentialRampToValueAtTime(0.001, n + d); o.connect(g); g.connect(AC.destination); o.start(n); o.stop(n + d + 0.02); } catch (_) {}
+}
+const sfx = { click: () => beep(660, 0, 0.06), fold: () => { beep(300, 0, 0.08, 'sine', 0.06); beep(500, 0.06, 0.1, 'sine', 0.06); }, yay: () => [523, 659, 784, 1047].forEach((f, i) => beep(f, i * 0.08, 0.18)) };
+// ---------- screens ----------
+let state = 'title', tap = null, sel = 0, petI = 0, stepK = 0;
+const press = {};
+C.addEventListener('mousedown', e => { const r = C.getBoundingClientRect(); tap = { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height }; });
+addEventListener('keydown', e => { press[e.key] = true; });
+const START = { x: 360, y: 400, w: 240, h: 70 }, BTN_BACK = { x: 14, y: 12, w: 110, h: 42 };
+const BTN_STEPS = { x: 520, y: 290, w: 400, h: 68 }, BTN_PRINT = { x: 520, y: 374, w: 400, h: 68 };
+const BTN_PREV = { x: 560, y: 450, w: 170, h: 60 }, BTN_NEXT = { x: 750, y: 450, w: 170, h: 60 };
+const cardRect = i => ({ x: 30 + (i % 5) * 182, y: 74 + Math.floor(i / 5) * 140, w: 172, h: 132 });
+const nSteps = () => STEPS[PETS[petI].model].length;
+function update() {
+  frame++;
+  const t = tap, k = Object.assign({}, press); tap = null; for (const key in press) delete press[key];
+  const ok = k.Enter || k[' '], esc = k.Escape;
+  if (state === 'title') { if (ok || inBox(t, START)) { state = 'grid'; sfx.click(); } return; }
+  if (state === 'grid') {
+    if (k.ArrowRight) sel = Math.min(PETS.length - 1, sel + 1); if (k.ArrowLeft) sel = Math.max(0, sel - 1);
+    if (k.ArrowDown) sel = Math.min(PETS.length - 1, sel + 5); if (k.ArrowUp) sel = Math.max(0, sel - 5);
+    if (ok) { petI = sel; state = 'pet'; sfx.click(); return; }
+    PETS.forEach((p, i) => { if (inBox(t, cardRect(i))) { sel = petI = i; state = 'pet'; sfx.click(); } });
+    return;
+  }
+  if (state === 'pet') {
+    if (esc || inBox(t, BTN_BACK)) { state = 'grid'; sfx.click(); return; }
+    if (ok || inBox(t, BTN_STEPS)) { state = 'steps'; stepK = 0; sfx.fold(); return; }
+    if (inBox(t, BTN_PRINT)) { sfx.click(); openPrint(petI); }
+    return;
+  }
+  if (state === 'steps') {
+    if (esc || inBox(t, BTN_BACK)) { state = 'pet'; sfx.click(); return; }
+    if ((k.ArrowRight || ok || inBox(t, BTN_NEXT)) && stepK < nSteps() - 1) { stepK++; stepK === nSteps() - 1 ? sfx.yay() : sfx.fold(); }
+    else if ((k.ArrowLeft || inBox(t, BTN_PREV)) && stepK > 0) { stepK--; sfx.fold(); }
+  }
+}
+function bg(c1, c2) { const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, c1); g.addColorStop(1, c2); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); }
+function drawTitle() {
+  bg('#e1f5fe', '#fce4ec');
+  for (let i = 0; i < 12; i++) { ctx.save(); ctx.translate((i * 173) % W, 40 + (i * 89) % 420); ctx.rotate(i); poly([[-14, 0], [0, -14], [14, 0], [0, 14]], 'rgba(255,255,255,.7)'); ctx.restore(); }
+  text('🦢 ORIGAMI PET STUDIO', W / 2, 96, 56, '#ff7043');
+  text('Fold your own Game Factory pets out of paper!', W / 2, 140, 22, '#5e35b1', 'center', false);
+  [0, 5, 11, 6, 14, 2].forEach((pi, k) => drawPet(pi, 120 + k * 144, 270, 120, Math.sin(frame * 0.05 + k) * 5));
+  button(START, '▶ START', '#43a047', 32);
+  text('You need: printer paper, scissors, and glue or tape', W / 2, 500, 18, '#5d4037', 'center', false);
+}
+function drawGrid() {
+  bg('#e1f5fe', '#ede7f6');
+  text('Pick a pet to fold!', W / 2, 50, 34, '#ff7043');
+  PETS.forEach((p, i) => { const r = cardRect(i), on = i === sel;
+    rr(r.x, r.y + 4, r.w, r.h, 16, 'rgba(0,0,0,.12)'); rr(r.x, r.y, r.w, r.h, 16, '#fff');
+    if (on) { ctx.strokeStyle = '#ff7043'; ctx.lineWidth = 4; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(r.x, r.y, r.w, r.h, 16) : ctx.rect(r.x, r.y, r.w, r.h); ctx.stroke(); }
+    drawPet(i, r.x + r.w / 2, r.y + 54, 96, on ? Math.sin(frame * 0.12) * 3 : 0);
+    fit(p.name, r.x + r.w / 2, r.y + 106, 18, r.w - 10, '#4527a0', 'center', false);
+    text(MODELS[p.model].name + ' ' + '⭐'.repeat(MODELS[p.model].stars) + (save.made[p.id] ? '  ✅' : ''), r.x + r.w / 2, r.y + 124, 12, '#6d4c41', 'center', false); });
+  text('⭐ = easy   ⭐⭐ = a little harder', W / 2, 520, 16, '#6d4c41', 'center', false);
+}
+function drawPetPage() {
+  const p = PETS[petI]; bg('#fff8e1', '#ffe0b2');
+  rr(60, 70, 400, 420, 30, '#fff'); drawPet(petI, 260, 280, 330, Math.sin(frame * 0.06) * 6);
+  text(p.name, 720, 120, 44, '#ff7043');
+  text('From: ' + p.from, 720, 160, 18, '#6d4c41', 'center', false);
+  text('Fold: ' + MODELS[p.model].name + '  ' + '⭐'.repeat(MODELS[p.model].stars), 720, 200, 22, '#4527a0', 'center', false);
+  text(nSteps() + ' easy steps' + (save.made[p.id] ? '  •  ✅ printed!' : ''), 720, 234, 18, '#6d4c41', 'center', false);
+  button(BTN_STEPS, '📖 SHOW ME HOW TO FOLD', '#7e57c2', 24); button(BTN_PRINT, '🖨️ PRINT PAPER + FACE STICKERS', '#43a047', 22);
+  button(BTN_BACK, '⬅ PETS', '#6d4c41', 18);
+}
+function drawSteps() {
+  const p = PETS[petI], st = STEPS[p.model][stepK]; bg('#e3f2fd', '#fff');
+  rr(40, 70, 480, 440, 28, '#fff'); ctx.strokeStyle = '#90caf9'; ctx.lineWidth = 3; ctx.strokeRect(40, 70, 480, 440);
+  drawStep(petI, stepK, 280, 290, 380);
+  text(`${p.name}: STEP ${stepK + 1} of ${nSteps()}`, 740, 110, 26, '#ff7043');
+  wrap(st[0], 26, 380).forEach((ln, j) => text(ln, 740, 170 + j * 36, 26, '#263238', 'center', false));
+  for (let j = 0; j < nSteps(); j++) circle(740 + (j - (nSteps() - 1) / 2) * 26, 420, 8, j === stepK ? '#ff7043' : '#cfd8dc');
+  if (stepK > 0) button(BTN_PREV, '◀ BACK', '#90a4ae', 22); if (stepK < nSteps() - 1) button(BTN_NEXT, 'NEXT ▶', '#43a047', 24);
+  text('Blue dashes = fold here   •   Red arrow = which way', 740, 380, 15, '#607d8b', 'center', false);
+  button(BTN_BACK, '⬅ ' + p.name, '#6d4c41', 16);
+}
+function draw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
+  if (state === 'title') drawTitle(); else if (state === 'grid') drawGrid(); else if (state === 'pet') drawPetPage(); else drawSteps();
+}
+let last = performance.now(), acc = 0;
+function loop(now) { acc += Math.min(100, now - last); last = now; while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; } draw(); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+</script>
+<script>
+// ---------- 🖨️ printing: page 1 = the folding paper, page 2 = the steps + face stickers ----------
+const PW = 850, PH = 1100;
+function makePage(fn) {
+  const cv = document.createElement('canvas'); cv.width = PW; cv.height = PH;
+  const old = ctx; ctx = cv.getContext('2d'); PRINTING = true;
+  try { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, PW, PH); fn(); } finally { ctx = old; PRINTING = false; }
+  return cv;
+}
+const ptext = (s, x, y, size, color = '#222', align = 'center') => text(s, x, y, size, color, align, false);
+const cut = fn => { ctx.save(); ctx.setLineDash([10, 7]); ctx.strokeStyle = '#757575'; ctx.lineWidth = 2; ctx.beginPath(); fn(); ctx.stroke(); ctx.restore(); };
+const DIAMOND_MODELS = { cat: 1, puppy: 1, blob: 1 };
+function pagePaper(i) {
+  const p = PETS[i];
+  return makePage(() => {
+    ptext(`🦢 ${p.name.toUpperCase()} ORIGAMI PAPER  (${MODELS[p.model].name} fold)`, PW / 2, 46, 30, '#ff7043');
+    ptext('This printed side is the COLOR side. Cut on the dotted line!', PW / 2, 80, 20, '#555');
+    if (DIAMOND_MODELS[p.model]) {
+      const cx = PW / 2, cy = 515, h = 390, D = [[cx, cy - h], [cx + h, cy], [cx, cy + h], [cx - h, cy]];
+      ctx.save(); poly(D); ctx.clip(); patternFill(p, cx - h, cy - h, 2 * h, 2 * h, 2.4);
+      if (p.model === 'cat' || p.model === 'puppy') for (const s of [-1, 1]) { const L = cx + s * h, k = (p.model === 'cat' ? 0.42 : 0.46) * h; poly([[L, cy], [L - s * k, cy - k], [L - s * k, cy + k]], p.ear); }
+      if (p.id === 'sparks') { ctx.fillStyle = p.ear; ctx.fillRect(cx - h, cy - 0.14 * h, 2 * h, 0.28 * h); }
+      ctx.restore(); cut(() => { D.forEach(([x, y], j) => j ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath(); });
+      ptext('⬆ keep this corner at the TOP (like a diamond)', cx, cy - h - 12, 16, '#555');
+    } else {
+      const s = 720, x = (PW - s) / 2, y = 120; patternFill(p, x, y, s, s, 2.4); cut(() => ctx.rect(x, y, s, s));
+    }
+    ptext('Start with this COLOR side facing DOWN on the table.', PW / 2, PH - 120, 22, '#4527a0');
+    ptext('Then follow the steps on the next page (or tap 📖 SHOW ME HOW in the game).', PW / 2, PH - 88, 18, '#555');
+    ptext('See a little white peeking out? Color it in with a crayon!', PW / 2, PH - 58, 18, '#555');
+  });
+}
+function pageSteps(i) {
+  const p = PETS[i], S = STEPS[p.model];
+  return makePage(() => {
+    ptext(`📖 HOW TO FOLD ${p.name.toUpperCase()}`, PW / 2, 46, 32, '#ff7043');
+    S.forEach((st, k) => { const x = 30 + (k % 3) * 270, y = 70 + Math.floor(k / 3) * 330, w = 255, h = 315;
+      rr(x, y, w, h, 16, '#f5f5f5'); circle(x + 26, y + 26, 18, '#ff7043'); ptext(String(k + 1), x + 26, y + 33, 20, '#fff');
+      drawStep(i, k, x + w / 2, y + 120, 190);
+      wrap(st[0], 15, w - 24).slice(0, 5).forEach((ln, j) => ptext(ln, x + w / 2, y + 236 + j * 18, 15, '#263238')); });
+    const top = 70 + Math.ceil(S.length / 3) * 330 + 10, u = p.model === 'heart' ? 2.6 : p.model === 'square' ? 4.6 : 4.4;
+    ptext('✂️ FACE STICKERS: cut them out and glue them on! (or draw the face with markers)', PW / 2, top + 20, 18, '#555');
+    let x = 40, y = top + 40, rowH = 0;
+    for (const [w, h, fn] of stickerList(p)) { const pw = w * u + 16, ph = h * u + 16; if (x + pw > PW - 30) { x = 40; y += rowH + 14; rowH = 0; }
+      ctx.save(); ctx.translate(x + pw / 2, y + ph / 2); fn(u); ctx.restore(); cut(() => { ctx.roundRect ? ctx.roundRect(x, y, pw, ph, 10) : ctx.rect(x, y, pw, ph); }); x += pw + 14; rowH = Math.max(rowH, ph); }
+  });
+}
+let printBox = null;
+function openPrint(i) {
+  const p = PETS[i], pages = [pagePaper(i), pageSteps(i)];
+  if (!save.made[p.id]) { save.made[p.id] = 1; writeSave(); } trophy('origamiPets');
+  printBox = document.createElement('div'); printBox.id = 'printBox';
+  const bar = document.createElement('div'); bar.className = 'pbBar';
+  const back = document.createElement('button'); back.className = 'pbBack'; back.textContent = '⬅ BACK';
+  const pr = document.createElement('button'); pr.className = 'pbPrint'; pr.textContent = '🖨️ PRINT (2 pages)';
+  back.onclick = () => { if (printBox) { printBox.remove(); printBox = null; } sfx.click(); };
+  pr.onclick = () => { try { window.print(); } catch (_) {} };
+  bar.append(back, pr); printBox.appendChild(bar);
+  const tip = document.createElement('div'); tip.className = 'pbTip'; tip.textContent = '🦢 ' + p.name + ' origami  •  Tip: turn on color printing!'; printBox.appendChild(tip);
+  for (const cv of pages) { const img = new Image(); img.className = 'pbPage'; img.alt = p.name; img.src = cv.toDataURL('image/png'); printBox.appendChild(img); }
+  document.body.appendChild(printBox);
+}
+</script>
