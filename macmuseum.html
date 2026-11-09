@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>The MacBook Museum</title>
+<script src="touchpad.js?v=9"></script>
+<style>
+  html, body { height: 100%; }
+  body { margin: 0; background: #141b24; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  canvas { width: min(100vw, calc(100vh * 960 / 540)); height: auto; display: block; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
+  #printBox { position: fixed; inset: 0; overflow: auto; -webkit-overflow-scrolling: touch; background: #e8f1fb; z-index: 99999; text-align: center; padding: 12px 12px 40px; box-sizing: border-box; font-family: "Trebuchet MS", Arial, sans-serif; }
+  #printBox .pbBar { position: sticky; top: 0; display: flex; gap: 14px; justify-content: center; padding: 8px; background: #e8f1fb; z-index: 2; }
+  #printBox button { font: bold 26px "Trebuchet MS", Arial, sans-serif; border: 0; border-radius: 16px; padding: 14px 30px; color: #fff; cursor: pointer; box-shadow: 0 5px 0 rgba(0,0,0,.25); }
+  #printBox .pbPrint { background: #43a047; } #printBox .pbBack { background: #455a64; }
+  #printBox .pbTip { font-size: 20px; color: #1a4f8f; margin: 6px 0 4px; }
+  #printBox .pbPage { display: block; width: min(94vw, 720px); margin: 16px auto; background: #fff; box-shadow: 0 6px 20px rgba(0,0,0,.25); border-radius: 6px; }
+  @media print {
+    @page { size: letter portrait; margin: 0.3in; }
+    html, body { display: block !important; height: auto !important; overflow: visible !important; background: #fff !important; }
+    body > *:not(#printBox) { display: none !important; }
+    #printBox { position: static; overflow: visible; background: #fff; padding: 0; }
+    #printBox .pbBar, #printBox .pbTip { display: none !important; }
+    #printBox .pbPage { width: 100%; margin: 0; box-shadow: none; border-radius: 0; break-after: page; page-break-after: always; }
+    #printBox .pbPage:last-child { break-after: auto; page-break-after: auto; }
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+<canvas id="game" width="960" height="540"></canvas>
+<script>
+// 💻 THE MACBOOK MUSEUM — Ben's idea! A museum of laptops: old ones, new ones, Ben's own MacBook Neo,
+// and MacBook Robo (a laptop robot Ben invented in the Secret Print Shop).
+// Tap an exhibit to see it up close (and make it do its thing), collect a 📘 passport stamp for each one,
+// then visit the 🎁 Gift Shop to print souvenirs — including a FOLD-UP PAPER LAPTOP.
+const C = document.getElementById('game');
+let ctx = C.getContext('2d');
+const W = 960, H = 540;
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }
+let save = { seen: {} };
+try { const s = JSON.parse(localStorage.getItem('macMuseum') || 'null'); if (s && s.seen) save = s; } catch (_) {}
+function writeSave() { try { localStorage.setItem('macMuseum', JSON.stringify(save)); } catch (_) {} }
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+let frame = 0;
+
+// ---------- drawing helpers ----------
+function rr(x, y, w, h, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(x, y, Math.max(0, w), Math.max(0, h), r); else ctx.rect(x, y, w, h); ctx.fill(); }
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, 7); ctx.fill(); }
+function tri(a, b, c, d, e, f, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.lineTo(e, f); ctx.closePath(); ctx.fill(); }
+function text(str, x, y, size, color = '#fff', align = 'center', outline = true) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; ctx.textAlign = align; ctx.lineJoin = 'round';
+  if (outline) { ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = Math.max(3, size / 6); ctx.strokeText(str, x, y); }
+  ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function fit(str, x, y, size, maxW, color, align, outline) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; const w = ctx.measureText(str).width || 0;
+  text(str, x, y, w > maxW ? Math.max(9, Math.floor(size * maxW / w)) : size, color, align, outline);
+}
+function emoji(e, x, y, size) { ctx.font = `${size}px Arial`; ctx.textAlign = 'center'; ctx.fillStyle = '#000'; ctx.fillText(e, x, y); }
+function star(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, q = i % 2 ? r * 0.45 : r; ctx.lineTo(x + Math.cos(a) * q, y + Math.sin(a) * q); } ctx.closePath(); ctx.fill(); }
+function wrap(str, size, maxW) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; const out = []; let line = '';
+  for (const wd of String(str).split(' ')) { const t = line ? line + ' ' + wd : wd; if (line && ctx.measureText(t).width > maxW) { out.push(line); line = wd; } else line = t; }
+  if (line) out.push(line); return out;
+}
+function button(b, label, fill, size = 22) {
+  rr(b.x, b.y + 4, b.w, b.h, 14, 'rgba(0,0,0,.35)'); rr(b.x, b.y, b.w, b.h, 14, fill);
+  fit(label, b.x + b.w / 2, b.y + b.h / 2 + size * 0.36, size, b.w - 12);
+}
+const inBox = (t, b) => t && t.x >= b.x && t.x <= b.x + b.w && t.y >= b.y && t.y <= b.y + b.h;
+
+</script>
+<script>
+// ---------- THE LAPTOPS (simple cartoon drawings, each with a happy face on its screen) ----------
+const OR = '#2f80ed', OR2 = '#64b5f6', OR3 = '#1a4f8f', CREAM = '#e8f1fb', DARK = '#263238', GOLD = '#ffc94d', SIL = '#c9d1d9', SIL2 = '#eef2f6';
+let PRINTING = false;
+function sparkle(cx, cy, r, col, rot = 0, lw) {               // a twinkle: 8 rounded rays
+  ctx.save(); ctx.strokeStyle = col; ctx.lineCap = 'round'; ctx.lineWidth = lw || Math.max(1.5, r * 0.28); ctx.beginPath();
+  for (let i = 0; i < 8; i++) { const a = rot + i * Math.PI / 4, q = i % 2 ? 0.7 : 1; ctx.moveTo(cx + Math.cos(a) * r * 0.25, cy + Math.sin(a) * r * 0.25); ctx.lineTo(cx + Math.cos(a) * r * q, cy + Math.sin(a) * r * q); }
+  ctx.stroke(); ctx.restore();
+}
+function eyes(cx, cy, s, gap = 12, size = 6, col = DARK) {
+  const bl = !PRINTING && frame % 220 < 6 ? 0.15 : 1;
+  for (const d of [-1, 1]) { ctx.fillStyle = col; ctx.beginPath(); ctx.ellipse(cx + d * gap * s, cy, size * s * 0.8, size * s * bl, 0, 0, 7); ctx.fill(); }
+}
+function smile(cx, cy, s, w = 7, col = DARK, open = 0) {
+  ctx.strokeStyle = col; ctx.lineWidth = 2.4 * s; ctx.lineCap = 'round'; ctx.beginPath(); ctx.arc(cx, cy, w * s, 0.2, Math.PI - 0.2); ctx.stroke(); ctx.lineCap = 'butt';
+  if (open > 0) { ctx.fillStyle = '#c62828'; ctx.beginPath(); ctx.ellipse(cx, cy + w * 0.6 * s, w * 0.8 * s, w * 0.7 * open * s, 0, 0, 7); ctx.fill(); }
+}
+function screenFace(x, y, w, h, s, col = '#fff', open = 0) { eyes(x + w / 2, y + h * 0.42, s, 14, 6, col); smile(x + w / 2, y + h * 0.55, s, 9, col, open); }
+// o: { body, body2, bezel, scr (screen color or [top,bottom]), keys, w, h, base, round, lid (0 open .. 1 shut), draw(x,y,w,h) for the screen, cam, touchBar, handle }
+function laptop(cx, cy, s, o) {
+  const w = (o.w || 150) * s, h = (o.h || 86) * s, bd = (o.base || 40) * s, hy = cy + 8 * s, R = (o.round || 8) * s, lid = o.lid || 0;
+  const bw = w * 1.16;                                         // the base is a bit wider at the front (it is closer to us)
+  // base (keyboard half)
+  ctx.fillStyle = o.body; ctx.beginPath(); ctx.moveTo(cx - w / 2, hy); ctx.lineTo(cx + w / 2, hy); ctx.lineTo(cx + bw / 2, hy + bd); ctx.lineTo(cx - bw / 2, hy + bd); ctx.closePath(); ctx.fill();
+  rr(cx - bw / 2, hy + bd - 2 * s, bw, (o.thick || 7) * s, 3 * s, o.body2 || '#9aa4ae');
+  if (o.handle) { ctx.strokeStyle = o.body2; ctx.lineWidth = 6 * s; ctx.beginPath(); ctx.arc(cx - bw / 2 - 2 * s, hy + bd * 0.4, 16 * s, Math.PI * 0.5, Math.PI * 1.5); ctx.stroke(); }
+  const rows = 4;
+  for (let r = 0; r < rows; r++) { const t = (r + 0.6) / (rows + 2.4), yy = hy + 4 * s + t * bd * 0.7, rw = (w + (bw - w) * t) * 0.84, n = 11, kw = rw / n;
+    for (let k = 0; k < n; k++) rr(cx - rw / 2 + k * kw + kw * 0.12, yy, kw * 0.76, bd * 0.11, 1.5 * s, o.keys || '#37474f'); }
+  if (o.touchBar) rr(cx - w * 0.38, hy + 2 * s, w * 0.76, 3.4 * s, 1.5 * s, o.touchBar);
+  rr(cx - w * 0.17, hy + bd * 0.72, w * 0.34, bd * 0.2, 3 * s, o.pad || 'rgba(0,0,0,.12)');
+  if (o.sleep !== undefined) circle(cx + bw * 0.3, hy + bd + 1.5 * s, 2.5 * s, `rgba(255,255,255,${o.sleep})`);
+  // lid (screen half): it squashes toward the hinge as it closes
+  if (lid > 0.5) {                                             // shut: the lid lies flat on top of the keyboard
+    ctx.fillStyle = o.body; ctx.beginPath(); ctx.moveTo(cx - w / 2, hy); ctx.lineTo(cx + w / 2, hy); ctx.lineTo(cx + bw / 2, hy + bd); ctx.lineTo(cx - bw / 2, hy + bd); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.beginPath(); ctx.moveTo(cx - w * 0.3, hy + 4 * s); ctx.lineTo(cx - w * 0.1, hy + 4 * s); ctx.lineTo(cx - w * 0.2, hy + bd - 4 * s); ctx.lineTo(cx - w * 0.42, hy + bd - 4 * s); ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,.12)'; ctx.fillRect(cx - bw / 2, hy + bd - 3 * s, bw, 2 * s); return;
+  }
+  const lh = h * (1 - lid * 0.96);
+  ctx.save(); ctx.translate(0, hy); ctx.scale(1, lh / h); ctx.translate(0, -hy);
+  const ly = hy - h; rr(cx - w / 2, ly, w, h, R, o.body);
+  const inset = (o.inset || 6) * s; rr(cx - w / 2 + inset * 0.6, ly + inset * 0.6, w - inset * 1.2, h - inset * 0.8, R * 0.7, o.bezel || '#222');
+  const sx = cx - w / 2 + inset * 1.4, sy = ly + inset * 1.4, sw = w - inset * 2.8, sh = h - inset * 2.6;
+  if (Array.isArray(o.scr)) { const g = ctx.createLinearGradient(0, sy, 0, sy + sh); g.addColorStop(0, o.scr[0]); g.addColorStop(1, o.scr[1]); rr(sx, sy, sw, sh, 3 * s, g); } else rr(sx, sy, sw, sh, 3 * s, o.scr || '#4fc3f7');
+  if (o.cam) circle(cx, ly + inset * 0.8, 1.6 * s, '#111');
+  ctx.save(); ctx.beginPath(); ctx.rect(sx, sy, sw, sh); ctx.clip();
+  if (o.draw) o.draw(sx, sy, sw, sh); else screenFace(sx, sy, sw, sh, s);
+  ctx.fillStyle = 'rgba(255,255,255,.12)'; ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx + sw * 0.45, sy); ctx.lineTo(sx + sw * 0.2, sy + sh); ctx.lineTo(sx, sy + sh); ctx.fill();
+  ctx.restore(); ctx.restore();
+}
+// a tiny Game Factory book (for the MacBook Neo's screen and the paper laptop)
+function gfBook(cx, cy, s, flip = 0) {
+  rr(cx - 46 * s, cy - 28 * s, 92 * s, 60 * s, 5 * s, '#8e24aa');
+  rr(cx - 42 * s, cy - 26 * s, 41 * s, 54 * s, 3 * s, '#fffde7'); rr(cx + 1 * s, cy - 26 * s, 41 * s, 54 * s, 3 * s, '#fffde7');
+  ctx.fillStyle = 'rgba(0,0,0,.15)'; ctx.fillRect(cx - 1 * s, cy - 26 * s, 2 * s, 54 * s);
+  const ic = [['#ff7043', '#43a047', '#29b6f6'], ['#ab47bc', '#ffca28', '#ef5350']][Math.floor(flip) % 2];
+  text('GAME', cx - 21 * s, cy - 13 * s, 8 * s, '#6a1b9a', 'center', false); text('FACTORY', cx - 21 * s, cy - 4 * s, 7 * s, '#6a1b9a', 'center', false);
+  star(cx - 21 * s, cy + 13 * s, 9 * s, GOLD);
+  ic.forEach((c, k) => rr(cx + 6 * s + (k % 2) * 17 * s, cy - 20 * s + Math.floor(k / 2) * 22 * s + (k === 2 ? 0 : 0), 14 * s, 14 * s, 3 * s, c));
+  rr(cx + 6 * s + 17 * s, cy + 2 * s, 14 * s, 14 * s, 3 * s, '#26a69a');
+}
+</script>
+<script>
+// each: [id, name, emoji, action button, where it was "found", fun facts (only TRUE ones!), draw(cx, cy, s, a)]  (a = 0..1 while it does its thing)
+const CLAM_COLS = ['#ff8f00', '#1e88e5', '#7cb342', '#5c6bc0', '#757575'];
+const CHARS = [
+  ['clam', 'iBook Clamshell', '🍊', 'CHANGE COLOR!', 'A school backpack, back in 1999', ['It came out in 1999, with a carry HANDLE like a lunch box!', 'It came in fun colors like tangerine, blueberry and key lime.', 'Shut, it looked like a clam shell. That is how it got its name!'],
+    (cx, cy, s, a) => { const col = a > 0 ? CLAM_COLS[Math.floor(a * 10) % CLAM_COLS.length] : CLAM_COLS[0];
+      laptop(cx, cy, s, { body: col, body2: col, bezel: '#f5f5f5', scr: ['#81d4fa', '#4fc3f7'], keys: '#fafafa', round: 30, inset: 9, base: 38, thick: 10, handle: true, pad: 'rgba(255,255,255,.5)' });
+      if (a > 0) text(['TANGERINE!', 'BLUEBERRY!', 'KEY LIME!', 'INDIGO!', 'GRAPHITE!'][Math.floor(a * 10) % 5], cx, cy - 92 * s, 22 * s, '#fff'); }],
+  ['ti', 'PowerBook G4 Titanium', '🛡️', 'SHINE!', 'A super hero\'s briefcase, in 2001', ['It came out in 2001.', 'Its case was made of TITANIUM, a super strong metal!', 'People called it the "TiBook" for short.'],
+    (cx, cy, s, a) => { laptop(cx, cy, s, { body: '#b0b8c0', body2: '#8a939c', bezel: '#90979e', scr: ['#5c6bc0', '#7986cb'], keys: '#455a64', w: 166, h: 92, base: 36, thick: 4, inset: 4, round: 4 });
+      if (a > 0) { const x = cx - 120 * s + a * 300 * s; ctx.fillStyle = 'rgba(255,255,255,.55)'; ctx.beginPath(); ctx.moveTo(x, cy - 90 * s); ctx.lineTo(x + 26 * s, cy - 90 * s); ctx.lineTo(x - 14 * s, cy + 60 * s); ctx.lineTo(x - 40 * s, cy + 60 * s); ctx.fill();
+        for (let i = 0; i < 4; i++) sparkle(cx + Math.cos(i * 1.7 + a * 8) * 90 * s, cy - 40 * s + Math.sin(i * 2.3) * 40 * s, 10 * s, '#fff', i); } }],
+  ['white', 'White MacBook', '🤍', 'CLOSE THE LID!', 'A cozy desk, in 2006', ['It came out in 2006.', 'It was made of shiny white plastic. (There was a black one too!)', 'When it was asleep, a little light on the front glowed slowly, like it was breathing.'],
+    (cx, cy, s, a) => { const lid = a > 0 ? Math.min(1, a * 3) * (a < 0.85 ? 1 : (1 - a) / 0.15) : 0, br = 0.5 + Math.sin(frame * 0.06) * 0.5;
+      laptop(cx, cy, s, { body: '#f7f7f7', body2: '#dcdcdc', bezel: '#f0f0f0', scr: ['#90caf9', '#64b5f6'], keys: '#ffffff', pad: 'rgba(0,0,0,.08)', lid, sleep: lid > 0.9 ? br : 0, cam: true });
+      if (a > 0 && lid > 0.9) { text('Z', cx + 50 * s, cy - 30 * s - br * 10 * s, 18 * s, '#fff'); text('z', cx + 70 * s, cy - 50 * s - br * 10 * s, 14 * s, '#fff'); } }],
+  ['pro', 'First MacBook Pro', '📷', 'BOOT UP!', 'A movie maker\'s studio, in 2006', ['It came out in 2006 too!', 'It was made of shiny aluminum metal.', 'It had a little camera built in above the screen.'],
+    (cx, cy, s, a) => { const on = a <= 0 || a > 0.35;
+      laptop(cx, cy, s, { body: '#c3c9cf', body2: '#99a2ab', bezel: '#2b2b2b', scr: !on ? '#111' : a > 0 && a < 0.5 ? '#fff' : ['#4fc3f7', '#1e88e5'], keys: '#e0e0e0', cam: true, w: 160,
+        draw: (x, y, w, h) => { if (on && !(a > 0 && a < 0.5)) screenFace(x, y, w, h, s, '#fff', a > 0 ? 1 : 0); else if (a > 0 && a < 0.5 && on) { ctx.fillStyle = '#9e9e9e'; ctx.beginPath(); ctx.arc(x + w / 2, y + h / 2, 10 * s, 0, 7); ctx.fill(); } } });
+      if (a > 0.35 && a < 0.6) text('DING!', cx, cy - 92 * s, 26 * s, '#fff'); }],
+  ['air', 'MacBook Air', '✉️', 'OUT OF THE ENVELOPE!', 'Inside a paper office envelope, in 2008', ['It came out in 2008.', 'It was SO thin that it was pulled out of a paper office envelope to show it off!', 'Its thickest part was less than one inch.'],
+    (cx, cy, s, a) => { const t = a > 0 ? Math.min(1, a * 1.6) : 1, dy = (1 - t) * 150 * s, ey = cy + 40 * s;
+      if (a > 0) { rr(cx - 120 * s, ey - 6 * s, 240 * s, 90 * s, 6 * s, '#c8a26a'); }
+      ctx.save(); if (a > 0) { ctx.beginPath(); ctx.rect(cx - 200 * s, cy - 200 * s, 400 * s, 240 * s + ey - cy); ctx.clip(); }
+      laptop(cx, cy + dy, s, { body: '#d5dbe0', body2: '#b0b8c0', bezel: '#1b1b1b', scr: ['#b39ddb', '#7e57c2'], keys: '#263238', base: 36, thick: 3, w: 158 }); ctx.restore();
+      if (a > 0) { rr(cx - 120 * s, ey, 240 * s, 84 * s, 6 * s, '#e0b97a'); tri(cx - 120 * s, ey, cx + 120 * s, ey, cx, ey + 40 * s, '#d4a862'); text('OFFICE MAIL', cx, ey + 66 * s, 14 * s, '#795548', 'center', false); }
+      if (a > 0.6) text('TA-DA! SO THIN!', cx, cy - 96 * s, 22 * s, '#fff'); }],
+  ['twelve', '12-inch MacBook', '🥇', 'GO GOLD!', 'A treasure chest, in 2015', ['It came out in 2015.', 'It came in GOLD! (And silver and gray too.)', 'It had just ONE plug hole, for charging AND everything else.'],
+    (cx, cy, s, a) => { laptop(cx, cy, s, { body: '#e8c98f', body2: '#cfa968', bezel: '#1b1b1b', scr: ['#ffe082', '#ffb300'], keys: '#2b2b2b', w: 140, base: 34, thick: 3 });
+      if (a > 0) for (let i = 0; i < 9; i++) { const an = i / 9 * 6.28 + a * 5, d = 70 * s + a * 50 * s; star(cx + Math.cos(an) * d, cy - 20 * s + Math.sin(an) * d * 0.6, 9 * s, GOLD); } }],
+  ['touch', 'MacBook Pro with Touch Bar', '🌈', 'TOUCH THE BAR!', 'A music studio, in 2016', ['It came out in 2016.', 'Above the keys was a skinny touch screen called the Touch Bar.', 'The Touch Bar buttons changed for each app you used.'],
+    (cx, cy, s, a) => { const g = ctx.createLinearGradient(cx - 60 * s, 0, cx + 60 * s, 0); ['#f44336', '#ffeb3b', '#4caf50', '#2196f3', '#9c27b0'].forEach((c, i) => g.addColorStop(i / 4, c));
+      laptop(cx, cy, s, { body: '#7a8088', body2: '#5f656c', bezel: '#141414', scr: ['#26c6da', '#00838f'], keys: '#1b1b1b', touchBar: a > 0 ? g : '#111', w: 156, base: 40 });
+      if (a > 0) ['🎵', '😀', '🎨', '⭐'].forEach((e, i) => { const t = (a * 2 + i * 0.25) % 1; emoji(e, cx - 60 * s + i * 40 * s, cy - 84 * s - t * 60 * s, 20 * s); }); }],
+  ['m1', 'MacBook Air with M1', '🤫', 'LISTEN...', 'A quiet library, in 2020', ['It came out in 2020.', 'Inside is the M1, a computer chip made by Apple itself.', 'It has NO fan, so it is totally silent. Shhh!'],
+    (cx, cy, s, a) => { laptop(cx, cy, s, { body: '#d8dde2', body2: '#b3bbc3', bezel: '#141414', scr: ['#f48fb1', '#ce93d8'], keys: '#1b1b1b', w: 154, base: 38, thick: 4,
+        draw: (x, y, w, h) => { if (a > 0) { eyes(x + w / 2, y + h * 0.4, s, 14, 4, '#fff'); circle(x + w / 2, y + h * 0.62, 4 * s, '#fff'); } else screenFace(x, y, w, h, s); } });
+      if (a > 0) { text('🤫 shhh...', cx, cy - 92 * s, 22 * s, '#fff'); fit('No fan = no noise!', cx, cy + 82 * s, 18 * s, 220 * s, '#fff59d'); } }],
+  ['robo', 'MacBook Robo', '🤖', 'BEEP BOOP!', 'The Secret Print Shop (💡 Ben\'s idea!)', ['💡 Ben invented him in the Secret Print Shop!', 'His face is a SCREEN and his tummy is a KEYBOARD.', 'He is shiny silver with a bright blue screen.'],
+    (cx, cy, s, a) => { const by = cy + 52 * s - (a > 0 ? Math.abs(Math.sin(a * 12)) * 22 * s : 0), wave = a > 0 ? Math.sin(a * 30) * 0.6 : Math.sin(frame * 0.05) * 0.15;
+      rr(cx - 26 * s, by - 18 * s, 16 * s, 18 * s, 4 * s, '#90a4ae'); rr(cx + 10 * s, by - 18 * s, 16 * s, 18 * s, 4 * s, '#90a4ae');           // legs
+      rr(cx - 32 * s, by - 6 * s, 26 * s, 8 * s, 4 * s, '#607d8b'); rr(cx + 6 * s, by - 6 * s, 26 * s, 8 * s, 4 * s, '#607d8b');
+      for (const d of [-1, 1]) { ctx.save(); ctx.translate(cx + d * 44 * s, by - 70 * s); ctx.rotate(-d * (0.5 + (d > 0 ? Math.abs(wave) * 2 : 0))); rr(-5 * s, 0, 10 * s, 34 * s, 5 * s, '#b0bec5'); circle(0, 36 * s, 7 * s, '#78909c'); ctx.restore(); }
+      rr(cx - 46 * s, by - 76 * s, 92 * s, 60 * s, 10 * s, SIL);                                           // tummy = keyboard
+      for (let r = 0; r < 3; r++) for (let k = 0; k < 7; k++) rr(cx - 38 * s + k * 11 * s, by - 68 * s + r * 11 * s, 9 * s, 8 * s, 2 * s, '#37474f');
+      rr(cx - 14 * s, by - 32 * s, 28 * s, 10 * s, 3 * s, 'rgba(0,0,0,.15)');
+      rr(cx - 50 * s, by - 150 * s, 100 * s, 72 * s, 10 * s, '#b8c2cc'); rr(cx - 44 * s, by - 144 * s, 88 * s, 60 * s, 6 * s, '#1b1b1b');   // head = screen
+      const g = ctx.createLinearGradient(0, by - 140 * s, 0, by - 88 * s); g.addColorStop(0, '#4fc3f7'); g.addColorStop(1, '#1565c0'); rr(cx - 40 * s, by - 140 * s, 80 * s, 52 * s, 4 * s, g);
+      eyes(cx, by - 120 * s, s, 15, 7, '#fff'); smile(cx, by - 108 * s, s, 9, '#fff', a > 0 ? 1 : 0);
+      ctx.fillStyle = '#90a4ae'; ctx.fillRect(cx - 1.5 * s, by - 166 * s, 3 * s, 16 * s); circle(cx, by - 168 * s, 5 * s, a > 0 && frame % 10 < 5 ? '#ff5252' : OR2);
+      if (a > 0) text('BEEP BOOP!', cx, by - 184 * s, 22 * s, '#fff'); }],
+  ['neo', 'MacBook Neo', '💻', 'OPEN THE GAME FACTORY!', 'Ben\'s desk (💡 Ben\'s own laptop!)', ['This is Ben\'s NEW laptop!', 'The Game Factory moved onto it in November 2026.', 'Now new Game Factory games get made right here!'],
+    (cx, cy, s, a) => { if (!PRINTING) { const g = ctx.createRadialGradient(cx, cy - 30 * s, 10 * s, cx, cy - 30 * s, 150 * s); g.addColorStop(0, 'rgba(144,202,249,.5)'); g.addColorStop(1, 'rgba(144,202,249,0)'); ctx.fillStyle = g; ctx.fillRect(cx - 160 * s, cy - 180 * s, 320 * s, 320 * s); }
+      laptop(cx, cy, s, { body: '#d5dce3', body2: '#a9b3bd', bezel: '#141414', scr: ['#42a5f5', '#7e57c2'], keys: '#263238', w: 156, cam: true,
+        draw: (x, y, w, h) => { if (a > 0) gfBook(x + w / 2, y + h / 2 + 2 * s, s * 1.15, a * 8); else screenFace(x, y, w, h, s); } });
+      if (a > 0) ['🤖', '🏎️', '🐶', '🧟', '🎶'].forEach((e, i) => { const t = (a * 2 + i * 0.2) % 1; emoji(e, cx + (i - 2) * 40 * s * (0.5 + t), cy - 80 * s - t * 70 * s, 22 * s); }); }],
+];
+const CI = {}; CHARS.forEach((c, i) => CI[c[0]] = i);
+function drawChar(i, cx, cy, s, a = 0) { ctx.save(); try { CHARS[i][6](cx, cy, s, a); } finally { ctx.restore(); } }
+</script>
+<script>
+// ---------- sounds ----------
+let AC = null;
+function beep(f, t = 0, d = 0.12, type = 'square', v = 0.06) {
+  try { AC = AC || new (window.AudioContext || window.webkitAudioContext)(); const o = AC.createOscillator(), g = AC.createGain(), n = AC.currentTime + t;
+    o.type = type; o.frequency.value = f; g.gain.setValueAtTime(v, n); g.gain.exponentialRampToValueAtTime(0.001, n + d); o.connect(g); g.connect(AC.destination); o.start(n); o.stop(n + d + 0.02); } catch (_) {}
+}
+const chime = () => [262, 330, 392, 523].forEach(f => beep(f, 0.35, 1.2, 'triangle', 0.05));     // a big friendly "boot up" chord
+const sfx = { click: () => beep(660, 0, 0.06, 'triangle'), stamp: () => { beep(180, 0, 0.12, 'square', 0.08); [784, 988, 1175].forEach((f, i) => beep(f, 0.1 + i * 0.07, 0.15, 'triangle', 0.07)); },
+  whoosh: () => beep(300, 0, 0.25, 'sine', 0.05),
+  act: k => ({ clam: () => [523, 659, 784, 659, 523].forEach((f, i) => beep(f, i * 0.12, 0.12, 'triangle', 0.06)),
+    ti: () => { for (let i = 0; i < 8; i++) beep(1500 + i * 150, i * 0.05, 0.08, 'sine', 0.04); },
+    white: () => { [660, 440, 330].forEach((f, i) => beep(f, i * 0.12, 0.15, 'sine', 0.06)); beep(1200, 0.5, 0.05, 'square', 0.04); },
+    pro: chime,
+    air: () => { for (let i = 0; i < 6; i++) beep(200 + i * 120, i * 0.06, 0.08, 'sawtooth', 0.03); [784, 1047].forEach((f, i) => beep(f, 0.6 + i * 0.12, 0.2, 'triangle', 0.06)); },
+    twelve: () => [1047, 1319, 1568, 2093].forEach((f, i) => beep(f, i * 0.08, 0.2, 'triangle', 0.05)),
+    touch: () => [523, 587, 659, 698, 784, 880, 988, 1047].forEach((f, i) => beep(f, i * 0.06, 0.1, 'sine', 0.06)),
+    m1: () => beep(880, 0, 0.6, 'sine', 0.015),
+    robo: () => [880, 660, 880, 660].forEach((f, i) => beep(f, i * 0.1, 0.08, 'square', 0.05)),
+    neo: () => { chime(); [523, 659, 784, 1047, 1319].forEach((f, i) => beep(f, 1.3 + i * 0.08, 0.2, 'triangle', 0.05)); } }[k] || (() => {}))() };
+
+// ---------- the museum ----------
+const HALLS = [
+  { name: '🏛️ HALL 1: THE CLASSICS', ids: ['clam', 'ti', 'white', 'pro', 'air'], wall: '#e3eaf2', trim: '#546e7a' },
+  { name: '🏛️ HALL 2: THIN, FAST + A ROBOT', ids: ['twelve', 'touch', 'm1', 'robo'], wall: '#e8eaf6', trim: '#3949ab' },
+  { name: '🌟 THE GRAND HALL', ids: ['neo'], wall: '#14213d', trim: GOLD, grand: true },
+  { name: '🎁 THE GIFT SHOP', ids: [], wall: '#e8f1fb', trim: OR, shop: true },
+];
+let state = 'title', hall = 0, tap = null, sel = 0, showI = 0, actT = 0, msg = '', msgT = 0, parts = [], posterPick = false;
+const seenCount = () => CHARS.filter(c => save.seen[c[0]]).length;
+const START = { x: 360, y: 400, w: 240, h: 70 };
+const BTN_PREV = { x: 14, y: 488, w: 130, h: 44 }, BTN_NEXT = { x: 816, y: 488, w: 130, h: 44 }, BTN_PASS = { x: 160, y: 488, w: 300, h: 44 }, BTN_SHOP = { x: 476, y: 488, w: 324, h: 44 };
+const BTN_BACK = { x: 14, y: 12, w: 110, h: 42 }, BTN_ACT = { x: 580, y: 400, w: 350, h: 64 };
+function exhibitPos(h, k) { const n = HALLS[h].ids.length; return HALLS[h].grand ? { x: W / 2, y: 250, s: 1.45 } : { x: (k + 0.5) * W / n, y: 262, s: n > 4 ? 0.85 : 1.0 }; }
+function exhibitRect(h, k) { const p = exhibitPos(h, k), w = HALLS[h].grand ? 360 : W / HALLS[h].ids.length - 14; return { x: p.x - w / 2, y: HALLS[h].grand ? 90 : 90, w, h: HALLS[h].grand ? 360 : 380 }; }
+function say(s) { msg = s; msgT = 150; }
+function confetti(x, y, n = 40) { for (let i = 0; i < n; i++) parts.push({ x, y, vx: (Math.random() - 0.5) * 9, vy: -Math.random() * 8 - 2, c: [OR, GOLD, CREAM, OR2, '#fff'][i % 5], life: 70 + Math.random() * 40 }); }
+function openExhibit(id) {
+  showI = CI[id]; state = 'close'; actT = 0; sfx.whoosh();
+  if (!save.seen[id]) { save.seen[id] = 1; writeSave(); sfx.stamp(); say('📘 NEW STAMP in your Museum Passport!'); confetti(W / 2, 120, 30);
+    if (seenCount() === CHARS.length && !save.allDone) { save.allDone = 1; writeSave(); trophy('macMuseum'); setTimeout(() => { say('🏆 You saw EVERY laptop! Museum Master!'); confetti(W / 2, 200, 120); }, 600); } }
+}
+function goHall(h) { hall = (h + HALLS.length) % HALLS.length; sel = 0; posterPick = false; sfx.whoosh(); }
+</script>
+<script>
+// ---------- 🎁 souvenirs ----------
+const SOUV = [
+  { k: 'one', icon: '🖼️', name: 'Laptop Poster', tip: 'Pick ANY laptop!' },
+  { k: 'all', icon: '🏛️', name: 'Museum Poster', tip: 'Every laptop!' },
+  { k: 'cards', icon: '💌', name: 'Postcards', tip: 'Mail them to family!' },
+  { k: 'stickers', icon: '⭐', name: 'Sticker Sheet', tip: 'Cut them out!' },
+  { k: 'pass', icon: '📘', name: 'Museum Passport', tip: 'With your stamps!' },
+];
+const souvRect = i => ({ x: 18 + (i % 7) * 134, y: 126 + Math.floor(i / 7) * 176, w: 126, h: 166 });
+let pickKind = 'one';
+const pickRect = i => ({ x: 22 + (i % 5) * 186, y: 80 + Math.floor(i / 5) * 200, w: 174, h: 186 });
+// ---------- input ----------
+C.addEventListener('mousedown', e => { const r = C.getBoundingClientRect(); tap = { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height }; });
+const press = {};
+addEventListener('keydown', e => { press[e.key] = true; });
+function update() {
+  frame++; if (msgT > 0) msgT--; if (actT > 0) { actT++; if (actT > 150) actT = 0; }
+  for (const p of parts) { p.x += p.vx; p.y += p.vy; p.vy += 0.2; p.life--; } parts = parts.filter(p => p.life > 0);
+  const t = tap, k = Object.assign({}, press); tap = null; for (const key in press) delete press[key];
+  const ok = k.Enter || k[' '], esc = k.Escape;
+  if (state === 'title') { if (ok || inBox(t, START)) { state = 'hall'; sfx.click(); } return; }
+  if (state === 'close') { if (esc || inBox(t, BTN_BACK)) { state = 'hall'; sfx.click(); } else if (ok || inBox(t, BTN_ACT)) { actT = 1; sfx.act(CHARS[showI][0]); } return; }
+  if (state === 'pass') { if (esc || ok || inBox(t, BTN_BACK)) { state = 'hall'; sfx.click(); } return; }
+  const H0 = HALLS[hall];
+  if (k.ArrowRight) { if (!H0.shop && sel < H0.ids.length - 1) sel++; else goHall(hall + 1); }
+  if (k.ArrowLeft) { if (!H0.shop && sel > 0) sel--; else { goHall(hall - 1); sel = Math.max(0, HALLS[hall].ids.length - 1); } }
+  if (esc && posterPick) { posterPick = false; return; }
+  if (ok && !H0.shop && H0.ids[sel]) { openExhibit(H0.ids[sel]); return; }
+  if (!t) return;
+  if (posterPick) {
+    if (inBox(t, BTN_BACK)) { posterPick = false; sfx.click(); return; }
+    CHARS.forEach((c, i) => { if (inBox(t, pickRect(i))) { sfx.click(); openPrint(pickKind, i); } });
+    return;
+  }
+  if (inBox(t, BTN_PREV)) { goHall(hall - 1); return; }
+  if (inBox(t, BTN_NEXT)) { goHall(hall + 1); return; }
+  if (inBox(t, BTN_PASS)) { state = 'pass'; sfx.click(); return; }
+  if (inBox(t, BTN_SHOP)) { goHall(HALLS.length - 1); return; }
+  if (H0.shop) { SOUV.forEach((sv, i) => { if (inBox(t, souvRect(i))) { sfx.click(); if (sv.k === 'one' || sv.k === 'color') { posterPick = true; pickKind = sv.k; } else openPrint(sv.k); } }); return; }
+  H0.ids.forEach((id, i) => { if (inBox(t, exhibitRect(hall, i))) { sel = i; openExhibit(id); } });
+}
+// ---------- drawing ----------
+function drawHall() {
+  const H0 = HALLS[hall];
+  ctx.fillStyle = H0.wall; ctx.fillRect(0, 0, W, 420);
+  ctx.fillStyle = H0.trim; ctx.fillRect(0, 70, W, 6); ctx.fillRect(0, 410, W, 10);
+  ctx.fillStyle = H0.grand ? '#0d1b2a' : '#90a4ae'; ctx.fillRect(0, 420, W, 62); ctx.fillStyle = 'rgba(0,0,0,.08)'; for (let x = 0; x < W; x += 60) ctx.fillRect(x, 420, 2, 62);
+  fit(H0.name, W / 2, 50, 32, 760, H0.grand ? GOLD : '#fff');
+  if (H0.shop) return drawShop();
+  if (H0.grand) {
+    const g = ctx.createRadialGradient(W / 2, 250, 20, W / 2, 250, 260); g.addColorStop(0, 'rgba(187,222,251,.55)'); g.addColorStop(1, 'rgba(187,222,251,0)'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, 420);
+    ctx.fillStyle = '#b71c1c'; ctx.beginPath(); ctx.moveTo(W / 2 - 90, 420); ctx.lineTo(W / 2 + 90, 420); ctx.lineTo(W / 2 + 160, 482); ctx.lineTo(W / 2 - 160, 482); ctx.fill();
+    ctx.strokeStyle = GOLD; ctx.lineWidth = 10; ctx.strokeRect(W / 2 - 190, 90, 380, 300); ctx.strokeStyle = '#ffe082'; ctx.lineWidth = 2; ctx.strokeRect(W / 2 - 180, 100, 360, 280);
+    drawChar(CI.neo, W / 2, 262, 1.45);
+    for (const x of [140, W - 140]) { rr(x - 6, 300, 12, 120, 4, GOLD); circle(x, 296, 12, GOLD); }
+    ctx.strokeStyle = '#c62828'; ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(140, 320); ctx.quadraticCurveTo(W / 2 - 200, 370, W / 2 - 200, 330); ctx.moveTo(W - 140, 320); ctx.quadraticCurveTo(W / 2 + 200, 370, W / 2 + 200, 330); ctx.stroke();
+    rr(W / 2 - 150, 396, 300, 52, 10, GOLD); text('MACBOOK NEO', W / 2, 420, 22, '#14213d', 'center', false); text('💻 Ben\'s own laptop!  ' + (save.seen.neo ? '✅' : 'Tap to visit!'), W / 2, 441, 15, '#14213d', 'center', false);
+  } else H0.ids.forEach((id, k) => {
+    const p = exhibitPos(hall, k), seen = save.seen[id], selk = k === sel;
+    rr(p.x - 84, 92, 168, 212, 14, 'rgba(0,0,0,.07)');
+    if (selk) { const g = ctx.createRadialGradient(p.x, p.y, 10, p.x, p.y, 110); g.addColorStop(0, 'rgba(187,222,251,.8)'); g.addColorStop(1, 'rgba(187,222,251,0)'); ctx.fillStyle = g; ctx.fillRect(p.x - 110, p.y - 110, 220, 220); }
+    rr(p.x - 60, 312, 120, 98, 6, '#f5f5f5'); rr(p.x - 70, 300, 140, 16, 4, '#e0e0e0'); ctx.fillStyle = '#eeeeee'; ctx.fillRect(p.x - 40, 322, 6, 80); ctx.fillRect(p.x + 34, 322, 6, 80);
+    drawChar(CI[id], p.x, p.y - 20 + Math.sin(frame * 0.04 + k) * 2, p.s);
+    const pw = Math.min(176, W / H0.ids.length - 14); rr(p.x - pw / 2, 424, pw, 46, 8, H0.trim); fit(CHARS[CI[id]][1], p.x, 446, 17, pw - 10, '#fff', 'center', false); text(seen ? '✅ visited' : '👆 tap me!', p.x, 464, 13, '#fff', 'center', false);
+  });
+}
+function drawShop() {
+  if (posterPick) {
+    ctx.fillStyle = '#d6e6f7'; ctx.fillRect(0, 0, W, H); text(pickKind === 'color' ? '🖍️ Which laptop do you want to color?' : '🖼️ Which poster do you want?', W / 2, 46, 30, OR3, 'center', false);
+    CHARS.forEach((c, i) => { const b = pickRect(i); rr(b.x, b.y, b.w, b.h, 16, '#fff'); drawChar(i, b.x + b.w / 2, b.y + (c[0] === 'robo' ? 96 : 84), c[0] === 'robo' ? 0.56 : 0.72); const ln = wrap(c[1], 17, b.w - 12); ln.forEach((l, j) => fit(l, b.x + b.w / 2, b.y + b.h - 14 - (ln.length - 1 - j) * 19, 17, b.w - 10, OR3, 'center', false)); });
+    button(BTN_BACK, '⬅ BACK', '#455a64', 18); return;
+  }
+  SOUV.forEach((sv, i) => { const b = souvRect(i); rr(b.x, b.y + 5, b.w, b.h, 16, 'rgba(0,0,0,.2)'); rr(b.x, b.y, b.w, b.h, 16, sv.special ? '#fff59d' : '#fff');
+    if (sv.special) { rr(b.x + 6, b.y - 10, b.w - 12, 20, 10, '#e91e63'); text('⭐ SPECIAL!', b.x + b.w / 2, b.y + 5, 12, '#fff', 'center', false); }
+    emoji(sv.icon, b.x + b.w / 2, b.y + 62, 46); const ln = wrap(sv.name, 15, b.w - 12).slice(0, 2); ln.forEach((l, j) => fit(l, b.x + b.w / 2, b.y + 96 + j * 17 - (ln.length - 1) * 4, 15, b.w - 10, OR3, 'center', false));
+    fit(sv.tip, b.x + b.w / 2, b.y + 136, 12, b.w - 10, '#455a64', 'center', false); text('🖨️ PRINT', b.x + b.w / 2, b.y + 156, 13, '#43a047', 'center', false); });
+  text('Every gift is FREE! Tip: turn on color printing!', W / 2, 106, 18, OR3, 'center', false);
+}
+function drawBar() {
+  rr(0, 482, W, 58, 0, 'rgba(20,33,61,.92)');
+  button(BTN_PREV, '◀ BACK', '#607d8b', 20); button(BTN_NEXT, 'NEXT ▶', '#607d8b', 20);
+  button(BTN_PASS, `📘 PASSPORT  ${seenCount()}/${CHARS.length}`, '#5c6bc0', 20); button(BTN_SHOP, '🎁 GIFT SHOP', '#00897b', 22);
+}
+function drawClose() {
+  const c = CHARS[showI], a = actT > 0 ? actT / 150 : 0;
+  ctx.fillStyle = '#0f1722'; ctx.fillRect(0, 0, W, H);
+  const g = ctx.createRadialGradient(290, 260, 20, 290, 260, 280); g.addColorStop(0, 'rgba(187,222,251,.45)'); g.addColorStop(1, 'rgba(187,222,251,0)'); ctx.fillStyle = g; ctx.fillRect(0, 0, 600, H);
+  drawChar(showI, 290, c[0] === 'robo' ? 250 : 280, c[0] === 'robo' ? 1.4 : 1.6, a);
+  rr(560, 60, 380, 420, 20, '#f5f9ff'); rr(570, 70, 360, 66, 14, OR);
+  fit(c[2] + ' ' + c[1], 750, 113, 30, 340, '#fff'); fit('📍 Found: ' + c[4], 750, 162, 16, 350, '#455a64', 'center', false);
+  let y = 198; for (const f of c[5]) { for (const ln of wrap('• ' + f, 17, 340)) { text(ln, 580, y, 17, '#263238', 'left', false); y += 22; } y += 6; }
+  button(BTN_ACT, '✨ ' + c[3], '#43a047', 24);
+  button(BTN_BACK, '⬅ BACK', '#455a64', 18);
+  if (msgT > 0) { rr(140, 8, 400, 40, 12, 'rgba(0,0,0,.6)'); fit(msg, 340, 35, 18, 380, '#fff59d'); }
+}
+function drawPass() {
+  ctx.fillStyle = '#283593'; ctx.fillRect(0, 0, W, H); rr(60, 60, W - 120, 420, 20, '#f5f9ff');
+  text('📘 MY MUSEUM PASSPORT', W / 2, 46, 30, '#fff');
+  CHARS.forEach((c, i) => { const x = 160 + (i % 5) * 160, y = 150 + Math.floor(i / 5) * 190, seen = save.seen[c[0]];
+    ctx.strokeStyle = seen ? '#c62828' : '#bdbdbd'; ctx.lineWidth = 4; ctx.setLineDash(seen ? [] : [8, 6]); ctx.beginPath(); ctx.arc(x, y, 58, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+    if (seen) drawChar(i, x, y + (c[0] === 'robo' ? 18 : 8), c[0] === 'robo' ? 0.3 : 0.48); else text('?', x, y + 12, 32, '#bdbdbd', 'center', false);
+    const ln = wrap(c[1], 16, 150); ln.forEach((l, j) => fit(l, x, y + 82 + j * 18, 16, 154, '#263238', 'center', false)); });
+  button(BTN_BACK, '⬅ BACK', '#455a64', 18);
+}
+function drawTitle() {
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#e3eaf2'); g.addColorStop(1, '#b8c6d6'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  for (let i = 0; i < 6; i++) { rr(70 + i * 150, 130, 24, 300, 6, '#f5f8fb'); }
+  tri(30, 130, W - 30, 130, W / 2, 30, '#546e7a'); rr(30, 124, W - 60, 16, 4, '#455a64'); rr(30, 430, W - 60, 20, 4, '#455a64');
+  sparkle(W / 2, 86, 26, GOLD, frame * 0.02);
+  text('THE MACBOOK MUSEUM', W / 2, 200, 58, OR);
+  text('💡 Ben\'s idea!', W / 2, 240, 24, '#1a4f8f', 'center', false);
+  ['clam', 'white', 'air', 'touch', 'neo'].forEach((id, i) => drawChar(CI[id], 140 + i * 170, 318 + Math.sin(frame * 0.05 + i) * 4, 0.72));
+  button(START, '▶ COME IN!', '#43a047', 30);
+  text('Tap the laptops • collect stamps • print souvenirs!', W / 2, 500, 18, '#1a4f8f', 'center', false);
+}
+function draw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
+  if (state === 'title') drawTitle();
+  else if (state === 'close') drawClose();
+  else if (state === 'pass') drawPass();
+  else { drawHall(); if (!posterPick) drawBar(); if (msgT > 0 && !posterPick) { rr(W / 2 - 300, 84, 600, 40, 12, 'rgba(0,0,0,.6)'); fit(msg, W / 2, 111, 19, 580, '#fff59d'); } }
+  for (const p of parts) { ctx.globalAlpha = Math.min(1, p.life / 20); ctx.fillStyle = p.c; ctx.fillRect(p.x - 4, p.y - 4, 8, 8); }
+  ctx.globalAlpha = 1;
+}
+let last = performance.now(), acc = 0;
+function loop(now) { acc += Math.min(100, now - last); last = now; while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; } draw(); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+</script>
+<script>
+// ---------- 🖨️ printing the souvenirs ----------
+const PW = 850, PH = 1100, PAST = ['#e3f2fd', '#fce4ec', '#e8eaf6', '#e0f2f1', '#fff8e1', '#f3e5f5', '#e1f5fe', '#fbe9e7', '#ede7f6', '#fffde7'];
+function makePage(fn) {
+  const cv = document.createElement('canvas'); cv.width = PW; cv.height = PH;
+  const old = ctx; ctx = cv.getContext('2d'); PRINTING = true;
+  try { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, PW, PH); fn(); } finally { ctx = old; PRINTING = false; }
+  return cv;
+}
+const ptext = (s, x, y, size, color = '#222', align = 'center') => text(s, x, y, size, color, align, false);
+function cutBox(x, y, w, h, r = 18) { ctx.save(); ctx.setLineDash([10, 7]); ctx.strokeStyle = '#9e9e9e'; ctx.lineWidth = 2; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); ctx.stroke(); ctx.restore(); }
+function bigTitle(str, x, y, size, fill, edge, maxW = PW - 80) {
+  ctx.save(); ctx.font = `bold ${size}px "Trebuchet MS", Arial`; const mw = ctx.measureText(str).width; if (mw > maxW) { size = Math.floor(size * maxW / mw); ctx.font = `bold ${size}px "Trebuchet MS", Arial`; }
+  ctx.textAlign = 'center'; ctx.lineJoin = 'round'; ctx.strokeStyle = edge; ctx.lineWidth = size / 6; ctx.strokeText(str, x, y); ctx.fillStyle = fill; ctx.fillText(str, x, y); ctx.restore();
+}
+const scaleFor = (i, base) => CHARS[i][0] === 'robo' ? base * 0.8 : base;
+const cyFor = (i, cy, s) => CHARS[i][0] === 'robo' ? cy + 30 * s : cy;        // the robot is taller, so nudge him down a bit
+function pageOne(i) {
+  const c = CHARS[i];
+  return makePage(() => {
+    const neo = c[0] === 'neo', g = ctx.createLinearGradient(0, 0, 0, PH); g.addColorStop(0, neo ? '#14213d' : '#e3f2fd'); g.addColorStop(1, neo ? '#3949ab' : '#b3d4f5'); ctx.fillStyle = g; ctx.fillRect(0, 0, PW, PH);
+    ctx.strokeStyle = neo ? GOLD : OR; ctx.lineWidth = 10; ctx.strokeRect(14, 14, PW - 28, PH - 28);
+    for (let k = 0; k < 14; k++) sparkle((k * 211) % PW, 180 + (k * 137) % 600, 10 + (k % 3) * 4, neo ? 'rgba(255,201,77,.45)' : 'rgba(47,128,237,.25)', k);
+    bigTitle(c[1].toUpperCase() + '!', PW / 2, 110, 74, neo ? GOLD : '#fff', neo ? '#0d1b2a' : OR3);
+    ptext('THE MACBOOK MUSEUM  •  SOUVENIR POSTER', PW / 2, 160, 22, neo ? CREAM : OR3);
+    drawChar(i, PW / 2, cyFor(i, 490, 3), scaleFor(i, 3.2));
+    rr(70, 790, PW - 140, 250, 26, 'rgba(255,255,255,.92)');
+    let y = 840; for (const f of c[5].slice(0, 3)) { for (const ln of wrap('• ' + f, 24, PW - 200)) { ptext(ln, 100, y, 24, '#263238', 'left'); y += 32; } y += 6; }
+  });
+}
+function pageAll() {
+  return makePage(() => {
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, PW, PH); ctx.strokeStyle = OR; ctx.lineWidth = 10; ctx.strokeRect(14, 14, PW - 28, PH - 28);
+    bigTitle('THE MACBOOK MUSEUM', PW / 2, 90, 60, '#fff', OR3); ptext('💡 A museum invented by Ben', PW / 2, 132, 22, OR3);
+    CHARS.forEach((c, i) => { const n = CHARS.length, last = i === n - 1 && n % 3 === 1, x = last ? 36 + 262 : 36 + (i % 3) * 262, y = 156 + Math.floor(i / 3) * 228, w = 252, h = 218;
+      rr(x, y, w, h, 16, PAST[i % PAST.length]); drawChar(i, x + w / 2, cyFor(i, y + 96, 0.75), scaleFor(i, 0.75)); fit(c[1], x + w / 2, y + 200, 20, w - 16, OR3, 'center', false); });
+  });
+}
+function pagesCards() {
+  const pages = [];
+  for (let pg = 0; pg < Math.ceil(CHARS.length / 4); pg++) pages.push(makePage(() => {
+    ptext(`✂️ MACBOOK MUSEUM POSTCARDS (page ${pg + 1})  Cut on the dotted lines!`, PW / 2, 30, 18, '#555');
+    CHARS.slice(pg * 4, pg * 4 + 4).forEach((c, k) => { const i = pg * 4 + k, x = 25 + (k % 2) * 405, y = 48 + Math.floor(k / 2) * 525, w = 395, h = 510;
+      rr(x, y, w, h, 14, PAST[i % PAST.length]); rr(x + 12, y + 12, w - 24, 250, 10, '#fff'); drawChar(i, x + w / 2, cyFor(i, y + 140, 1.05), scaleFor(i, 1.1));
+      ptext('Greetings from', x + w / 2, y + 300, 20, '#455a64'); fit('THE MACBOOK MUSEUM!', x + w / 2, y + 334, 28, w - 30, OR3, 'center', false); fit('Starring the ' + c[1], x + w / 2, y + 364, 18, w - 30, '#455a64', 'center', false);
+      ['To: ______________________', 'Hi! ______________________', '__________________________', 'From: ____________________'].forEach((ln, j) => ptext(ln, x + 24, y + 404 + j * 28, 18, '#555', 'left'));
+      cutBox(x - 4, y - 4, w + 8, h + 8, 16); });
+  }));
+  return pages;
+}
+function pagesStickers() {
+  const all = CHARS.map((c, i) => i).concat(['logo', 'master']), pages = [];
+  for (let pg = 0; pg < Math.ceil(all.length / 12); pg++) pages.push(makePage(() => {
+    ptext(`⭐ MACBOOK MUSEUM STICKERS (page ${pg + 1})  Cut them out and stick them with tape!`, PW / 2, 34, 20, '#555');
+    all.slice(pg * 12, pg * 12 + 12).forEach((it, k) => { const x = 150 + (k % 3) * 275, y = 170 + Math.floor(k / 3) * 250, r = 110;
+      circle(x, y, r, typeof it === 'number' ? PAST[it % PAST.length] : '#bbdefb'); ctx.strokeStyle = OR; ctx.lineWidth = 6; ctx.beginPath(); ctx.arc(x, y, r - 4, 0, 7); ctx.stroke();
+      if (it === 'logo') { gfBook(x, y - 18, 1.3); ptext('MACBOOK MUSEUM', x, y + 66, 19, OR3); }
+      else if (it === 'master') { ptext('🏆', x, y + 8, 60); ptext('MUSEUM MASTER', x, y + 60, 19, OR3); }
+      else { drawChar(it, x, cyFor(it, y - 16, 0.7), scaleFor(it, 0.7)); const ln = wrap(CHARS[it][1], 18, 136); ln.forEach((l, j) => fit(l, x, y + 56 + j * 21, 18, 136, OR3, 'center', false)); }
+      ctx.save(); ctx.setLineDash([9, 6]); ctx.strokeStyle = '#9e9e9e'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 8, 0, 7); ctx.stroke(); ctx.restore(); });
+  }));
+  return pages;
+}
+function pagePass() {
+  return makePage(() => {
+    ctx.fillStyle = '#283593'; ctx.fillRect(0, 0, PW, PH); rr(30, 30, PW - 60, PH - 60, 24, '#f5f9ff');
+    bigTitle('MUSEUM PASSPORT', PW / 2, 110, 58, GOLD, '#283593'); ptext('THE MACBOOK MUSEUM  •  Name: Ben', PW / 2, 156, 24, '#283593');
+    CHARS.forEach((c, i) => { const n = CHARS.length, last = i === n - 1 && n % 3 === 1, x = last ? 425 : 175 + (i % 3) * 250, y = 260 + Math.floor(i / 3) * 200, seen = save.seen[c[0]];
+      ctx.strokeStyle = seen ? '#c62828' : '#bdbdbd'; ctx.lineWidth = 4; ctx.setLineDash(seen ? [] : [10, 7]); ctx.beginPath(); ctx.arc(x, y, 66, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+      if (seen) { drawChar(i, x, cyFor(i, y + 2, 0.5), scaleFor(i, 0.5)); ptext('VISITED!', x, y + 58, 14, '#c62828'); } else ptext('stamp here', x, y + 6, 16, '#bdbdbd');
+      fit(c[1], x, y + 90, 17, 230, '#283593', 'center', false); });
+  });
+}
+let printBox = null;
+function openPrint(k, i) {
+  const pages = k === 'one' ? [pageOne(i)] : k === 'color' ? [pageColor(i)] : EXTRA_PRINT[k] ? EXTRA_PRINT[k]() : k === 'all' ? [pageAll()] : k === 'cards' ? pagesCards() : k === 'stickers' ? pagesStickers() : [pagePass()];
+  const name = k === 'one' ? CHARS[i][1] + ' Poster' : k === 'color' ? CHARS[i][1] + ' Coloring Page' : SOUV.find(s => s.k === k).name;
+  printBox = document.createElement('div'); printBox.id = 'printBox';
+  const bar = document.createElement('div'); bar.className = 'pbBar';
+  const back = document.createElement('button'); back.className = 'pbBack'; back.textContent = '⬅ BACK';
+  const pr = document.createElement('button'); pr.className = 'pbPrint'; pr.textContent = pages.length > 1 ? `🖨️ PRINT (${pages.length} pages)` : '🖨️ PRINT';
+  back.onclick = () => { if (printBox) { printBox.remove(); printBox = null; } sfx.click(); };
+  pr.onclick = () => { try { window.print(); } catch (_) {} };
+  bar.append(back, pr); printBox.appendChild(bar);
+  const tip = document.createElement('div'); tip.className = 'pbTip'; tip.textContent = '🎁 ' + name + '  •  Tip: turn on color printing!'; printBox.appendChild(tip);
+  for (const cv of pages) { const img = new Image(); img.className = 'pbPage'; img.alt = name; img.src = cv.toDataURL('image/png'); printBox.appendChild(img); }
+  document.body.appendChild(printBox);
+}
+</script>
+<script>
+// ---------- 🎁 MORE GIFT SHOP GIFTS + the special FOLD-UP PAPER LAPTOP ----------
+const dash = (fn, col = '#9e9e9e', w = 2) => { ctx.save(); ctx.setLineDash([10, 7]); ctx.strokeStyle = col; ctx.lineWidth = w; ctx.beginPath(); fn(); ctx.stroke(); ctx.restore(); };
+const foldLine = (x1, y1, x2, y2) => { ctx.save(); ctx.setLineDash([4, 6]); ctx.strokeStyle = '#1e88e5'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.restore(); };
+function outlineOf(i, size, sc) {                            // 🖍️ turns a character into a coloring-book outline
+  const cv = document.createElement('canvas'); cv.width = size; cv.height = size;
+  const old = ctx; ctx = cv.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, size, size);
+  try { drawChar(i, size / 2, size / 2 + size * 0.06, sc); } finally { ctx = old; }
+  const c2 = cv.getContext('2d'), src = c2.getImageData(0, 0, size, size).data, out = c2.createImageData(size, size), o = out.data;
+  const lum = k => src[k] * 0.3 + src[k + 1] * 0.59 + src[k + 2] * 0.11;
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    const k = (y * size + x) * 4; let edge = false;
+    for (const [dx, dy] of [[1, 0], [0, 1], [2, 0], [0, 2]]) { if (x + dx >= size || y + dy >= size) continue; const k2 = ((y + dy) * size + x + dx) * 4;
+      if (Math.abs(lum(k) - lum(k2)) > 26 || Math.abs(src[k] - src[k2]) + Math.abs(src[k + 2] - src[k2 + 2]) > 70) { edge = true; break; } }
+    const v = edge ? 40 : 255; o[k] = o[k + 1] = o[k + 2] = v; o[k + 3] = 255;
+  }
+  c2.putImageData(out, 0, 0); return cv;
+}
+function outlineText(str, x, y, size) { ctx.save(); ctx.font = `bold ${size}px "Trebuchet MS", Arial`; ctx.textAlign = 'center'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#333'; ctx.lineWidth = 3; ctx.strokeText(str, x, y); ctx.restore(); }
+const YEARS = { clam: '1999', ti: '2001', white: '2006', pro: '2006', air: '2008', twelve: '2015', touch: '2016', m1: '2020', neo: '2026', robo: '💡 Ben' };
+// 🧍 STAND-UP LAPTOPS (fold in half, they stand up like a tent)
+function pagesStandups() {
+  const pages = [];
+  for (let pg = 0; pg < Math.ceil(CHARS.length / 4); pg++) pages.push(makePage(() => {
+    ptext(`🧍 STAND-UP LAPTOPS (page ${pg + 1})  Cut out, fold on the blue line, and stand them up!`, PW / 2, 30, 18, '#555');
+    CHARS.slice(pg * 4, pg * 4 + 4).forEach((c, k) => { const i = pg * 4 + k, x = 30 + (k % 2) * 400, y = 50 + Math.floor(k / 2) * 520, w = 390, h = 500, sc = scaleFor(i, 1.2);
+      rr(x, y, w, h, 10, PAST[i % PAST.length]);
+      ctx.save(); ctx.translate(x + w / 2, y + h / 4); ctx.rotate(Math.PI); drawChar(i, 0, cyFor(i, -12, sc), sc); fit(c[1], 0, 108, 22, w - 30, OR3, 'center', false); ctx.restore();
+      drawChar(i, x + w / 2, cyFor(i, y + h * 0.75 - 12, sc), sc); fit(c[1], x + w / 2, y + h - 14, 22, w - 30, OR3, 'center', false);
+      foldLine(x, y + h / 2, x + w, y + h / 2); dash(() => ctx.rect(x, y, w, h)); });
+  }));
+  return pages;
+}
+// 🃏 TRADING CARDS (9 per page)
+function pagesTrading() {
+  const pages = [], per = 9;
+  for (let pg = 0; pg < Math.ceil(CHARS.length / per); pg++) pages.push(makePage(() => {
+    ptext(`🃏 MACBOOK TRADING CARDS (page ${pg + 1})  Cut on the dotted lines!`, PW / 2, 32, 20, '#555');
+    CHARS.slice(pg * per, pg * per + per).forEach((c, k) => { const i = pg * per + k, x = 37 + (k % 3) * 263, y = 50 + Math.floor(k / 3) * 345, w = 250, h = 330, sc = scaleFor(i, 0.75);
+      rr(x, y, w, h, 18, c[0] === 'neo' ? '#b8860b' : c[0] === 'robo' ? '#00897b' : OR); rr(x + 8, y + 48, w - 16, h - 56, 12, '#fff');
+      fit(c[1], x + w / 2, y + 33, 22, w - 20, '#fff', 'center', false);
+      ctx.fillStyle = PAST[i % PAST.length]; ctx.fillRect(x + 14, y + 54, w - 28, 150); ctx.save(); ctx.beginPath(); ctx.rect(x + 14, y + 54, w - 28, 150); ctx.clip(); drawChar(i, x + w / 2, cyFor(i, y + 132, sc), sc); ctx.restore();
+      fit('📅 ' + YEARS[c[0]] + '   ✨ ' + c[3], x + w / 2, y + 226, 16, w - 24, '#2e7d32', 'center', false);
+      wrap(c[5][c[0] === 'neo' || c[0] === 'robo' ? 0 : 1], 13, w - 30).slice(0, 3).forEach((ln, j) => ptext(ln, x + w / 2, y + 250 + j * 17, 13, '#333'));
+      ptext(`#${i + 1} of ${CHARS.length}`, x + w / 2, y + h - 14, 14, '#c62828');
+      dash(() => { ctx.roundRect ? ctx.roundRect(x - 5, y - 5, w + 10, h + 10, 20) : ctx.rect(x - 5, y - 5, w + 10, h + 10); }); });
+  }));
+  return pages;
+}
+</script>
+<script>
+// 🖍️ COLORING PAGES (any laptop, as an outline)
+function pageColor(i) {
+  return makePage(() => {
+    outlineText('COLOR ME!', PW / 2, 110, 90);
+    const sc = 3.0, cv = outlineOf(i, 700, sc); ctx.drawImage(cv, (PW - 700) / 2, 160);
+    ctx.save(); ctx.font = 'bold 64px "Trebuchet MS", Arial'; const mw = ctx.measureText(CHARS[i][1].toUpperCase()).width; ctx.restore();
+    outlineText(CHARS[i][1].toUpperCase(), PW / 2, 960, Math.min(64, Math.floor(64 * (PW - 80) / mw)));
+    ptext('The MacBook Museum  •  Coloring Page', PW / 2, 1040, 20, '#999');
+  });
+}
+// 💳 MUSEUM MEMBER CARD (fold in half: front + back)
+function pageMember() {
+  return makePage(() => {
+    ptext('💳 MUSEUM MEMBER CARD  Cut it out, fold on the blue line, and glue it shut!', PW / 2, 34, 20, '#555');
+    const x = 75, y = 70, w = 700, h = 440;
+    const g = ctx.createLinearGradient(x, y, x + w, y + h); g.addColorStop(0, OR); g.addColorStop(1, '#14213d'); rr(x, y + h, w, h, 0, g); rr(x, y + h, w, 16, 0, GOLD);
+    for (let k = 0; k < 12; k++) sparkle(x + 40 + (k * 131) % (w - 80), y + h + 40 + (k * 67) % (h - 80), 16, 'rgba(255,255,255,.18)', k);
+    bigTitle('THE MACBOOK MUSEUM', x + w / 2, y + h + 80, 42, '#fff', OR3, w - 40); ptext('⭐ OFFICIAL MEMBER ⭐', x + w / 2, y + h + 124, 26, GOLD);
+    rr(x + 40, y + h + 150, 230, 250, 18, CREAM); drawChar(CI.neo, x + 155, y + h + 280, 0.95);
+    [['NAME:', 'BEN'], ['MEMBER #:', '0001'], ['LEVEL:', 'SUPER VIP'], ['MEMBER SINCE:', '2026']].forEach(([a, b], j) => { ptext(a, x + 300, y + h + 190 + j * 56, 20, CREAM, 'left'); ptext(b, x + 480, y + h + 190 + j * 56, 30, '#fff', 'left'); });
+    ctx.save(); ctx.translate(x + w / 2, y + h / 2); ctx.rotate(Math.PI);           // the back (upside down, so it reads right after folding)
+    rr(-w / 2, -h / 2, w, h, 0, CREAM); ptext('This member can visit the', 0, -h / 2 + 70, 28, OR3); ptext('MACBOOK MUSEUM any time!', 0, -h / 2 + 108, 32, OR3);
+    ptext(`📘 Passport stamps: ${seenCount()} of ${CHARS.length}`, 0, -h / 2 + 170, 26, '#263238'); ptext('Favorite laptop: ____________________', 0, -h / 2 + 222, 24, '#263238');
+    ptext('Signature: ____________________', 0, -h / 2 + 272, 24, '#263238');
+    ['clam', 'air', 'touch', 'twelve'].forEach((id, k) => drawChar(CI[id], -240 + k * 160, -h / 2 + 360, 0.6)); ctx.restore();
+    foldLine(x, y + h, x + w, y + h); dash(() => ctx.rect(x, y, w, h * 2)); ptext('(fold)', x + w + 6, y + h + 6, 14, '#1e88e5', 'left');
+  });
+}
+// 🧩 MUSEUM PUZZLE (a big picture with jigsaw lines)
+function pagePuzzle() {
+  return makePage(() => {
+    ptext('🧩 MACBOOK MUSEUM PUZZLE  Cut on the white lines, mix it up, and put it back together!', PW / 2, 30, 17, '#555');
+    const X = 40, Y = 50, Wd = 770, Hd = 1000;
+    const g = ctx.createLinearGradient(0, Y, 0, Y + Hd); g.addColorStop(0, '#14213d'); g.addColorStop(1, '#3949ab'); ctx.fillStyle = g; ctx.fillRect(X, Y, Wd, Hd);
+    for (let k = 0; k < 30; k++) sparkle(X + (k * 157) % Wd, Y + (k * 97) % Hd, 8 + k % 3 * 4, 'rgba(255,201,77,.5)', k);
+    bigTitle('THE MACBOOK MUSEUM', PW / 2, Y + 90, 54, GOLD, OR3);
+    drawChar(CI.neo, PW / 2, Y + 330, 2.2);
+    [['clam', 150, 620], ['ti', 400, 620], ['white', 650, 620], ['air', 150, 790], ['touch', 400, 790], ['twelve', 650, 790], ['m1', 150, 950], ['pro', 400, 950], ['robo', 650, 950]].forEach(([id, x, y]) => { const i = CI[id], sc = scaleFor(i, 0.9); drawChar(i, X + x - 20, cyFor(i, Y + y - 40, sc), sc); });
+    ctx.save(); ctx.strokeStyle = 'rgba(255,255,255,.95)'; ctx.lineWidth = 3; ctx.setLineDash([8, 6]);
+    const cols = 4, rows = 5, cw = Wd / cols, chh = Hd / rows;
+    const seg = (x1, y1, x2, y2, flip) => { const mx = (x1 + x2) / 2, my = (y1 + y2) / 2, vert = x1 === x2, r = 22;
+      ctx.beginPath(); ctx.moveTo(x1, y1); if (vert) { ctx.lineTo(x1, my - r); ctx.arc(x1, my, r, -Math.PI / 2, Math.PI / 2, flip < 0); } else { ctx.lineTo(mx - r, y1); ctx.arc(mx, y1, r, Math.PI, 0, flip < 0); } ctx.lineTo(x2, y2); ctx.stroke(); };
+    for (let c = 1; c < cols; c++) for (let r = 0; r < rows; r++) seg(X + c * cw, Y + r * chh, X + c * cw, Y + (r + 1) * chh, (c + r) % 2 ? 1 : -1);
+    for (let r = 1; r < rows; r++) for (let c = 0; c < cols; c++) seg(X + c * cw, Y + r * chh, X + (c + 1) * cw, Y + r * chh, (c + r) % 2 ? 1 : -1);
+    ctx.restore(); ctx.strokeStyle = '#9e9e9e'; ctx.lineWidth = 2; ctx.strokeRect(X, Y, Wd, Hd);
+    ptext('20 pieces!', PW / 2, PH - 22, 18, '#555');
+  });
+}
+// 📅 LAPTOP TIMELINE POSTER (oldest at the top, newest at the bottom)
+function pageTimeline() {
+  return makePage(() => {
+    ctx.fillStyle = '#f5f9ff'; ctx.fillRect(0, 0, PW, PH); ctx.strokeStyle = OR; ctx.lineWidth = 10; ctx.strokeRect(14, 14, PW - 28, PH - 28);
+    bigTitle('LAPTOP TIMELINE', PW / 2, 86, 60, '#fff', OR3); ptext('From the oldest laptop to the newest!  •  The MacBook Museum', PW / 2, 124, 20, OR3);
+    const order = ['clam', 'ti', 'white', 'pro', 'air', 'twelve', 'touch', 'm1', 'neo', 'robo'];
+    ctx.fillStyle = '#90a4ae'; ctx.fillRect(PW / 2 - 5, 160, 10, 900);
+    order.forEach((id, k) => { const i = CI[id], y = 196 + k * 90, left = k % 2 === 0;
+      rr(PW / 2 - 52, y - 22, 104, 44, 22, id === 'robo' ? '#00897b' : id === 'neo' ? '#b8860b' : OR); ptext(YEARS[id], PW / 2, y + 9, id === 'robo' ? 20 : 26, '#fff');
+      const sc = scaleFor(i, 0.5); drawChar(i, left ? PW / 2 - 120 : PW / 2 + 120, cyFor(i, y - 6, sc), sc);
+      const ln = wrap(CHARS[i][1], 22, 190); ln.forEach((l, j) => fit(l, left ? PW / 2 - 195 : PW / 2 + 195, y + 8 + (j - (ln.length - 1) / 2) * 26, 22, 200, OR3, left ? 'right' : 'left', false)); });
+  });
+}
+</script>
+<script>
+// 💻 THE SPECIAL GIFT: A FOLD-UP PAPER LAPTOP (screen + keyboard with a fold line, the Game Factory on its screen, a triangle stand)
+function pagesPaperLaptop() {
+  const p1 = makePage(() => {
+    bigTitle('FOLD-UP PAPER LAPTOP', PW / 2, 56, 46, '#fff', OR3); ptext('✂️ Cut on the gray dotted line  •  fold on the blue line  •  stand it up!', PW / 2, 90, 18, '#555');
+    const x = 75, w = 700, top = 108, half = 420, fy = top + half;
+    rr(x, top, w, half * 2, 24, SIL);
+    rr(x + 24, top + 24, w - 48, half - 44, 16, '#141414'); circle(PW / 2, top + 36, 5, '#455a64');     // screen half: bezel + camera
+    const sx = x + 44, sy = top + 48, sw = w - 88, sh = half - 92, g = ctx.createLinearGradient(0, sy, 0, sy + sh); g.addColorStop(0, '#42a5f5'); g.addColorStop(1, '#7e57c2'); rr(sx, sy, sw, sh, 6, g);
+    for (let k = 0; k < 10; k++) sparkle(sx + 30 + (k * 137) % (sw - 60), sy + 70 + (k * 71) % (sh - 120), 8, 'rgba(255,255,255,.35)', k);
+    ptext('BEN\'S GAME FACTORY', PW / 2, sy + 44, 32, '#fff');
+    gfBook(PW / 2, sy + 172, 3.3);
+    ['#ef5350', '#ffca28', '#66bb6a', '#29b6f6', '#ab47bc', '#ff7043'].forEach((c, k) => rr(PW / 2 - 165 + k * 56, sy + sh - 40, 44, 32, 8, c));            // a little dock of app buttons
+    rr(x, fy, w, 14, 0, '#aab4be');                                                                          // keyboard half
+    const rows = ['1234567890', 'QWERTYUIOP', 'ASDFGHJKL', 'ZXCVBNM'];
+    rows.forEach((row, r) => { const n = row.length, kw = 56, x0 = PW / 2 - n * kw / 2;
+      for (let k = 0; k < n; k++) { rr(x0 + k * kw + 3, fy + 36 + r * 56, kw - 6, 48, 8, '#263238'); ptext(row[k], x0 + k * kw + kw / 2, fy + 68 + r * 56, 22, '#fff'); } });
+    rr(PW / 2 - 160, fy + 36 + 4 * 56, 320, 48, 8, '#263238'); ptext('space', PW / 2, fy + 68 + 4 * 56, 18, '#90a4ae');
+    rr(PW / 2 - 130, fy + 330, 260, 74, 14, '#b9c3cc');                                                      // trackpad
+    foldLine(x, fy, x + w, fy); ptext('fold', x + w + 8, fy + 6, 16, '#1e88e5', 'left'); ptext('fold', x - 8, fy + 6, 16, '#1e88e5', 'right');
+    dash(() => { ctx.roundRect ? ctx.roundRect(x, top, w, half * 2, 24) : ctx.rect(x, top, w, half * 2); });
+    const st = 980, sw4 = w / 4;                                                                              // the stand strip
+    rr(x, st, w, 80, 8, '#dfe6ec'); for (let k = 1; k < 4; k++) foldLine(x + k * sw4, st, x + k * sw4, st + 80);
+    ptext('STAND', x + sw4 / 2, st + 48, 22, OR3); ptext('fold', x + sw4 * 1.5, st + 48, 18, '#1e88e5'); ptext('fold', x + sw4 * 2.5, st + 48, 18, '#1e88e5'); ptext('tape here', x + sw4 * 3.5, st + 48, 20, '#777');
+    dash(() => ctx.rect(x, st, w, 80));
+  });
+  const p2 = makePage(() => {
+    ctx.fillStyle = '#f5f9ff'; ctx.fillRect(0, 0, PW, PH); ctx.strokeStyle = OR; ctx.lineWidth = 8; ctx.strokeRect(14, 14, PW - 28, PH - 28);
+    bigTitle('HOW TO BUILD IT', PW / 2, 76, 52, '#fff', OR3);
+    ['1. Cut out the laptop on the gray dotted line.', '2. Fold it on the blue line, so the screen stands up.', '3. Cut out the STAND strip. Fold it into a triangle and tape it.',
+      '4. Tape the triangle behind the screen to hold it up.', '5. Cut out the game buttons and glue them on the screen!'].forEach((ln, j) => ptext(ln, 60, 136 + j * 38, 23, '#263238', 'left'));
+    ptext('🎮 GAME BUTTONS', PW / 2, 352, 32, OR3);
+    const apps = [['🤖', 'Robo Jump', '#42a5f5'], ['🐶', 'Sparks', '#ffca28'], ['⚔️', 'Ben\'s Quest', '#66bb6a'], ['🏎️', 'Turbo Racers', '#ef5350'], ['🥊', 'Brawl Buddies', '#ff7043'],
+      ['🧟', 'Zombie Maze', '#8d6e63'], ['🎶', 'Beat Party', '#ab47bc'], ['🏛️', 'Claude Museum', '#26a69a'], ['💻', 'MacBook Museum', '#5c6bc0']];
+    apps.forEach(([e, nm, c], k) => { const bx = 95 + (k % 3) * 230, by = 380 + Math.floor(k / 3) * 200, bs = 200;
+      rr(bx, by, bs, 180, 24, c); rr(bx + 10, by + 10, bs - 20, 110, 18, 'rgba(255,255,255,.35)'); ptext(e, bx + bs / 2, by + 92, 70); fit(nm, bx + bs / 2, by + 156, 24, bs - 20, '#fff', 'center', false);
+      dash(() => { ctx.roundRect ? ctx.roundRect(bx - 4, by - 4, bs + 8, 188, 26) : ctx.rect(bx - 4, by - 4, bs + 8, 188); }); });
+    ptext('My laptop\'s name: ________________________', PW / 2, 1020, 26, '#263238');
+  });
+  return [p1, p2];
+}
+// ---------- the gifts on the Gift Shop shelves ----------
+SOUV.push(
+  { k: 'stand', icon: '🧍', name: 'Stand-Up Laptops', tip: 'Fold + stand!' },
+  { k: 'trading', icon: '🃏', name: 'Trading Cards', tip: 'All 10!' },
+  { k: 'color', icon: '🖍️', name: 'Coloring Pages', tip: 'Pick ANY laptop!' },
+  { k: 'member', icon: '💳', name: 'Member Card', tip: 'Super VIP!' },
+  { k: 'puzzle', icon: '🧩', name: 'Museum Puzzle', tip: '20 pieces!' },
+  { k: 'timeline', icon: '📅', name: 'Laptop Timeline', tip: 'Oldest to newest!' },
+  { k: 'paper', icon: '💻', name: 'Fold-Up Paper Laptop', tip: 'Fold it up!', special: true },
+);
+const EXTRA_PRINT = { stand: pagesStandups, trading: pagesTrading, member: () => [pageMember()], puzzle: () => [pagePuzzle()], timeline: () => [pageTimeline()], paper: pagesPaperLaptop };
+</script>

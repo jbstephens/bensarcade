@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>The Midnight Museum</title>
+<script src="touchpad.js?v=9"></script>
+<style>
+  html, body { height: 100%; }
+  body { margin: 0; background: #0d1233; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  canvas { width: min(100vw, calc(100vh * 960 / 540)); height: auto; display: block; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
+  #printBox { position: fixed; inset: 0; overflow: auto; -webkit-overflow-scrolling: touch; background: #e8eaf6; z-index: 99999; text-align: center; padding: 12px 12px 40px; box-sizing: border-box; font-family: "Trebuchet MS", Arial, sans-serif; }
+  #printBox .pbBar { position: sticky; top: 0; display: flex; gap: 14px; justify-content: center; padding: 8px; background: #e8eaf6; z-index: 2; }
+  #printBox button { font: bold 26px "Trebuchet MS", Arial, sans-serif; border: 0; border-radius: 16px; padding: 14px 30px; color: #fff; cursor: pointer; box-shadow: 0 5px 0 rgba(0,0,0,.25); }
+  #printBox .pbPrint { background: #43a047; } #printBox .pbBack { background: #3949ab; }
+  #printBox .pbTip { font-size: 20px; color: #283593; margin: 6px 0 4px; }
+  #printBox .pbPage { display: block; width: min(94vw, 720px); margin: 16px auto; background: #fff; box-shadow: 0 6px 20px rgba(0,0,0,.25); border-radius: 6px; }
+  @media print {
+    @page { size: letter portrait; margin: 0.3in; }
+    html, body { display: block !important; height: auto !important; overflow: visible !important; background: #fff !important; }
+    body > *:not(#printBox) { display: none !important; }
+    #printBox { position: static; overflow: visible; background: #fff; padding: 0; }
+    #printBox .pbBar, #printBox .pbTip { display: none !important; }
+    #printBox .pbPage { width: 100%; margin: 0; box-shadow: none; border-radius: 0; break-after: page; page-break-after: always; }
+    #printBox .pbPage:last-child { break-after: auto; page-break-after: auto; }
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+<canvas id="game" width="960" height="540"></canvas>
+<script>
+// 🌙 THE MIDNIGHT MUSEUM — a surprise museum Claude designed for Ben.
+// In the daytime the exhibits sit still. Press the big 🌙 MIDNIGHT button: the lights go dark blue, the moon rises,
+// and everything COMES ALIVE! Beamy the Night Guard (a friendly flashlight robot) walks around helping.
+// Visit every exhibit to fill your passport and unlock a SECRET exhibit (only at midnight, in Hall 3).
+// Then print souvenirs in the 🎁 Midnight Gift Shop (incl. a paper flashlight and a Night Guard badge).
+const C = document.getElementById('game');
+let ctx = C.getContext('2d');
+const W = 960, H = 540;
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }
+let save = { seen: {} };
+try { const s = JSON.parse(localStorage.getItem('midnightMuseum') || 'null'); if (s && s.seen) save = s; } catch (_) {}
+function writeSave() { try { localStorage.setItem('midnightMuseum', JSON.stringify(save)); } catch (_) {} }
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+let frame = 0, T = 0, PRINTING = false, ptr = { x: W / 2, y: H / 2 };
+
+// ---------- drawing helpers ----------
+function rr(x, y, w, h, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(x, y, Math.max(0, w), Math.max(0, h), r); else ctx.rect(x, y, w, h); ctx.fill(); }
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, 7); ctx.fill(); }
+function tri(a, b, c, d, e, f, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.lineTo(e, f); ctx.closePath(); ctx.fill(); }
+function ln(x1, y1, x2, y2) { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+function text(str, x, y, size, color = '#fff', align = 'center', outline = true) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; ctx.textAlign = align; ctx.lineJoin = 'round';
+  if (outline) { ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = Math.max(3, size / 6); ctx.strokeText(str, x, y); }
+  ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function fit(str, x, y, size, maxW, color, align, outline) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; const w = ctx.measureText(str).width || 0;
+  text(str, x, y, w > maxW ? Math.max(9, Math.floor(size * maxW / w)) : size, color, align, outline);
+}
+function emoji(e, x, y, size) { ctx.font = `${size}px Arial`; ctx.textAlign = 'center'; ctx.fillStyle = '#000'; ctx.fillText(e, x, y); }
+function star(x, y, r, fill, rot = 0, inner = 0.45) { ctx.fillStyle = fill; ctx.beginPath(); for (let i = 0; i < 10; i++) { const a = rot - Math.PI / 2 + i * Math.PI / 5, q = i % 2 ? r * inner : r; ctx.lineTo(x + Math.cos(a) * q, y + Math.sin(a) * q); } ctx.closePath(); ctx.fill(); }
+function wrap(str, size, maxW) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; const out = []; let line = '';
+  for (const wd of String(str).split(' ')) { const t = line ? line + ' ' + wd : wd; if (line && ctx.measureText(t).width > maxW) { out.push(line); line = wd; } else line = t; }
+  if (line) out.push(line); return out;
+}
+function button(b, label, fill, size = 22) {
+  rr(b.x, b.y + 4, b.w, b.h, 14, 'rgba(0,0,0,.35)'); rr(b.x, b.y, b.w, b.h, 14, fill);
+  fit(label, b.x + b.w / 2, b.y + b.h / 2 + size * 0.36, size, b.w - 12);
+}
+const inBox = (t, b) => t && t.x >= b.x && t.x <= b.x + b.w && t.y >= b.y && t.y <= b.y + b.h;
+// colors
+const INK = '#2b2440', BONE = '#f6eedb', BONE2 = '#a08c70', GLOW = '#ffe066', NAVY = '#1a2350', MOON = '#fff6c9', GOLD = '#ffc94d';
+const PAST = ['#e8eaf6', '#fce4ec', '#e0f2f1', '#fff8e1', '#f3e5f5', '#e1f5fe', '#fbe9e7', '#ede7f6', '#fffde7', '#e8f5e9', '#fff3e0', '#e0f7fa', '#fffde7'];
+// eyes: closed (asleep, in the daytime) or open (alive at midnight). lx/ly = where they look
+function eyesN(cx, cy, s, gap, size, n, col = INK, lx = 0, ly = 0) {
+  if (n < 0.5) { ctx.strokeStyle = col; ctx.lineWidth = 2.2 * s; ctx.lineCap = 'round'; for (const d of [-1, 1]) { ctx.beginPath(); ctx.arc(cx + d * gap * s, cy - size * 0.3 * s, size * 0.8 * s, 0.35, Math.PI - 0.35); ctx.stroke(); } return; }
+  const bl = !PRINTING && T % 200 < 6 ? 0.15 : 1;
+  for (const d of [-1, 1]) { ctx.fillStyle = col; ctx.beginPath(); ctx.ellipse(cx + d * gap * s + lx * s, cy + ly * s, size * s * 0.8, size * s * bl, 0, 0, 7); ctx.fill(); if (bl > 0.5) circle(cx + d * gap * s + lx * s + size * 0.25 * s, cy + ly * s - size * 0.35 * s, size * 0.32 * s, '#fff'); }
+}
+function smile(cx, cy, s, w = 7, col = INK, open = 0) {
+  ctx.strokeStyle = col; ctx.lineWidth = 2.2 * s; ctx.lineCap = 'round'; ctx.beginPath(); ctx.arc(cx, cy, w * s, 0.2, Math.PI - 0.2); ctx.stroke();
+  if (open > 0) { ctx.fillStyle = '#7b2d1e'; ctx.beginPath(); ctx.ellipse(cx, cy + w * 0.6 * s, w * 0.8 * s, w * 0.7 * open * s, 0, 0, 7); ctx.fill(); }
+}
+function blush(cx, cy, s, gap = 18) { circle(cx - gap * s, cy, 4 * s, 'rgba(255,128,128,.5)'); circle(cx + gap * s, cy, 4 * s, 'rgba(255,128,128,.5)'); }
+function bone(x, y, len, rot, s, col = BONE) {               // a cartoon dog-bone
+  ctx.save(); ctx.translate(x, y); ctx.rotate(rot);
+  for (const [c, e] of [[BONE2, 2.5 * s], [col, 0]]) { rr(-len / 2 - e / 2, -5 * s - e / 2, len + e, 10 * s + e, 4 * s, c); for (const dx of [-1, 1]) for (const dy of [-1, 1]) circle(dx * len / 2, dy * 6 * s, 7 * s + e / 2, c); }
+  ctx.restore();
+}
+function stroke2(fn, w) { ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = BONE2; ctx.lineWidth = w + 4; fn(); ctx.stroke(); ctx.strokeStyle = BONE; ctx.lineWidth = w; fn(); ctx.stroke(); }
+function glowBall(x, y, r, col) { const g = ctx.createRadialGradient(x, y, 0, x, y, r); g.addColorStop(0, col); g.addColorStop(1, col.replace(/[\d.]+\)$/, '0)')); ctx.fillStyle = g; ctx.fillRect(x - r, y - r, r * 2, r * 2); }
+function bubble(str, x, y, size = 16, maxW = 220) {        // a speech bubble pointing down at (x, y)
+  const lines = wrap(str, size, maxW), w = Math.min(maxW, Math.max(...lines.map(l => ctx.measureText(l).width))) + 24, h = lines.length * (size + 4) + 14;
+  const bx = clamp(x - w / 2, 6, W - w - 6), by = y - h - 12;
+  rr(bx, by, w, h, 12, '#fff'); tri(x - 8, by + h - 1, x + 8, by + h - 1, x, by + h + 11, '#fff');
+  lines.forEach((l, i) => text(l, bx + w / 2, by + 10 + size + i * (size + 4) - 4, size, INK, 'center', false));
+}
+</script>
+<script>
+// ---------- THE EXHIBITS ----------
+// draw(cx, cy, s, a, n): a = 0..1 while it does its action, n = 0 (daytime, asleep) .. 1 (midnight, ALIVE). Feet rest at cy + 84*s.
+let caveP = 0;
+function fig(x, y, s, k) {                                   // a cave-painting stick person (k = dance move)
+  circle(x, y - 26 * s, 6 * s, ctx.strokeStyle); ln(x, y - 20 * s, x, y);
+  ln(x, y - 14 * s, x - 12 * s, y - 14 * s - k * 12 * s); ln(x, y - 14 * s, x + 12 * s, y - 14 * s + k * 12 * s);
+  ln(x, y, x - 8 * s, y + 16 * s); ln(x, y, x + 8 * s, y + 16 * s);
+}
+const EX = [
+  { id: 'rex', name: 'Rexy the T-Rex', e: '🦖', act: 'THROW THE BONE!', found: 'Dino Valley, under a giant puddle',
+    facts: ['At midnight she wants to play fetch... with her OWN bone!', 'Her arms are too tiny to throw, so YOU have to throw it.', 'She wags her tail so hard her bones go clickety-clack.'],
+    says: ['Fetch? FETCH?!', 'Who wants to play?', 'I am a GOOD dino!'],
+    draw: (cx, cy, s, a, n) => { const hop = a > 0 ? Math.abs(Math.sin(a * Math.PI * 4)) * 20 * s : 0, y = cy - 6 * s - hop, wag = Math.sin(T * 0.25) * n * 16 * s, nod = Math.sin(T * 0.1) * n * 4 * s;
+      if (n < 0.99) { ctx.globalAlpha = 1 - n; rr(cx - 5 * s, y + 6 * s, 10 * s, cy + 84 * s - y - 6 * s, 3 * s, '#78909c'); rr(cx - 30 * s, cy + 78 * s, 60 * s, 6 * s, 3 * s, '#78909c'); ctx.globalAlpha = 1; }
+      if (n > 0.5 && a === 0) bone(cx + 66 * s, cy + 78 * s, 24 * s, 0.3, s * 0.8);
+      stroke2(() => { ctx.beginPath(); ctx.moveTo(cx - 24 * s, y + 4 * s); ctx.quadraticCurveTo(cx - 64 * s, y + 2 * s, cx - 100 * s, y + 26 * s + wag); }, 7 * s);
+      for (const [hx, k] of [[-16, 0], [8, 1]]) { const st = n * Math.sin(T * 0.2 + k * 3) * 4 * s;
+        stroke2(() => { ctx.beginPath(); ctx.moveTo(cx + hx * s, y + 14 * s); ctx.lineTo(cx + (hx - 12) * s + st, y + 50 * s); ctx.lineTo(cx + (hx + 4) * s + st, y + 84 * s); ctx.lineTo(cx + (hx + 18) * s + st, y + 90 * s); }, 8 * s); }
+      stroke2(() => { ctx.beginPath(); ctx.moveTo(cx - 24 * s, y + 4 * s); ctx.quadraticCurveTo(cx, y - 22 * s, cx + 34 * s, y - 40 * s); }, 8 * s);
+      for (let i = 0; i < 5; i++) { const rx = cx - 18 * s + i * 10 * s, top = y - i * 6 * s; stroke2(() => { ctx.beginPath(); ctx.moveTo(rx, top); ctx.quadraticCurveTo(rx - 8 * s, top + 16 * s, rx + 2 * s, top + (30 - i * 2) * s); }, 3.5 * s); }
+      const aw = n * Math.sin(T * 0.3) * 5 * s; stroke2(() => { ctx.beginPath(); ctx.moveTo(cx + 24 * s, y - 24 * s); ctx.lineTo(cx + 36 * s, y - 14 * s); ctx.lineTo(cx + 42 * s, y - 20 * s + aw); }, 4 * s);
+      ctx.save(); ctx.translate(cx + 48 * s, y - 60 * s + nod);
+      const jaw = a > 0 ? Math.abs(Math.sin(a * 20)) * 8 * s : 0;
+      rr(-14 * s, 6 * s + jaw, 58 * s, 14 * s, 6 * s, BONE2); rr(-12 * s, 7.5 * s + jaw, 54 * s, 11 * s, 5 * s, BONE);
+      rr(-22 * s, -20 * s, 70 * s, 32 * s, 14 * s, BONE2); rr(-20 * s, -18 * s, 66 * s, 28 * s, 12 * s, BONE);
+      for (let k = 0; k < 5; k++) tri(-2 * s + k * 9 * s, 9 * s, 4 * s + k * 9 * s, 9 * s, 1 * s + k * 9 * s, 15 * s, '#fff');
+      circle(0, -5 * s, 8 * s, '#5d4037'); circle(36 * s, -10 * s, 2.5 * s, '#5d4037');
+      if (n >= 0.5) { glowBall(0, -5 * s, 16 * s, 'rgba(255,224,102,.8)'); circle(0, -5 * s, 6 * s, GLOW); circle(2 * s, -5 * s, 3 * s, INK); }
+      ctx.restore();
+      if (a > 0) { bone(cx + 70 * s - Math.sin(a * Math.PI) * 170 * s, cy - 70 * s - Math.sin(a * Math.PI) * 40 * s, 30 * s, a * 20, s); text('FETCH!!', cx, cy - 104 * s, 24 * s, '#fff'); } } },
+  { id: 'whale', name: 'Wally the Whale', e: '🐋', act: 'SING A SONG!', found: 'Hanging from the ceiling of Hall 1',
+    facts: ['He is the BIGGEST thing in the whole museum.', 'At midnight he swims through the air like it is water.', 'His songs are so loud they make the windows hum.'],
+    says: ['La la laaa! ♪', 'Swimming is fun!', 'Who took my ocean?'],
+    draw: (cx, cy, s, a, n) => { const bob = Math.sin(T * 0.05) * 8 * s * n - (a > 0 ? Math.sin(a * Math.PI) * 20 * s : 0), y = cy - 20 * s + bob, flap = Math.sin(T * 0.12) * n * 0.35;
+      ctx.globalAlpha = 1 - n * 0.85; ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 2 * s; ln(cx - 40 * s, y - 16 * s, cx - 40 * s, cy - 140 * s); ln(cx + 40 * s, y - 14 * s, cx + 40 * s, cy - 140 * s); ctx.globalAlpha = 1;
+      if (n > 0) { ctx.globalAlpha = 0.5 * n; ctx.fillStyle = '#4fc3f7'; ctx.beginPath(); ctx.ellipse(cx + 8 * s, y - 2 * s, 92 * s, 36 * s, 0, 0, 7); ctx.fill(); ctx.globalAlpha = 1; }
+      ctx.save(); ctx.translate(cx - 80 * s, y); ctx.rotate(flap); stroke2(() => { ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-16 * s, 0); ctx.quadraticCurveTo(-24 * s, -14 * s, -34 * s, -22 * s); ctx.moveTo(-16 * s, 0); ctx.quadraticCurveTo(-24 * s, 14 * s, -34 * s, 22 * s); }, 6 * s); ctx.restore();
+      stroke2(() => { ctx.beginPath(); ctx.moveTo(cx - 80 * s, y); ctx.quadraticCurveTo(cx - 10 * s, y - 28 * s, cx + 50 * s, y - 8 * s); }, 7 * s);
+      for (let i = 0; i < 6; i++) { const rx = cx - 52 * s + i * 17 * s, top = y - 12 * s - Math.sin(i / 5 * Math.PI) * 7 * s; stroke2(() => { ctx.beginPath(); ctx.moveTo(rx, top); ctx.quadraticCurveTo(rx - 10 * s, top + 18 * s, rx + 2 * s, top + (32 - Math.abs(i - 2.5) * 3) * s); }, 4 * s); }
+      stroke2(() => { ctx.beginPath(); ctx.moveTo(cx + 22 * s, y + 14 * s); ctx.lineTo(cx + 4 * s, y + 36 * s + flap * 20 * s); }, 6 * s);
+      rr(cx + 38 * s, y - 28 * s, 62 * s, 44 * s, 20 * s, BONE2); rr(cx + 40 * s, y - 26 * s, 58 * s, 40 * s, 18 * s, BONE);
+      eyesN(cx + 66 * s, y - 10 * s, s, 11, 5, n); smile(cx + 68 * s, y + 1 * s, s, 8, INK, a > 0 ? 1 : 0);
+      if (n > 0.5) for (let i = 0; i < 3; i++) text(i % 2 ? '♫' : '♪', cx + (i * 40 - 40) * s, y - 40 * s - ((T * 0.5 + i * 15) % 40) * s, 18 * s, '#b3e5fc', 'center', false);
+      if (a > 0) { for (let i = 0; i < 6; i++) text(i % 2 ? '♫' : '♪', cx - 90 * s + i * 36 * s, y - 50 * s - ((a * 160 + i * 20) % 60) * s, 24 * s, ['#fff59d', '#b3e5fc', '#f8bbd0'][i % 3]); text('LA LA LAAA!', cx, cy - 100 * s, 24 * s, '#fff'); } } },
+  { id: 'mummy', name: 'Mummy Cat Mittens', e: '🐱', act: 'UNWRAP A BIT!', found: 'A teeny-tiny pyramid',
+    facts: ['She is wrapped up like a burrito!', 'She napped for 3,000 years. That is the longest cat nap EVER.', 'At midnight she chases her own loose bandage.'],
+    says: ['Mew! I am a burrito!', 'Where is my yarn?', 'Purrrr...'],
+    draw: (cx, cy, s, a, n) => { const x = cx + (a > 0 ? Math.sin(a * Math.PI * 4) * 30 * s : 0), y = cy - (a > 0 ? Math.abs(Math.sin(a * Math.PI * 8)) * 12 * s : 0), sway = Math.sin(T * 0.08) * n * 0.08;
+      const tw = n * Math.sin(T * 0.15) * 20 * s + (a > 0 ? Math.sin(a * 30) * 22 * s : 0), tail = () => { ctx.beginPath(); ctx.moveTo(x + 26 * s, y + 70 * s); ctx.bezierCurveTo(x + 70 * s, y + 84 * s, x + 74 * s + tw, y + 40 * s, x + 60 * s + tw, y + 6 * s); };
+      ctx.lineCap = 'round'; ctx.strokeStyle = '#c9b994'; ctx.lineWidth = 12 * s; tail(); ctx.stroke(); ctx.strokeStyle = '#efe3c8'; ctx.lineWidth = 8 * s; tail(); ctx.stroke();
+      ctx.save(); ctx.translate(x, y + 84 * s); ctx.rotate(sway); ctx.translate(-x, -(y + 84 * s));
+      rr(x - 38 * s, y - 4 * s, 76 * s, 88 * s, 30 * s, '#c9b994'); rr(x - 35 * s, y - 1 * s, 70 * s, 82 * s, 28 * s, '#efe3c8');
+      tri(x - 36 * s, y - 42 * s, x - 30 * s, y - 88 * s, x - 4 * s, y - 62 * s, '#c9b994'); tri(x + 36 * s, y - 42 * s, x + 30 * s, y - 88 * s, x + 4 * s, y - 62 * s, '#c9b994');
+      tri(x - 32 * s, y - 46 * s, x - 28 * s, y - 80 * s, x - 9 * s, y - 60 * s, '#efe3c8'); tri(x + 32 * s, y - 46 * s, x + 28 * s, y - 80 * s, x + 9 * s, y - 60 * s, '#efe3c8');
+      circle(x, y - 38 * s, 38 * s, '#c9b994'); circle(x, y - 38 * s, 35 * s, '#efe3c8');
+      ctx.save(); ctx.beginPath(); ctx.arc(x, y - 38 * s, 35 * s, 0, 7); ctx.rect(x - 35 * s, y - 1 * s, 70 * s, 82 * s); ctx.clip(); ctx.strokeStyle = '#d4c6a2'; ctx.lineWidth = 3 * s; for (let k = -6; k < 10; k++) ln(x - 50 * s, y - 80 * s + k * 14 * s, x + 50 * s, y - 66 * s + k * 14 * s); ctx.restore();
+      rr(x - 30 * s, y - 54 * s, 60 * s, 24 * s, 11 * s, '#3e2f25'); eyesN(x, y - 42 * s, s, 13, 6, n, '#9ccc65');
+      tri(x - 5 * s, y - 24 * s, x + 5 * s, y - 24 * s, x, y - 18 * s, '#f48fb1');
+      for (const d of [-1, 1]) { ctx.fillStyle = '#e7dcc0'; ctx.beginPath(); ctx.ellipse(x + d * 16 * s, y + 78 * s, 13 * s, 8 * s, 0, 0, 7); ctx.fill(); }
+      ctx.restore();
+      if (a > 0) text('MEOW-RAP!', cx, cy - 104 * s, 24 * s, '#fff'); } },
+  { id: 'cave', name: 'The Cave Painting', e: '🖼️', act: 'NEW PICTURE!', found: 'A really, really old cave wall',
+    facts: ['At midnight the pictures CHANGE!', 'Sometimes it paints a woolly mammoth. Sometimes it paints PIZZA.', 'It was painted by a cave kid named Ug. (Probably.)'],
+    says: ['Ug like pizza!', 'Look at me dance!', 'Paint paint paint!'],
+    draw: (cx, cy, s, a, n) => { const y = cy + 6 * s, col = n > 0.5 ? '#ff7043' : '#8d3b22', d = n * Math.sin(T * 0.2);
+      rr(cx - 64 * s, cy + 66 * s, 128 * s, 18 * s, 4 * s, '#6d4c41'); rr(cx - 10 * s, y + 50 * s, 20 * s, 20 * s, 2 * s, '#6d4c41');
+      const pts = [[-92, -50], [-60, -80], [-10, -72], [40, -84], [90, -56], [94, 10], [82, 52], [20, 62], [-40, 58], [-90, 42]];
+      for (const [c, k] of [['#6d4c41', 1.05], ['#d7b98f', 1]]) { ctx.fillStyle = c; ctx.beginPath(); pts.forEach(([px, py], i) => ctx[i ? 'lineTo' : 'moveTo'](cx + px * s * k, y + py * s * k)); ctx.closePath(); ctx.fill(); }
+      ctx.fillStyle = 'rgba(141,110,99,.35)'; for (let k = 0; k < 14; k++) { ctx.beginPath(); ctx.arc(cx + ((k * 53) % 160 - 80) * s, y + ((k * 37) % 110 - 66) * s, (2 + k % 3) * s, 0, 7); ctx.fill(); }
+      if (n > 0.5) glowBall(cx, y - 10 * s, 80 * s, 'rgba(255,152,0,.25)');
+      ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 4 * s; ctx.lineCap = 'round';
+      const pic = caveP % 4, py = y - 10 * s;
+      if (pic === 0) { const mx = cx - 6 * s + d * 6 * s; ctx.beginPath(); ctx.ellipse(mx, py, 36 * s, 22 * s, 0, 0, 7); ctx.fill(); circle(mx + 30 * s, py - 10 * s, 15 * s, col);
+        for (const lx of [-24, -8, 10, 24]) ctx.fillRect(mx + lx * s - 4 * s, py + 14 * s, 8 * s, 20 * s + (Math.abs(lx) === 8 ? d * 3 * s : 0));
+        ctx.beginPath(); ctx.moveTo(mx + 42 * s, py - 4 * s); ctx.quadraticCurveTo(mx + 52 * s, py + 14 * s, mx + 46 * s + d * 6 * s, py + 30 * s); ctx.stroke();
+        ctx.strokeStyle = '#fff'; ctx.beginPath(); ctx.arc(mx + 38 * s, py + 8 * s, 10 * s, -0.5, 1.6); ctx.stroke(); circle(mx + 32 * s, py - 14 * s, 2.5 * s, '#fff'); }
+      if (pic === 1) { tri(cx - 12 * s, py + 26 * s, cx + 12 * s, py + 26 * s, cx, py - 4 * s - Math.abs(d) * 8 * s, '#ffb300'); ctx.fillStyle = col; fig(cx - 44 * s, py + 10 * s, s, d); fig(cx + 44 * s, py + 10 * s, s, -d); }
+      if (pic === 2) { ctx.save(); ctx.translate(cx, py); ctx.rotate(d * 0.2); tri(-36 * s, -26 * s, 36 * s, -26 * s, 0, 38 * s, '#ffca28'); rr(-40 * s, -34 * s, 80 * s, 12 * s, 6 * s, '#a1662f'); for (const [px, pq] of [[-14, -12], [12, -10], [0, 10]]) circle(px * s, pq * s, 6 * s, '#d84315'); ctx.restore(); }
+      if (pic === 3) { circle(cx, py, 22 * s, '#ffb300'); for (let k = 0; k < 8; k++) { const an = k * Math.PI / 4 + T * 0.03 * n; ln(cx + Math.cos(an) * 28 * s, py + Math.sin(an) * 28 * s, cx + Math.cos(an) * 40 * s, py + Math.sin(an) * 40 * s); }
+        circle(cx - 7 * s, py - 4 * s, 3 * s, col); circle(cx + 7 * s, py - 4 * s, 3 * s, col); ctx.beginPath(); ctx.arc(cx, py + 4 * s, 9 * s, 0.3, Math.PI - 0.3); ctx.stroke(); }
+      if (a > 0) { for (let k = 0; k < 6; k++) { const an = k / 6 * 6.28 + a * 8; star(cx + Math.cos(an) * 80 * s, y - 10 * s + Math.sin(an) * 60 * s, 9 * s, k % 2 ? GLOW : '#ff8a65', an); } text(['MAMMOTH!', 'DANCE PARTY!', 'PIZZA!', 'SUNNY DAY!'][pic], cx, cy - 104 * s, 24 * s, '#fff'); } },
+    onAct: () => { caveP++; } },
+];
+</script>
+<script>
+EX.push(
+  { id: 'knight', name: 'Sir Clanks-a-Lot', e: '🛡️', act: 'TURN ON A LIGHT!', found: 'A drafty castle hallway',
+    facts: ['He is a suit of armor who is SCARED of the dark!', 'His knees go clank-clank-clank when he is nervous.', 'With a light on, he is the bravest knight ever.'],
+    says: ['Eep! Is it dark?', 'Clank clank clank...', 'I am brave! Kind of.'],
+    draw: (cx, cy, s, a, n) => { const brave = a > 0, x = cx + (brave ? 0 : Math.sin(T * 1.3) * 2.2 * s * n), y = cy, M = '#b0bec5', M2 = '#78909c', M3 = '#eceff1';
+      if (brave) { glowBall(x + 62 * s, y - 92 * s, 50 * s, 'rgba(255,235,59,.8)'); emoji('💡', x + 62 * s, y - 78 * s, 38 * s); }
+      rr(x - 24 * s, y + 30 * s, 18 * s, 48 * s, 5 * s, M2); rr(x + 6 * s, y + 30 * s, 18 * s, 48 * s, 5 * s, M2);
+      rr(x - 28 * s, y + 72 * s, 24 * s, 12 * s, 5 * s, '#546e7a'); rr(x + 4 * s, y + 72 * s, 24 * s, 12 * s, 5 * s, '#546e7a');
+      circle(x - 15 * s, y + 50 * s, 7 * s, M3); circle(x + 15 * s, y + 50 * s, 7 * s, M3);
+      rr(x - 34 * s, y - 30 * s, 68 * s, 64 * s, 16 * s, M); rr(x - 24 * s, y - 22 * s, 12 * s, 38 * s, 6 * s, M3); rr(x - 34 * s, y + 22 * s, 68 * s, 10 * s, 3 * s, '#8d6e63');
+      if (brave) { ctx.save(); ctx.translate(x + 38 * s, y - 24 * s); ctx.rotate(-2.6); rr(-7 * s, 0, 14 * s, 44 * s, 7 * s, M2); circle(0, 46 * s, 8 * s, M3); ctx.restore(); }
+      else rr(x + 32 * s, y - 26 * s, 14 * s, 44 * s, 7 * s, M2);
+      rr(x - 46 * s, y - 26 * s, 14 * s, 44 * s, 7 * s, M2);
+      ctx.fillStyle = '#3949ab'; ctx.beginPath(); ctx.moveTo(x - 62 * s, y - 14 * s); ctx.lineTo(x - 24 * s, y - 14 * s); ctx.lineTo(x - 24 * s, y + 12 * s); ctx.quadraticCurveTo(x - 26 * s, y + 34 * s, x - 43 * s, y + 42 * s); ctx.quadraticCurveTo(x - 60 * s, y + 34 * s, x - 62 * s, y + 12 * s); ctx.closePath(); ctx.fill(); ctx.strokeStyle = GOLD; ctx.lineWidth = 3 * s; ctx.stroke();
+      circle(x - 43 * s, y + 6 * s, 10 * s, GOLD); circle(x - 39 * s, y + 2 * s, 9 * s, '#3949ab');
+      const pl = Math.sin(T * 0.1) * n * 4 * s; for (let k = 0; k < 4; k++) circle(x - 6 * s + k * 5 * s + pl * (k / 3), y - 90 * s - k * 4 * s, 9 * s, '#e53935');
+      rr(x - 28 * s, y - 86 * s, 56 * s, 58 * s, 22 * s, M); rr(x - 20 * s, y - 66 * s, 40 * s, 13 * s, 5 * s, '#263238');
+      for (let k = 0; k < 3; k++) circle(x - 8 * s + k * 8 * s, y - 44 * s, 2 * s, '#546e7a');
+      if (n >= 0.5) { const lx = brave ? 0 : Math.sin(T * 0.09) * 6 * s; circle(x - 8 * s + lx, y - 59.5 * s, 3.5 * s, '#fff'); circle(x + 8 * s + lx, y - 59.5 * s, 3.5 * s, '#fff'); }
+      if (n > 0.5 && !brave) { ctx.fillStyle = '#81d4fa'; ctx.beginPath(); ctx.arc(x + 32 * s, y - 70 * s, 5 * s, 0, Math.PI); ctx.lineTo(x + 32 * s, y - 82 * s); ctx.fill(); }
+      if (brave) text("I'M BRAVE!", cx, cy - 108 * s, 24 * s, '#fff'); } },
+  { id: 'statue', name: 'Snoozy the Statue', e: '🗿', act: 'WAKE UP!', found: 'A sunny garden in Greece',
+    facts: ['She stands still ALL day, so she is super sleepy.', 'Her yawn is big enough to fit a watermelon.', 'At midnight she stretches and does yoga.'],
+    says: ['Yaaawn...', 'Five more minutes...', 'Time for yoga!'],
+    draw: (cx, cy, s, a, n) => { const yawn = a > 0 ? Math.sin(Math.min(1, a * 1.6) * Math.PI) : 0, str = a > 0 ? Math.sin(a * Math.PI) : 0, sway = Math.sin(T * 0.04) * n * 0.05, Mb = '#eceff1', Mb2 = '#b0bec5', Mb3 = '#cfd8dc';
+      rr(cx - 44 * s, cy + 60 * s, 88 * s, 24 * s, 4 * s, Mb2); rr(cx - 40 * s, cy + 62 * s, 80 * s, 18 * s, 3 * s, Mb3);
+      ctx.save(); ctx.translate(cx, cy + 60 * s); ctx.rotate(sway); ctx.translate(-cx, -(cy + 60 * s));
+      for (const d of [-1, 1]) { ctx.save(); ctx.translate(cx + d * 22 * s, cy - 22 * s); ctx.rotate(-d * (0.22 + str * 2.6 + n * Math.max(0, Math.sin(T * 0.03)) * 0.4)); rr(-7 * s, 0, 14 * s, 52 * s, 7 * s, Mb2); rr(-5 * s, 1 * s, 10 * s, 50 * s, 5 * s, Mb); circle(0, 52 * s, 7 * s, Mb); ctx.restore(); }
+      ctx.fillStyle = Mb; ctx.beginPath(); ctx.moveTo(cx - 22 * s, cy - 30 * s); ctx.lineTo(cx + 22 * s, cy - 30 * s); ctx.lineTo(cx + 38 * s, cy + 60 * s); ctx.lineTo(cx - 38 * s, cy + 60 * s); ctx.closePath(); ctx.fill(); ctx.strokeStyle = Mb2; ctx.lineWidth = 2 * s; ctx.stroke();
+      ctx.beginPath(); for (const k of [-20, -6, 8, 22]) { ctx.moveTo(cx + k * 0.6 * s, cy - 20 * s); ctx.quadraticCurveTo(cx + k * s + 4 * s, cy + 20 * s, cx + k * 1.3 * s, cy + 58 * s); } ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx - 22 * s, cy - 28 * s); ctx.lineTo(cx + 26 * s, cy + 10 * s); ctx.stroke();
+      rr(cx - 7 * s, cy - 42 * s, 14 * s, 14 * s, 4 * s, Mb); circle(cx, cy - 58 * s, 24 * s, Mb2); circle(cx, cy - 58 * s, 22 * s, Mb);
+      for (let k = 0; k < 7; k++) circle(cx - 21 * s + k * 7 * s, cy - 76 * s + Math.abs(k - 3) * 3 * s, 7 * s, Mb3); circle(cx, cy - 88 * s, 11 * s, Mb3);
+      eyesN(cx, cy - 58 * s, s, 9, 5, yawn > 0.3 ? 0 : n, '#607d8b');
+      if (yawn > 0.05) { ctx.fillStyle = '#78909c'; ctx.beginPath(); ctx.ellipse(cx, cy - 44 * s, (6 + yawn * 4) * s, (3 + yawn * 9) * s, 0, 0, 7); ctx.fill(); }
+      else if (n > 0.5) smile(cx, cy - 48 * s, s, 5, '#607d8b'); else { ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 2 * s; ln(cx - 4 * s, cy - 44 * s, cx + 4 * s, cy - 44 * s); }
+      ctx.restore();
+      if (n > 0.5 && a === 0) text('z', cx + 30 * s, cy - 80 * s - ((T * 0.4) % 30) * s, 18 * s, '#b3e5fc', 'center', false);
+      if (a > 0) text('YAAAWN!', cx, cy - 106 * s, 24 * s, '#fff'); } },
+  { id: 'peek', name: 'Lady Peekaboo', e: '👀', act: 'PEEKABOO!', found: 'The fanciest wall in the art room',
+    facts: ['At midnight her eyes follow you... because she wants to say hi!', 'She plays peekaboo with Beamy the night guard every night.', 'Her favorite color is EVERY color.'],
+    says: ['I see you! Hi!', 'Peekaboo!', 'Nice shoes!'],
+    draw: (cx, cy, s, a, n) => { const fy = cy - 14 * s, hide = a > 0 && a < 0.6;
+      ctx.strokeStyle = '#6d4c41'; ctx.lineWidth = 6 * s; ctx.lineCap = 'round'; ln(cx - 40 * s, cy + 40 * s, cx - 56 * s, cy + 84 * s); ln(cx + 40 * s, cy + 40 * s, cx + 56 * s, cy + 84 * s); ln(cx, cy + 40 * s, cx, cy + 84 * s);
+      rr(cx - 72 * s, fy - 78 * s, 144 * s, 136 * s, 8 * s, '#b8860b'); rr(cx - 66 * s, fy - 72 * s, 132 * s, 124 * s, 6 * s, GOLD);
+      ctx.save(); ctx.beginPath(); ctx.rect(cx - 56 * s, fy - 62 * s, 112 * s, 104 * s); ctx.clip(); ctx.fillStyle = '#2e5e4e'; ctx.fillRect(cx - 56 * s, fy - 62 * s, 112 * s, 104 * s);
+      circle(cx, fy - 18 * s, 34 * s, '#6d4c41'); ctx.fillStyle = '#ad1457'; ctx.beginPath(); ctx.ellipse(cx, fy + 46 * s, 46 * s, 28 * s, 0, 0, 7); ctx.fill();
+      rr(cx - 8 * s, fy + 8 * s, 16 * s, 14 * s, 3 * s, '#ffd5b0'); circle(cx, fy - 8 * s, 26 * s, '#ffe0bd'); ctx.fillStyle = '#6d4c41'; ctx.beginPath(); ctx.ellipse(cx, fy - 30 * s, 28 * s, 12 * s, 0, Math.PI, 0); ctx.fill();
+      circle(cx + 22 * s, fy - 36 * s, 7 * s, '#f06292'); blush(cx, fy, s, 15);
+      if (n < 0.5) eyesN(cx, fy - 12 * s, s, 10, 5, 0);
+      else if (!hide) for (const d of [-1, 1]) { const ex = cx + d * 10 * s, ey = fy - 12 * s, dx = PRINTING ? 0 : ptr.x - ex, dy = PRINTING ? 0 : ptr.y - ey, L = Math.hypot(dx, dy) || 1; circle(ex, ey, 6.5 * s, '#fff'); circle(ex + dx / L * 2.8 * s, ey + dy / L * 2.8 * s, 3.5 * s, INK); }
+      smile(cx, fy + 2 * s, s, 7, '#c2185b', a >= 0.6 ? 1 : 0);
+      if (hide) for (const d of [-1, 1]) { circle(cx + d * 11 * s, fy - 10 * s, 12 * s, '#f0a878'); ctx.strokeStyle = '#c97d4e'; ctx.lineWidth = 1.5 * s; for (let f = -1; f <= 1; f++) ln(cx + d * 11 * s + f * 5 * s, fy - 20 * s, cx + d * 11 * s + f * 5 * s, fy - 4 * s); }
+      ctx.restore();
+      if (n > 0.5 && a === 0) { const wv = Math.sin(T * 0.15) * 6 * s; circle(cx + 70 * s, fy + 10 * s + wv, 9 * s, '#f0a878'); }
+      if (a >= 0.6) text('PEEK-A-BOO!', cx, cy - 106 * s, 24 * s, '#fff'); } },
+  { id: 'chest', name: 'Giggles the Chest', e: '💰', act: 'TICKLE IT!', found: 'A pirate ship called the Silly Sally',
+    facts: ['It giggles when you tickle its lock.', 'Inside: chocolate coins and ONE lost sock.', 'At midnight it opens just a crack to peek at you.'],
+    says: ['Hee hee hee!', 'Do not tickle me!', 'I have a secret sock!'],
+    draw: (cx, cy, s, a, n) => { const x = cx + (a > 0 ? Math.sin(a * 60) * 3 * s : n * Math.sin(T * 0.6) * 1.5 * s * (Math.sin(T * 0.05) > 0.3 ? 1 : 0)), by = cy + 84 * s;
+      const open = a > 0 ? Math.min(1, Math.sin(a * Math.PI) * 1.6) : n * (0.18 + 0.08 * Math.sin(T * 0.1)), ly = by - 70 * s - open * 40 * s;
+      rr(x - 66 * s, ly, 132 * s, by - 70 * s - ly + 4 * s, 4 * s, '#1b0f0a');
+      if (n >= 0.5 && open > 0.1) { const ey = (ly + by - 70 * s) / 2; for (const d of [-1, 1]) { ctx.fillStyle = GLOW; ctx.beginPath(); ctx.ellipse(x + d * 16 * s, ey, 6 * s, Math.min(6 * s, open * 18 * s), 0, 0, 7); ctx.fill(); } }
+      if (a > 0) for (let i = 0; i < 7; i++) { const t = (a * 2 + i * 0.14) % 1; const px = x + Math.cos(i * 1.3) * t * 100 * s, py = ly - t * 100 * s + t * t * 70 * s; if (i === 3) emoji('🧦', px, py, 26 * s); else { circle(px, py, 9 * s, '#f9a825'); circle(px, py, 6 * s, '#ffe082'); } }
+      rr(x - 70 * s, by - 70 * s, 140 * s, 70 * s, 8 * s, '#5d4037'); rr(x - 64 * s, by - 64 * s, 128 * s, 58 * s, 6 * s, '#8d6e63');
+      ctx.fillStyle = '#6d4c41'; for (let k = 1; k < 3; k++) ctx.fillRect(x - 64 * s, by - 64 * s + k * 19 * s, 128 * s, 2 * s);
+      for (const d of [-1, 1]) rr(x + d * 42 * s - 6 * s, by - 70 * s, 12 * s, 70 * s, 2 * s, GOLD);
+      rr(x - 74 * s, ly - 38 * s, 148 * s, 40 * s, 18 * s, '#5d4037'); rr(x - 68 * s, ly - 32 * s, 136 * s, 30 * s, 14 * s, '#8d6e63');
+      for (const d of [-1, 1]) rr(x + d * 42 * s - 6 * s, ly - 38 * s, 12 * s, 40 * s, 2 * s, GOLD);
+      rr(x - 13 * s, by - 68 * s, 26 * s, 28 * s, 6 * s, GOLD); circle(x, by - 58 * s, 4 * s, INK); tri(x - 3 * s, by - 58 * s, x + 3 * s, by - 58 * s, x, by - 48 * s, INK);
+      if (n > 0.5 && a === 0 && Math.sin(T * 0.05) > 0.3) text('hee hee!', x + 62 * s, by - 124 * s, 15 * s, '#fff59d');
+      if (a > 0) text('HEE HEE HA HA!', cx, cy - 104 * s, 24 * s, '#fff'); } },
+);
+</script>
+<script>
+const hsl = (h, l = 70) => `hsl(${Math.round(h) % 360},90%,${l}%)`;
+function prism(x, base, w, h, tilt, fill, edge) {
+  ctx.save(); ctx.translate(x, base); ctx.rotate(tilt); ctx.beginPath(); ctx.moveTo(-w / 2, 0); ctx.lineTo(-w / 2, -h + w * 0.5); ctx.lineTo(0, -h); ctx.lineTo(w / 2, -h + w * 0.5); ctx.lineTo(w / 2, 0); ctx.closePath();
+  ctx.fillStyle = fill; ctx.fill(); ctx.strokeStyle = edge; ctx.lineWidth = 3; ctx.stroke(); ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.fillRect(-w / 2 + 3, -h + w * 0.5, w * 0.25, h - w * 0.5 - 4); ctx.restore();
+}
+EX.push(
+  { id: 'moonrock', name: 'Hummy the Moon Rock', e: '🌑', act: 'HUM ALONG!', found: 'The Moon! (Astronauts brought it home)',
+    facts: ['Astronauts brought it all the way home from the Moon.', 'At midnight it hums, because it misses the Moon.', 'When it is happy, it floats a little bit.'],
+    says: ['Hmm hmm hmmm ♪', 'Hi, Moon! I miss you!', 'I can float!'],
+    draw: (cx, cy, s, a, n) => { const fl = n * (10 + Math.sin(T * 0.05) * 5) * s + (a > 0 ? Math.sin(a * Math.PI) * 30 * s : 0), y = cy + 18 * s - fl;
+      rr(cx - 40 * s, cy + 70 * s, 80 * s, 14 * s, 4 * s, '#5c6bc0'); rr(cx - 32 * s, cy + 58 * s, 64 * s, 16 * s, 8 * s, '#c62828');
+      if (n > 0) glowBall(cx, y, 80 * s, `rgba(179,229,252,${(0.5 * n).toFixed(2)})`);
+      for (const [c, k] of [['#616161', 1.06], ['#a7a7a7', 1]]) { ctx.fillStyle = c; ctx.beginPath(); for (let i = 0; i < 12; i++) { const an = i / 12 * 6.283, r = (46 + ((i * 37) % 11) - 5) * s * k; ctx.lineTo(cx + Math.cos(an) * r, y + Math.sin(an) * r * 0.9); } ctx.closePath(); ctx.fill(); }
+      for (const [dx, dy, r] of [[-22, -16, 9], [20, 14, 7], [24, -20, 5], [-14, 22, 5], [-30, 8, 4]]) { circle(cx + dx * s, y + dy * s, r * s, '#8a8a8a'); circle(cx + dx * s + 1.5 * s, y + dy * s + 1.5 * s, r * 0.6 * s, '#9a9a9a'); }
+      eyesN(cx, y - 4 * s, s, 12, 5, n); if (n >= 0.5) circle(cx, y + 12 * s, (3 + Math.abs(Math.sin(T * 0.1)) * 2 + (a > 0 ? 3 : 0)) * s, INK);
+      if (n > 0.5) for (let i = 0; i < 2; i++) text('♪', cx + (i ? 54 : -54) * s, y - 30 * s - ((T * 0.4 + i * 20) % 40) * s, 18 * s, '#b3e5fc', 'center', false);
+      if (a > 0) { glowBall(cx + 56 * s, cy - 84 * s, 40 * s, 'rgba(255,246,201,.8)'); circle(cx + 56 * s, cy - 84 * s, 16 * s, MOON); text('HMMM-MMM! ♪', cx - 10 * s, cy - 104 * s, 24 * s, '#fff'); } } },
+  { id: 'crystal', name: 'Prism the Crystal', e: '💎', act: 'SHINE!', found: 'Deep inside Sparkle Mountain',
+    facts: ['In the daytime she is clear, like glass.', 'At midnight she glows EVERY color of the rainbow.', 'If you sneeze near her, she makes a rainbow. Bless you!'],
+    says: ['I am so shiny!', 'Pick a color!', 'Rainbow time!'],
+    draw: (cx, cy, s, a, n) => { const by = cy + 80 * s, h0 = T * 2;
+      if (n > 0) glowBall(cx, by - 70 * s, 120 * s, n > 0.5 ? `hsla(${Math.round(h0) % 360},90%,70%,.45)` : 'rgba(0,0,0,0)');
+      if (a > 0) { ctx.lineCap = 'round'; for (let k = 0; k < 7; k++) { const an = -Math.PI / 2 + (k - 3) * 0.32 + Math.sin(a * 10) * 0.1; ctx.strokeStyle = ['#e53935', '#fb8c00', '#fdd835', '#43a047', '#1e88e5', '#3949ab', '#8e24aa'][k]; ctx.lineWidth = 9 * s; ln(cx, by - 80 * s, cx + Math.cos(an) * 160 * s * Math.min(1, a * 3), by - 80 * s + Math.sin(an) * 160 * s * Math.min(1, a * 3)); } }
+      ctx.fillStyle = '#616161'; ctx.beginPath(); ctx.ellipse(cx, by - 4 * s, 74 * s, 18 * s, 0, 0, 7); ctx.fill(); ctx.fillStyle = '#7d7d7d'; ctx.beginPath(); ctx.ellipse(cx, by - 8 * s, 66 * s, 13 * s, 0, 0, 7); ctx.fill();
+      const col = i => n > 0.5 ? hsl(h0 + i * 90) : '#e3f2fd', edge = i => n > 0.5 ? hsl(h0 + i * 90, 45) : '#90caf9';
+      prism(cx - 40 * s, by - 6 * s, 30 * s, 96 * s, -0.38, col(1), edge(1)); prism(cx + 40 * s, by - 6 * s, 28 * s, 86 * s, 0.38, col(2), edge(2)); prism(cx, by - 6 * s, 46 * s, 150 * s, 0, col(0), edge(0));
+      eyesN(cx, by - 86 * s, s, 9, 5, n); smile(cx, by - 74 * s, s, 6, INK, a > 0 ? 1 : 0);
+      if (n > 0.5) for (let k = 0; k < 4; k++) star(cx + Math.cos(T * 0.04 + k * 1.6) * 70 * s, by - 80 * s + Math.sin(T * 0.04 + k * 1.6) * 50 * s, 6 * s, '#fff', T * 0.05);
+      if (a > 0) text('RAINBOW TIME!', cx, cy - 104 * s, 24 * s, '#fff'); } },
+  { id: 'cuckoo', name: 'Coo-Coo the Clock Bird', e: '🐦', act: 'CUCKOO!', found: 'A cozy house in the mountains',
+    facts: ['She pops out of her clock to tell you the time.', 'She ALWAYS says it is midnight. She is not good at telling time.', 'Her tiny house has a tiny door and a tiny doormat.'],
+    says: ['Cuckoo! Cuckoo!', 'Is it midnight? YES!', 'Tick tock tick!'],
+    draw: (cx, cy, s, a, n) => { const x = cx, out = a > 0 ? (a < 0.15 ? a / 0.15 : a > 0.85 ? (1 - a) / 0.15 : 1) : n * (Math.sin(T * 0.03) > 0.6 ? 0.45 : 0), sw = Math.sin(T * 0.08) * 0.5 * n;
+      ctx.strokeStyle = '#8d6e63'; ctx.lineWidth = 2 * s; for (const d of [-1, 1]) { const wy = cy + (70 + d * n * Math.sin(T * 0.02) * 8) * s; ln(x + d * 30 * s, cy + 40 * s, x + d * 30 * s, wy - 12 * s); ctx.fillStyle = '#6d4c41'; ctx.beginPath(); ctx.ellipse(x + d * 30 * s, wy, 7 * s, 13 * s, 0, 0, 7); ctx.fill(); }
+      ctx.save(); ctx.translate(x, cy + 40 * s); ctx.rotate(sw); ctx.strokeStyle = '#b8860b'; ctx.lineWidth = 3 * s; ln(0, 0, 0, 30 * s); circle(0, 36 * s, 9 * s, GOLD); ctx.restore();
+      rr(x - 52 * s, cy - 52 * s, 104 * s, 94 * s, 6 * s, '#5d4037'); rr(x - 47 * s, cy - 47 * s, 94 * s, 84 * s, 4 * s, '#8d6e63');
+      tri(x - 68 * s, cy - 44 * s, x + 68 * s, cy - 44 * s, x, cy - 104 * s, '#4e342e'); tri(x - 54 * s, cy - 50 * s, x + 54 * s, cy - 50 * s, x, cy - 94 * s, '#6d4c41');
+      for (const d of [-1, 1]) { circle(x + d * 40 * s, cy - 40 * s, 7 * s, '#66bb6a'); circle(x + d * 50 * s, cy - 36 * s, 6 * s, '#43a047'); }
+      rr(x - 14 * s, cy - 82 * s, 28 * s, 26 * s, 4 * s, '#1b0f0a');
+      if (out > 0) { const byy = cy - 66 * s - out * 46 * s; ctx.strokeStyle = '#9e9e9e'; ctx.lineWidth = 2 * s; ctx.beginPath(); for (let k = 0; k <= 6; k++) ctx.lineTo(x + (k % 2 ? 6 : -6) * s, cy - 62 * s - (k / 6) * (out * 46 * s)); ctx.stroke();
+        circle(x, byy, 15 * s, '#ffca28'); ctx.fillStyle = '#ffa000'; ctx.beginPath(); ctx.ellipse(x - 10 * s, byy + 3 * s, 8 * s, 5 * s, 0.4 + Math.sin(T * 0.5) * 0.3, 0, 7); ctx.fill();
+        tri(x + 12 * s, byy - 4 * s, x + 26 * s, byy, x + 12 * s, byy + 4 * s, '#ff7043'); circle(x + 5 * s, byy - 5 * s, 3 * s, INK); circle(x + 6 * s, byy - 6 * s, 1 * s, '#fff'); tri(x - 4 * s, byy - 14 * s, x + 2 * s, byy - 14 * s, x - 2 * s, byy - 22 * s, '#ff7043'); }
+      for (const d of [-1, 1]) rr(x + d * (out > 0 ? 22 : 7) * s - 7 * s, cy - 82 * s, 14 * s, 26 * s, 3 * s, '#a1887f');
+      circle(x, cy - 6 * s, 31 * s, '#4e342e'); circle(x, cy - 6 * s, 28 * s, '#fff8e1');
+      ctx.strokeStyle = INK; ctx.lineWidth = 2 * s; for (let k = 0; k < 12; k++) { const an = k / 12 * 6.283; ln(x + Math.cos(an) * 22 * s, cy - 6 * s + Math.sin(an) * 22 * s, x + Math.cos(an) * 26 * s, cy - 6 * s + Math.sin(an) * 26 * s); }
+      const ma = n > 0.5 ? T * 0.05 - Math.PI / 2 : -Math.PI / 2; ctx.lineWidth = 3 * s; ln(x, cy - 6 * s, x, cy - 22 * s); ctx.lineWidth = 2 * s; ln(x, cy - 6 * s, x + Math.cos(ma) * 22 * s, cy - 6 * s + Math.sin(ma) * 22 * s); circle(x, cy - 6 * s, 3 * s, INK);
+      if (a > 0) text('CUCKOO! MIDNIGHT!', cx, cy - 124 * s, 20 * s, '#fff'); } },
+  { id: 'robot', name: 'Rusty the Robot', e: '🤖', act: 'BEEP BOP DANCE!', found: 'A toy shop in the 1950s (long, long ago!)',
+    facts: ['He was built a LONG time ago, before phones were invented.', 'His antenna picks up radio music.', 'He loves to do the robot dance (of course).'],
+    says: ['BEEP BOP!', 'Groovy!', 'Does not compute... just kidding!'],
+    draw: (cx, cy, s, a, n) => { const dance = a > 0 ? Math.sin(a * Math.PI * 8) : 0, bob = n * Math.abs(Math.sin(T * 0.1)) * 3 * s + Math.abs(dance) * 8 * s, x = cx + dance * 8 * s, y = cy - bob, M = '#b0bec5', M2 = '#78909c', R = '#e53935';
+      for (const d of [-1, 1]) { rr(x + d * 18 * s - 8 * s, y + 40 * s, 16 * s, cy + 76 * s - (y + 40 * s), 4 * s, M2); rr(x + d * 18 * s - 13 * s, cy + 72 * s, 26 * s, 12 * s, 4 * s, '#546e7a'); }
+      for (const d of [-1, 1]) { const up = a > 0 ? (d * dance > 0 ? 2.4 : 0.4) : 0.3 + n * Math.sin(T * 0.12 + d) * 0.3; ctx.save(); ctx.translate(x + d * 40 * s, y - 12 * s); ctx.rotate(-d * up); rr(-5 * s, 0, 10 * s, 36 * s, 5 * s, M2); ctx.strokeStyle = '#546e7a'; ctx.lineWidth = 4 * s; ctx.beginPath(); ctx.arc(0, 42 * s, 7 * s, -0.6, Math.PI + 0.6, true); ctx.stroke(); ctx.restore(); }
+      rr(x - 40 * s, y - 20 * s, 80 * s, 64 * s, 8 * s, M); rr(x - 28 * s, y - 10 * s, 56 * s, 40 * s, 6 * s, '#455a64');
+      ['#e53935', '#fdd835', '#43a047'].forEach((c, k) => circle(x - 16 * s + k * 16 * s, y + 2 * s, 5 * s, n > 0.5 && (Math.floor(T / 15) + k) % 3 ? c : '#263238'));
+      ctx.fillStyle = M; for (let k = 0; k < 5; k++) ctx.fillRect(x - 20 * s + k * 9 * s, y + 16 * s, 4 * s, 10 * s);
+      rr(x - 8 * s, y - 30 * s, 16 * s, 12 * s, 2 * s, M2);
+      ctx.strokeStyle = M2; ctx.lineWidth = 3 * s; ln(x, y - 78 * s, x, y - 96 * s); circle(x, y - 100 * s, 6 * s, n > 0.5 && T % 40 < 20 ? R : '#ef9a9a');
+      for (const d of [-1, 1]) rr(x + d * 38 * s - 4 * s, y - 62 * s, 8 * s, 18 * s, 3 * s, R);
+      rr(x - 34 * s, y - 78 * s, 68 * s, 50 * s, 10 * s, M);
+      for (const d of [-1, 1]) { circle(x + d * 14 * s, y - 60 * s, 11 * s, '#455a64'); if (n >= 0.5) { glowBall(x + d * 14 * s, y - 60 * s, 18 * s, 'rgba(255,224,102,.7)'); circle(x + d * 14 * s, y - 60 * s, 8 * s, GLOW); circle(x + d * 14 * s, y - 60 * s, 3.5 * s, INK); } else circle(x + d * 14 * s, y - 60 * s, 8 * s, '#90a4ae'); }
+      rr(x - 18 * s, y - 44 * s, 36 * s, 10 * s, 3 * s, '#455a64'); ctx.strokeStyle = M; ctx.lineWidth = 1.5 * s; for (let k = 1; k < 6; k++) ln(x - 18 * s + k * 6 * s, y - 44 * s, x - 18 * s + k * 6 * s, y - 34 * s);
+      if (a > 0) { for (let i = 0; i < 4; i++) text(i % 2 ? '♫' : '♪', cx - 70 * s + i * 46 * s, cy - 70 * s - ((a * 200 + i * 20) % 50) * s, 22 * s, GLOW); text('BEEP BOP BOOP!', cx, cy - 112 * s, 24 * s, '#fff'); } } },
+  { id: 'twinkle', secret: true, name: 'Twinkle the Lost Star', e: '🌟', act: 'SEND HER HOME!', found: 'She fell through the skylight!',
+    facts: ['She fell out of the night sky and landed in the museum!', 'Every midnight, all the exhibits throw her a party.', 'You found her because you visited EVERY exhibit!'],
+    says: ['Hi! You found me!', 'Party time!', 'Twinkle twinkle!'],
+    draw: (cx, cy, s, a, n) => { const up = a > 0 ? (a < 0.5 ? a * 2 : (1 - a) * 2) : 0, y = cy - 4 * s - up * 170 * s + Math.sin(T * 0.06) * 6 * s;
+      rr(cx - 44 * s, cy + 66 * s, 88 * s, 18 * s, 9 * s, '#7e57c2'); rr(cx - 38 * s, cy + 68 * s, 76 * s, 8 * s, 4 * s, '#9575cd');
+      if (up > 0.2) for (let k = 0; k < 5; k++) star(cx + Math.sin(k * 2 + T * 0.2) * 14 * s, y + (60 + k * 22) * s, (8 - k) * s, '#fff59d', k);
+      glowBall(cx, y, 100 * s, 'rgba(255,236,130,.6)');
+      star(cx, y, 64 * s, '#ffa000', Math.sin(T * 0.05) * 0.1, 0.5); star(cx, y, 56 * s, '#ffe066', Math.sin(T * 0.05) * 0.1, 0.5);
+      eyesN(cx, y - 2 * s, s, 11, 6, 1); blush(cx, y + 10 * s, s, 19); smile(cx, y + 8 * s, s, 7, INK, a > 0 ? 1 : 0);
+      for (let k = 0; k < 6; k++) { const an = k / 6 * 6.283 + T * 0.02; star(cx + Math.cos(an) * 84 * s, y + Math.sin(an) * 70 * s, (4 + 3 * Math.abs(Math.sin(T * 0.1 + k))) * s, '#fff59d', an); }
+      if (a > 0.3 && a < 0.75) for (let k = 0; k < 14; k++) { const an = k / 14 * 6.283, d = (a - 0.3) * 300 * s; circle(cx + Math.cos(an) * d, cy - 150 * s + Math.sin(an) * d, 6 * s, ['#ff5252', '#ffd740', '#69f0ae', '#40c4ff', '#e040fb'][k % 5]); }
+      if (a > 0) text(a < 0.5 ? 'WHEEEE!' : 'I came back to play!', cx, cy + 40 * s, 24 * s, '#fff'); } },
+);
+const EI = {}; EX.forEach((e, i) => EI[e.id] = i);
+const REG = EX.filter(e => !e.secret);                      // the 12 regular exhibits
+function drawEx(i, cx, cy, s, a = 0, n = 1) { ctx.save(); T = PRINTING ? 0 : frame; try { EX[i].draw(cx, cy, s, a, n); } finally { ctx.restore(); } }
+// 🔦 BEAMY THE NIGHT GUARD: a friendly flashlight robot
+function drawBeamy(x, by, s, dir = 1, n = 1) {
+  ctx.save(); T = PRINTING ? 0 : frame; const y = by - Math.abs(Math.sin(T * 0.15)) * 3 * s * (n > 0.5 ? 1 : 0);
+  if (n > 0.3) { ctx.fillStyle = `rgba(255,245,157,${(0.35 * n).toFixed(2)})`; ctx.beginPath(); ctx.moveTo(x + dir * 38 * s, y - 40 * s); ctx.lineTo(x + dir * 170 * s, y - 120 * s); ctx.lineTo(x + dir * 190 * s, y - 20 * s); ctx.closePath(); ctx.fill(); }
+  for (const d of [-1, 1]) circle(x + d * 11 * s, y - 6 * s, 7 * s, INK);
+  rr(x - 22 * s, y - 52 * s, 44 * s, 46 * s, 12 * s, '#3949ab'); star(x, y - 30 * s, 9 * s, GOLD);
+  rr(x + (dir > 0 ? 14 : -40) * s, y - 46 * s, 26 * s, 12 * s, 4 * s, '#ef5350'); rr(x + (dir > 0 ? 36 : -42) * s, y - 48 * s, 6 * s, 16 * s, 2 * s, '#fff59d');
+  if (n > 0.5) glowBall(x, y - 70 * s, 40 * s, 'rgba(255,245,157,.6)');
+  circle(x, y - 70 * s, 23 * s, '#90a4ae'); circle(x, y - 70 * s, 20 * s, n > 0.5 ? '#fff59d' : '#fff8e1');
+  eyesN(x + dir * 3 * s, y - 70 * s, s, 7, 4, n); smile(x + dir * 3 * s, y - 64 * s, s, 5);
+  rr(x - 22 * s, y - 96 * s, 44 * s, 14 * s, 6 * s, '#283593'); rr(x + (dir > 0 ? 0 : -30) * s, y - 86 * s, 30 * s, 6 * s, 3 * s, '#283593'); star(x, y - 89 * s, 4 * s, GOLD);
+  ctx.restore();
+}
+</script>
+<script>
+// ---------- sounds ----------
+let AC = null;
+function beep(f, t = 0, d = 0.12, type = 'square', v = 0.06) {
+  try { AC = AC || new (window.AudioContext || window.webkitAudioContext)(); const o = AC.createOscillator(), g = AC.createGain(), n = AC.currentTime + t;
+    o.type = type; o.frequency.value = f; g.gain.setValueAtTime(v, n); g.gain.exponentialRampToValueAtTime(0.001, n + d); o.connect(g); g.connect(AC.destination); o.start(n); o.stop(n + d + 0.02); } catch (_) {}
+}
+const notes = (arr, gap, d, type, v) => arr.forEach((f, i) => beep(f, i * gap, d, type, v));
+const SND = {
+  rex: () => { beep(160, 0, 0.3, 'sawtooth', 0.07); notes([523, 659, 784], 0.12, 0.12, 'square', 0.05); },
+  whale: () => notes([392, 523, 659, 587, 523, 440, 523], 0.18, 0.3, 'sine', 0.08),
+  mummy: () => notes([880, 740, 988], 0.12, 0.15, 'triangle', 0.06),
+  cave: () => notes([196, 247, 294, 392], 0.08, 0.15, 'square', 0.05),
+  knight: () => { for (let i = 0; i < 4; i++) beep(1400 + i * 100, i * 0.07, 0.04, 'square', 0.04); notes([523, 659, 784, 1047], 0.1, 0.2, 'triangle', 0.07); },
+  statue: () => { beep(330, 0, 0.6, 'sine', 0.08); beep(220, 0.5, 0.5, 'sine', 0.07); },
+  peek: () => notes([784, 659, 1047], 0.2, 0.18, 'triangle', 0.07),
+  chest: () => { for (let i = 0; i < 8; i++) beep(900 + (i % 2) * 300, i * 0.08, 0.06, 'triangle', 0.05); },
+  moonrock: () => notes([262, 294, 330, 294, 262], 0.25, 0.3, 'sine', 0.08),
+  crystal: () => notes([1047, 1175, 1319, 1397, 1568, 1760, 1976], 0.06, 0.2, 'triangle', 0.05),
+  cuckoo: () => { notes([784, 622], 0.2, 0.18, 'sine', 0.09); setTimeout(() => notes([784, 622], 0.2, 0.18, 'sine', 0.09), 500); },
+  robot: () => notes([440, 660, 440, 880, 550, 660], 0.1, 0.08, 'square', 0.05),
+  twinkle: () => notes([523, 523, 784, 784, 880, 880, 784], 0.15, 0.18, 'triangle', 0.07),
+};
+const sfx = { click: () => beep(660, 0, 0.06, 'triangle'), stamp: () => { beep(180, 0, 0.12, 'square', 0.08); notes([784, 988, 1175], 0.07, 0.15, 'triangle', 0.07); },
+  whoosh: () => beep(300, 0, 0.25, 'sine', 0.05), night: () => { notes([392, 392, 392], 0.35, 0.4, 'sine', 0.08); notes([1319, 1568, 2093], 0.08, 0.2, 'triangle', 0.04); },
+  day: () => notes([523, 659, 784, 1047], 0.08, 0.15, 'triangle', 0.06), act: id => (SND[id] || (() => {}))() };
+
+// ---------- the museum ----------
+const HALLS = [
+  { name: '🦴 HALL 1: BONES & MUMMIES', ids: ['rex', 'whale', 'mummy', 'cave'], wall: '#efe3cf', trim: '#8d6e63' },
+  { name: '🏰 HALL 2: CASTLES & ART', ids: ['knight', 'statue', 'peek', 'chest'], wall: '#e8eaf6', trim: '#5c6bc0' },
+  { name: '🚀 HALL 3: SPACE & WONDERS', ids: ['moonrock', 'crystal', 'cuckoo', 'robot'], wall: '#e0f2f1', trim: '#00897b' },
+  { name: '🎁 THE MIDNIGHT GIFT SHOP', ids: [], wall: '#ede7f6', trim: '#7e57c2', shop: true },
+];
+let state = 'title', hall = 0, tap = null, sel = 0, showI = 0, actT = 0, msg = '', msgT = 0, parts = [], posterPick = false, pickKind = 'one';
+let isNight = false, nt = 0, metBeamy = false, bx = 900, bdir = -1, bMsg = '', bMsgT = 0, hintI = 0, talk = null, talkT = 0;
+const allSeen = () => REG.every(e => save.seen[e.id]);
+const seenCount = () => REG.filter(e => save.seen[e.id]).length;
+function hallIds(h) { const ids = HALLS[h].ids.slice(); if (h === 2 && isNight && allSeen()) ids.splice(2, 0, 'twinkle'); return ids; }
+const START = { x: 360, y: 438, w: 240, h: 66 };
+const BTN_PREV = { x: 14, y: 488, w: 110, h: 44 }, BTN_PASS = { x: 134, y: 488, w: 220, h: 44 }, BTN_MOON = { x: 364, y: 484, w: 232, h: 50 }, BTN_SHOP = { x: 606, y: 488, w: 220, h: 44 }, BTN_NEXT = { x: 836, y: 488, w: 110, h: 44 };
+const BTN_BACK = { x: 14, y: 12, w: 110, h: 42 }, BTN_ACT = { x: 590, y: 404, w: 330, h: 64 }, BTN_MOON2 = { x: 150, y: 470, w: 280, h: 54 };
+function exhibitPos(n, k) { return { x: (k + 0.5) * W / n, y: 232, s: n > 4 ? 0.9 : 1.06 }; }
+function exhibitRect(n, k) { const p = exhibitPos(n, k), w = W / n - 14; return { x: p.x - w / 2, y: 100, w, h: 372 }; }
+const beamyRect = () => ({ x: bx - 40, y: 380, w: 80, h: 100 });
+function say(s) { msg = s; msgT = 170; }
+function beamySay(s) { bMsg = s; bMsgT = 260; }
+function confetti(x, y, n = 40) { for (let i = 0; i < n; i++) parts.push({ x, y, vx: (Math.random() - 0.5) * 9, vy: -Math.random() * 8 - 2, c: [GLOW, '#b39ddb', '#80deea', '#fff', '#f48fb1'][i % 5], life: 70 + Math.random() * 40 }); }
+function toggleNight() {
+  isNight = !isNight;
+  if (isNight) { sfx.night(); say('🌙 MIDNIGHT! Everything is waking up!');
+    if (!metBeamy) { metBeamy = true; beamySay("Hi! I'm Beamy, the night guard! Tap an exhibit to see it up close!"); }
+    else if (allSeen() && !save.seen.twinkle) beamySay('Psst! Something fell from the sky into Hall 3!'); }
+  else { sfx.day(); say('☀️ Good morning! Shh... everybody is asleep.'); }
+}
+function beamyHint() {
+  const left = REG.length - seenCount();
+  const H = [left ? `${left} exhibit${left > 1 ? 's' : ''} still need${left > 1 ? '' : 's'} a visit!` : 'You visited EVERY exhibit! WOW!', 'Shh! At midnight, everything is awake!',
+    allSeen() ? (save.seen.twinkle ? 'Twinkle says hi! ⭐' : 'The secret is in Hall 3!') : 'Visit them ALL for a secret surprise!', 'The Gift Shop has a paper flashlight like mine!', 'Press ☀️ DAYTIME to make them sleep.'];
+  beamySay(H[hintI++ % H.length]); beep(988, 0, 0.08, 'triangle', 0.05); beep(1319, 0.08, 0.1, 'triangle', 0.05);
+}
+function openExhibit(id) {
+  showI = EI[id]; state = 'close'; actT = 0; sfx.whoosh();
+  if (!save.seen[id]) { save.seen[id] = 1; writeSave(); sfx.stamp(); say(id === 'twinkle' ? '⭐ You found the SECRET exhibit!' : '📘 NEW STAMP in your passport!'); confetti(W / 2, 120, 30);
+    if (allSeen() && !save.allDone) { save.allDone = 1; writeSave(); trophy('midnightMuseum'); setTimeout(() => { say('🏆 You saw EVERY exhibit! Psst... visit Hall 3 at MIDNIGHT!'); confetti(W / 2, 200, 120); }, 700); } }
+}
+function doAct() {
+  if (!isNight) { isNight = true; sfx.night(); say('🌙 It woke up!'); }
+  actT = 1; sfx.act(EX[showI].id); if (EX[showI].onAct) EX[showI].onAct();
+}
+function goHall(h) { hall = (h + HALLS.length) % HALLS.length; sel = 0; posterPick = false; talkT = 0; sfx.whoosh(); }
+</script>
+<script>
+// ---------- 🎁 the Midnight Gift Shop shelves ----------
+const SOUV = [
+  { k: 'one', icon: '🖼️', name: 'Exhibit Poster', tip: 'Pick ANY one!' },
+  { k: 'all', icon: '🏛️', name: 'Museum Poster', tip: 'Everybody!' },
+  { k: 'cards', icon: '💌', name: 'Postcards', tip: 'Mail them!' },
+  { k: 'stickers', icon: '⭐', name: 'Sticker Sheet', tip: 'Cut them out!' },
+  { k: 'pass', icon: '📘', name: 'Museum Passport', tip: 'With your stamps!' },
+  { k: 'trading', icon: '🃏', name: 'Trading Cards', tip: 'Collect them!' },
+  { k: 'color', icon: '🖍️', name: 'Coloring Pages', tip: 'Pick ANY one!' },
+  { k: 'member', icon: '💳', name: 'Member Card', tip: 'Night Owl VIP!' },
+  { k: 'puzzle', icon: '🧩', name: 'Midnight Puzzle', tip: '20 pieces!' },
+  { k: 'stand', icon: '🧍', name: 'Stand-Ups', tip: 'Fold + stand!' },
+  { k: 'flash', icon: '🔦', name: 'Paper Flashlight', tip: 'Like Beamy!', special: true },
+  { k: 'badge', icon: '🛡️', name: 'Night Guard Badge', tip: 'Be a guard!', special: true },
+];
+const souvRect = i => ({ x: 18 + (i % 7) * 134, y: 120 + Math.floor(i / 7) * 180, w: 126, h: 166 });
+const shown = () => EX.map((e, i) => i).filter(i => !EX[i].secret || save.seen[EX[i].id]);
+const pickRect = i => ({ x: 20 + (i % 7) * 133, y: 78 + Math.floor(i / 7) * 160, w: 125, h: 150 });
+// ---------- input ----------
+const toCanvas = e => { const r = C.getBoundingClientRect(); return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height }; };
+C.addEventListener('mousedown', e => { tap = toCanvas(e); ptr = tap; });
+addEventListener('mousemove', e => { ptr = toCanvas(e); });
+const press = {};
+addEventListener('keydown', e => { press[e.key] = true; });
+function update() {
+  frame++; if (msgT > 0) msgT--; if (bMsgT > 0) bMsgT--; if (actT > 0) { actT++; if (actT > 150) actT = 0; }
+  nt += ((isNight ? 1 : 0) - nt) * 0.06; if (Math.abs(nt - (isNight ? 1 : 0)) < 0.01) nt = isNight ? 1 : 0;
+  for (const p of parts) { p.x += p.vx; p.y += p.vy; p.vy += 0.2; p.life--; } parts = parts.filter(p => p.life > 0);
+  const t = tap, k = Object.assign({}, press); tap = null; for (const key in press) delete press[key];
+  const ok = k.Enter || k[' '], esc = k.Escape;
+  if (k.m || k.M) toggleNight();
+  if (state === 'title') { if (ok || inBox(t, START)) { state = 'hall'; sfx.click(); say('Press 🌙 MIDNIGHT to wake everything up!'); } return; }
+  if (state === 'close') { if (esc || inBox(t, BTN_BACK)) { state = 'hall'; sfx.click(); } else if (inBox(t, BTN_MOON2)) toggleNight(); else if (ok || inBox(t, BTN_ACT)) doAct(); return; }
+  if (state === 'pass') { if (esc || ok || inBox(t, BTN_BACK)) { state = 'hall'; sfx.click(); } return; }
+  const H0 = HALLS[hall], ids = hallIds(hall); if (sel >= ids.length) sel = Math.max(0, ids.length - 1);
+  if (isNight && !H0.shop) { bx += bdir * 1.1; if (bx < 60 || bx > W - 60) bdir = -bdir;
+    if (--talkT <= 0) { talkT = 240; const kk = Math.floor(Math.random() * ids.length), ex = EX[EI[ids[kk]]]; talk = { k: kk, str: ex.says[Math.floor(Math.random() * ex.says.length)] }; } }
+  else talkT = 60;
+  if (k.ArrowRight) { if (!H0.shop && sel < ids.length - 1) sel++; else goHall(hall + 1); }
+  if (k.ArrowLeft) { if (!H0.shop && sel > 0) sel--; else { goHall(hall - 1); sel = Math.max(0, hallIds(hall).length - 1); } }
+  if (esc && posterPick) { posterPick = false; return; }
+  if (ok && !H0.shop && ids[sel]) { openExhibit(ids[sel]); return; }
+  if (!t) return;
+  if (posterPick) {
+    if (inBox(t, BTN_BACK)) { posterPick = false; sfx.click(); return; }
+    shown().forEach((ei, j) => { if (inBox(t, pickRect(j))) { sfx.click(); openPrint(pickKind, ei); } });
+    return;
+  }
+  if (inBox(t, BTN_PREV)) { goHall(hall - 1); return; }
+  if (inBox(t, BTN_NEXT)) { goHall(hall + 1); return; }
+  if (inBox(t, BTN_PASS)) { state = 'pass'; sfx.click(); return; }
+  if (inBox(t, BTN_MOON)) { toggleNight(); return; }
+  if (inBox(t, BTN_SHOP)) { goHall(HALLS.length - 1); return; }
+  if (H0.shop) { SOUV.forEach((sv, i) => { if (inBox(t, souvRect(i))) { sfx.click(); if (sv.k === 'one' || sv.k === 'color') { posterPick = true; pickKind = sv.k; } else openPrint(sv.k); } }); return; }
+  if (isNight && inBox(t, beamyRect())) { beamyHint(); return; }
+  ids.forEach((id, i) => { if (inBox(t, exhibitRect(ids.length, i))) { sel = i; openExhibit(id); } });
+}
+// ---------- drawing ----------
+function sky(x, y, w, h, n) {                               // day sky -> night sky with stars and a rising moon
+  ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+  ctx.fillStyle = '#81d4fa'; ctx.fillRect(x, y, w, h); circle(x + w - 120, y + 30 + n * 80, 22, '#fff176');
+  ctx.globalAlpha = n; const g = ctx.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, '#0d1233'); g.addColorStop(1, '#283593'); ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
+  for (let k = 0; k < 40; k++) star(x + (k * 97) % w, y + (k * 53) % h, (k % 3 + 1.5) * (0.7 + 0.3 * Math.sin(frame * 0.05 + k)), '#fff', 0);
+  ctx.globalAlpha = 1; const my = y + h + 30 - n * (h - 10); glowBall(x + 120, my, 60, `rgba(255,246,201,${(0.6 * n).toFixed(2)})`); circle(x + 120, my, 24, MOON); circle(x + 112, my - 6, 5, 'rgba(0,0,0,.08)'); circle(x + 128, my + 8, 4, 'rgba(0,0,0,.08)');
+  ctx.restore();
+}
+function drawHall() {
+  const H0 = HALLS[hall], ids = hallIds(hall), n = nt;
+  sky(0, 0, W, 70, n);
+  ctx.fillStyle = H0.wall; ctx.fillRect(0, 70, W, 350);
+  if (!H0.shop) { ctx.fillStyle = 'rgba(0,0,0,.05)'; for (let k = 1; k < 4; k++) ctx.fillRect(k * 240 - 9, 76, 18, 334); }
+  ctx.fillStyle = H0.trim; ctx.fillRect(0, 70, W, 6); ctx.fillRect(0, 410, W, 10);
+  ctx.fillStyle = '#8d7b6d'; ctx.fillRect(0, 420, W, 62); ctx.fillStyle = 'rgba(0,0,0,.08)'; for (let x = 0; x < W; x += 60) ctx.fillRect(x, 420, 2, 62);
+  ctx.fillStyle = `rgba(10,16,52,${(0.7 * n).toFixed(2)})`; ctx.fillRect(0, 70, W, 412);
+  fit(H0.name, W / 2, 48, 32, 760, '#fff');
+  if (H0.shop) return drawShop();
+  ids.forEach((id, k) => {
+    const p = exhibitPos(ids.length, k), selk = k === sel, sec = id === 'twinkle', pw = ids.length > 4 ? 0.85 : 1;
+    if (n > 0.05) glowBall(p.x, p.y, 130, `rgba(255,240,180,${(0.28 * n).toFixed(2)})`);
+    if (selk) glowBall(p.x, p.y, 110, 'rgba(255,236,179,.55)');
+    rr(p.x - 60 * pw, 312, 120 * pw, 98, 6, sec ? '#b39ddb' : '#f5f5f5'); rr(p.x - 70 * pw, 300, 140 * pw, 16, 4, sec ? '#9575cd' : '#e0e0e0');
+    if (n > 0) rr(p.x - 70 * pw, 300, 140 * pw, 110, 4, `rgba(10,16,52,${(0.4 * n).toFixed(2)})`);
+    drawEx(EI[id], p.x, p.y - 20, p.s, 0, n);
+    const nm = wrap(EX[EI[id]].name, 16, 128 * pw), two = nm.length > 1; rr(p.x - 70 * pw, 424, 140 * pw, two ? 55 : 46, 8, sec ? '#7e57c2' : H0.trim);
+    if (two) nm.slice(0, 2).forEach((l, j) => fit(l, p.x, 440 + j * 16, 15, 130 * pw, '#fff', 'center', false)); else fit(nm[0], p.x, 446, 16, 130 * pw, '#fff', 'center', false);
+    text(sec ? '✨ SECRET!' : save.seen[id] ? '✅ visited' : '👆 tap me!', p.x, two ? 473 : 464, 13, sec ? GLOW : '#fff', 'center', false);
+  });
+  if (n > 0.6 && talk && talkT > 60 && talk.k < ids.length) bubble(talk.str, exhibitPos(ids.length, talk.k).x, 118, 16, 200);
+  if (n > 0.5) { drawBeamy(bx, 478, 0.8, bdir, n); if (bMsgT > 0) bubble(bMsg, bx, 390, 17, 300); }
+}
+function drawShop() {
+  const night = nt > 0.5, ink = night ? '#fff' : '#4527a0';
+  if (posterPick) {
+    ctx.fillStyle = '#ede7f6'; ctx.fillRect(0, 0, W, H); text(pickKind === 'color' ? '🖍️ Which one do you want to color?' : '🖼️ Which poster do you want?', W / 2, 50, 30, '#4527a0', 'center', false);
+    shown().forEach((ei, j) => { const b = pickRect(j); rr(b.x, b.y, b.w, b.h, 16, '#fff'); ctx.save(); ctx.beginPath(); ctx.rect(b.x, b.y, b.w, b.h - 24); ctx.clip(); drawEx(ei, b.x + b.w / 2, b.y + 72, 0.5, 0, 1); ctx.restore(); fit(EX[ei].name, b.x + b.w / 2, b.y + b.h - 8, 14, b.w - 10, '#4527a0', 'center', false); });
+    button(BTN_BACK, '⬅ BACK', '#3949ab', 18); return;
+  }
+  SOUV.forEach((sv, i) => { const b = souvRect(i); rr(b.x, b.y + 5, b.w, b.h, 16, 'rgba(0,0,0,.25)'); rr(b.x, b.y, b.w, b.h, 16, sv.special ? '#fff59d' : '#fff');
+    if (sv.special) { rr(b.x + 6, b.y - 10, b.w - 12, 20, 10, '#7e57c2'); text('🌙 SPECIAL!', b.x + b.w / 2, b.y + 5, 12, '#fff', 'center', false); }
+    emoji(sv.icon, b.x + b.w / 2, b.y + 62, 46); const ln2 = wrap(sv.name, 15, b.w - 12).slice(0, 2); ln2.forEach((l, j) => fit(l, b.x + b.w / 2, b.y + 96 + j * 17 - (ln2.length - 1) * 4, 15, b.w - 10, '#4527a0', 'center', false));
+    fit(sv.tip, b.x + b.w / 2, b.y + 136, 12, b.w - 10, '#5e35b1', 'center', false); text('🖨️ PRINT', b.x + b.w / 2, b.y + 156, 13, '#43a047', 'center', false); });
+  text('Every gift is FREE! Tap one to print it.', W / 2, 104, 18, ink, 'center', false);
+}
+function drawBar() {
+  rr(0, 482, W, 58, 0, 'rgba(13,18,51,.94)');
+  button(BTN_PREV, '◀ BACK', '#5c6bc0', 20); button(BTN_NEXT, 'NEXT ▶', '#5c6bc0', 20);
+  button(BTN_PASS, `📘 PASSPORT ${seenCount()}/${REG.length}${save.seen.twinkle ? ' ⭐' : ''}`, '#3949ab', 18); button(BTN_SHOP, '🎁 GIFT SHOP', '#7e57c2', 20);
+  if (!isNight) glowBall(BTN_MOON.x + BTN_MOON.w / 2, BTN_MOON.y + 25, 100 + Math.sin(frame * 0.1) * 12, 'rgba(255,224,102,.45)');
+  button(BTN_MOON, isNight ? '☀️ DAYTIME' : '🌙 MIDNIGHT', isNight ? '#ffa000' : '#283593', 24);
+}
+</script>
+<script>
+function drawClose() {
+  const e = EX[showI], a = actT > 0 ? actT / 150 : 0, n = nt;
+  ctx.fillStyle = '#efe3cf'; ctx.fillRect(0, 0, W, H);
+  ctx.globalAlpha = n; ctx.fillStyle = '#0d1233'; ctx.fillRect(0, 0, W, H);
+  for (let k = 0; k < 50; k++) star((k * 97) % 560, (k * 61) % H, (k % 3 + 1.5) * (0.7 + 0.3 * Math.sin(frame * 0.05 + k)), '#fff', 0);
+  glowBall(90, 90, 80, 'rgba(255,246,201,.6)'); circle(90, 90, 34, MOON); ctx.globalAlpha = 1;
+  glowBall(280, 270, 280, n > 0.5 ? 'rgba(255,240,180,.35)' : 'rgba(255,224,178,.7)');
+  drawEx(showI, 280, 262, 1.5, a, n);
+  if (n < 0.5) { rr(150, 18, 300, 40, 12, 'rgba(0,0,0,.45)'); text('💤 Shh... it is asleep!', 300, 46, 20, '#fff59d', 'center', false); }
+  else if (a === 0) bubble(e.says[Math.floor(frame / 200) % e.says.length], 280, 92, 18, 260);
+  rr(560, 60, 380, 420, 20, '#fff8e1'); rr(570, 70, 360, 66, 14, n > 0.5 ? '#283593' : '#7e57c2');
+  fit(e.e + ' ' + e.name, 750, 113, 28, 340, '#fff'); fit('📍 Found: ' + e.found, 750, 162, 16, 350, '#5d4037', 'center', false);
+  let y = 198; for (const f of e.facts) { for (const l of wrap('• ' + f, 18, 340)) { text(l, 580, y, 18, '#3e2723', 'left', false); y += 23; } y += 7; }
+  button(BTN_ACT, '✨ ' + e.act, '#43a047', 24);
+  button(BTN_MOON2, isNight ? '☀️ DAYTIME' : '🌙 MIDNIGHT', isNight ? '#ffa000' : '#283593', 24);
+  button(BTN_BACK, '⬅ BACK', '#3949ab', 18);
+  if (msgT > 0) { rr(140, 64, 400, 40, 12, 'rgba(0,0,0,.6)'); fit(msg, 340, 91, 18, 380, '#fff59d'); }
+}
+function drawPass() {
+  ctx.fillStyle = '#1a2350'; ctx.fillRect(0, 0, W, H); for (let k = 0; k < 40; k++) star((k * 97) % W, (k * 53) % H, 2, 'rgba(255,255,255,.6)', 0);
+  rr(40, 64, W - 80, 410, 20, '#fff8e1');
+  text('📘 MY MIDNIGHT MUSEUM PASSPORT', W / 2, 48, 28, '#fff');
+  EX.forEach((e, i) => { const x = 110 + (i % 7) * 123, y = 150 + Math.floor(i / 7) * 180, seen = save.seen[e.id];
+    ctx.strokeStyle = seen ? (e.secret ? '#ffa000' : '#c62828') : '#bdbdbd'; ctx.lineWidth = 4; ctx.setLineDash(seen ? [] : [8, 6]); ctx.beginPath(); ctx.arc(x, y, 52, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+    if (seen) { ctx.save(); ctx.beginPath(); ctx.arc(x, y, 50, 0, 7); ctx.clip(); drawEx(i, x, y - 4, 0.42, 0, 1); ctx.restore(); }
+    else text(e.secret ? '⭐?' : '?', x, y + 12, 32, '#bdbdbd', 'center', false);
+    fit(e.secret && !seen ? 'SECRET!' : e.name, x, y + 74, 13, 118, '#283593', 'center', false); });
+  text(seenCount() < REG.length ? `${REG.length - seenCount()} more to find!` : '🏆 Museum Master!', W / 2 + 200, 446, 22, '#c62828', 'center', false);
+  button(BTN_BACK, '⬅ BACK', '#3949ab', 18);
+}
+function drawTitle() {
+  T = frame; sky(0, 0, W, H, 1);
+  ctx.fillStyle = '#5c6b8a'; ctx.beginPath(); ctx.moveTo(140, 236); ctx.lineTo(820, 236); ctx.lineTo(480, 172); ctx.closePath(); ctx.fill();
+  rr(160, 232, 640, 192, 0, '#46557a'); for (let k = 0; k < 6; k++) rr(176 + k * 120, 244, 26, 176, 4, '#7686a8');
+  glowBall(480, 360, 90, 'rgba(255,224,102,.6)'); rr(442, 300, 76, 120, 30, '#ffe082'); rr(452, 310, 56, 110, 24, '#ffca28');
+  rr(130, 420, 700, 16, 4, '#7686a8');
+  text('THE MIDNIGHT MUSEUM', W / 2, 96, 60, GLOW);
+  text('Shh... at midnight, everything comes ALIVE!', W / 2, 140, 24, '#fff');
+  [['rex', 262], ['mummy', 360], ['robot', 602], ['crystal', 700]].forEach(([id, x], i) => drawEx(EI[id], x, 360 + Math.sin(frame * 0.05 + i) * 3, 0.62, 0, 1));
+  drawBeamy(90, 500, 0.95, 1, 1);
+  button(START, '▶ COME IN!', '#43a047', 30);
+  text('Tap 🌙 MIDNIGHT inside to wake up the exhibits!', W / 2, 528, 18, '#fff59d', 'center', false);
+}
+function draw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
+  if (state === 'title') drawTitle();
+  else if (state === 'close') drawClose();
+  else if (state === 'pass') drawPass();
+  else { drawHall(); if (!posterPick) drawBar(); if (msgT > 0 && !posterPick) { rr(W / 2 - 320, 80, 640, 40, 12, 'rgba(0,0,0,.65)'); fit(msg, W / 2, 107, 19, 620, '#fff59d'); } }
+  for (const p of parts) { ctx.globalAlpha = Math.min(1, p.life / 20); ctx.fillStyle = p.c; ctx.fillRect(p.x - 4, p.y - 4, 8, 8); }
+  ctx.globalAlpha = 1;
+}
+let last = performance.now(), acc = 0;
+function loop(now) { acc += Math.min(100, now - last); last = now; while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; } draw(); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+</script>
+<script>
+// ---------- 🖨️ printing the souvenirs ----------
+const PW = 850, PH = 1100;
+function makePage(fn) {
+  const cv = document.createElement('canvas'); cv.width = PW; cv.height = PH;
+  const old = ctx; ctx = cv.getContext('2d'); PRINTING = true;
+  try { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, PW, PH); fn(); } finally { ctx = old; PRINTING = false; }
+  return cv;
+}
+const ptext = (s, x, y, size, color = '#222', align = 'center') => text(s, x, y, size, color, align, false);
+const dash = (fn, col = '#9e9e9e', w = 2) => { ctx.save(); ctx.setLineDash([10, 7]); ctx.strokeStyle = col; ctx.lineWidth = w; ctx.beginPath(); fn(); ctx.stroke(); ctx.restore(); };
+const foldLine = (x1, y1, x2, y2) => { ctx.save(); ctx.setLineDash([4, 6]); ctx.strokeStyle = '#1e88e5'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.restore(); };
+const cutBox = (x, y, w, h, r = 18) => dash(() => { ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); });
+function bigTitle(str, x, y, size, fill, edge) { ctx.save(); ctx.font = `bold ${size}px "Trebuchet MS", Arial`; ctx.textAlign = 'center'; ctx.lineJoin = 'round'; ctx.strokeStyle = edge; ctx.lineWidth = size / 6; ctx.strokeText(str, x, y); ctx.fillStyle = fill; ctx.fillText(str, x, y); ctx.restore(); }
+function nightBg(x, y, w, h, nStars = 30) { const g = ctx.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, '#0d1233'); g.addColorStop(1, '#3949ab'); ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
+  for (let k = 0; k < nStars; k++) star(x + (k * 211) % w, y + (k * 137) % h, 3 + (k % 3) * 2, 'rgba(255,255,255,.8)', k); }
+const scaleFor = (i, base) => EX[i].id === 'whale' ? base * 0.9 : base;
+const BEAMY = 'beamy';                                       // Beamy shows up in some lists too
+function drawItem(it, cx, cy, s) { if (it === BEAMY) drawBeamy(cx, cy + 50 * s, s * 1.25, 1, 1); else drawEx(it, cx, cy, scaleFor(it, s), 0, 1); }
+const itemName = it => it === BEAMY ? 'Beamy the Night Guard' : EX[it].name;
+function pageOne(i) {
+  const e = EX[i];
+  return makePage(() => {
+    nightBg(0, 0, PW, PH, 40); glowBall(700, 230, 120, 'rgba(255,246,201,.5)'); circle(700, 230, 50, MOON);
+    ctx.strokeStyle = GLOW; ctx.lineWidth = 10; ctx.strokeRect(14, 14, PW - 28, PH - 28);
+    bigTitle(e.name.toUpperCase() + '!', PW / 2, 100, e.name.length > 18 ? 46 : 60, GLOW, '#1a2350');
+    ptext('THE MIDNIGHT MUSEUM  •  SOUVENIR POSTER', PW / 2, 150, 22, '#fff');
+    glowBall(PW / 2, 480, 300, 'rgba(255,240,180,.35)'); drawItem(i, PW / 2, 500, 2.9);
+    rr(70, 800, PW - 140, 240, 26, 'rgba(255,255,255,.93)'); ptext('📍 Found: ' + e.found, PW / 2, 842, 22, '#5d4037');
+    let y = 884; for (const f of e.facts) { for (const l of wrap('• ' + f, 23, PW - 200)) { ptext(l, 100, y, 23, '#3e2723', 'left'); y += 30; } y += 4; }
+  });
+}
+function pageAll() {
+  return makePage(() => {
+    nightBg(0, 0, PW, PH, 30); ctx.strokeStyle = GLOW; ctx.lineWidth = 10; ctx.strokeRect(14, 14, PW - 28, PH - 28);
+    bigTitle('THE MIDNIGHT MUSEUM', PW / 2, 86, 58, GLOW, '#1a2350'); ptext('Where everything comes ALIVE at midnight!', PW / 2, 128, 24, '#fff');
+    shown().concat([BEAMY]).forEach((it, k) => { const x = 36 + (k % 3) * 262, y = 152 + Math.floor(k / 3) * 184, w = 252, h = 174;
+      rr(x, y, w, h, 16, PAST[k % PAST.length]); ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h - 30); ctx.clip(); drawItem(it, x + w / 2, y + 78, 0.62); ctx.restore(); fit(itemName(it), x + w / 2, y + h - 10, 20, w - 16, '#283593', 'center', false); });
+  });
+}
+function pagesCards() {
+  const list = shown(), pages = [];
+  for (let pg = 0; pg < Math.ceil(list.length / 4); pg++) pages.push(makePage(() => {
+    ptext(`✂️ MIDNIGHT MUSEUM POSTCARDS (page ${pg + 1})  Cut on the dotted lines!`, PW / 2, 30, 18, '#555');
+    list.slice(pg * 4, pg * 4 + 4).forEach((i, k) => { const x = 25 + (k % 2) * 405, y = 48 + Math.floor(k / 2) * 525, w = 395, h = 510;
+      rr(x, y, w, h, 14, PAST[i % PAST.length]); ctx.save(); ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x + 12, y + 12, w - 24, 250, 10) : ctx.rect(x + 12, y + 12, w - 24, 250); ctx.clip(); nightBg(x + 12, y + 12, w - 24, 250, 14); drawItem(i, x + w / 2, y + 150, 1.0); ctx.restore();
+      ptext('Greetings from', x + w / 2, y + 300, 20, '#5d4037'); fit('THE MIDNIGHT MUSEUM!', x + w / 2, y + 334, 28, w - 30, '#283593', 'center', false); fit('Starring ' + EX[i].name, x + w / 2, y + 364, 18, w - 30, '#5d4037', 'center', false);
+      ['To: ______________________', 'Hi! ______________________', '__________________________', 'From: ____________________'].forEach((l, j) => ptext(l, x + 24, y + 404 + j * 28, 18, '#555', 'left'));
+      cutBox(x - 4, y - 4, w + 8, h + 8, 16); });
+  }));
+  return pages;
+}
+function pagesStickers() {
+  const all = shown().concat([BEAMY, 'moon', 'master']), pages = [];
+  for (let pg = 0; pg < Math.ceil(all.length / 12); pg++) pages.push(makePage(() => {
+    ptext(`⭐ MIDNIGHT MUSEUM STICKERS (page ${pg + 1})  Cut them out and stick them with tape!`, PW / 2, 34, 20, '#555');
+    all.slice(pg * 12, pg * 12 + 12).forEach((it, k) => { const x = 150 + (k % 3) * 275, y = 170 + Math.floor(k / 3) * 250, r = 110;
+      circle(x, y, r, typeof it === 'number' ? PAST[it % PAST.length] : '#e8eaf6'); ctx.strokeStyle = '#3949ab'; ctx.lineWidth = 6; ctx.beginPath(); ctx.arc(x, y, r - 4, 0, 7); ctx.stroke();
+      ctx.save(); ctx.beginPath(); ctx.arc(x, y, r - 7, 0, 7); ctx.clip();
+      if (it === 'moon') { nightBg(x - r, y - r, r * 2, r * 2, 10); glowBall(x, y - 14, 70, 'rgba(255,246,201,.6)'); circle(x, y - 14, 44, MOON); ptext('MIDNIGHT', x, y + 62, 22, GLOW); ptext('MUSEUM', x, y + 86, 18, '#fff'); }
+      else if (it === 'master') { ptext('🏆', x, y + 8, 60); ptext('MUSEUM MASTER', x, y + 60, 19, '#283593'); }
+      else { drawItem(it, x, y - 22, 0.56); fit(itemName(it), x, y + 70, 17, 150, '#283593', 'center', false); }
+      ctx.restore(); ctx.save(); ctx.setLineDash([9, 6]); ctx.strokeStyle = '#9e9e9e'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 8, 0, 7); ctx.stroke(); ctx.restore(); });
+  }));
+  return pages;
+}
+function pagePass() {
+  return makePage(() => {
+    nightBg(0, 0, PW, PH, 30); rr(30, 30, PW - 60, PH - 60, 24, '#fff8e1');
+    bigTitle('MUSEUM PASSPORT', PW / 2, 110, 58, GLOW, '#283593'); ptext('THE MIDNIGHT MUSEUM  •  Name: Ben', PW / 2, 156, 24, '#283593');
+    EX.forEach((e, i) => { const x = 175 + (i % 3) * 250, y = 245 + Math.floor(i / 3) * 152, seen = save.seen[e.id];
+      ctx.strokeStyle = seen ? '#c62828' : '#bdbdbd'; ctx.lineWidth = 4; ctx.setLineDash(seen ? [] : [10, 7]); ctx.beginPath(); ctx.arc(x, y, 54, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+      if (seen) { ctx.save(); ctx.beginPath(); ctx.arc(x, y, 52, 0, 7); ctx.clip(); drawEx(i, x, y - 4, scaleFor(i, 0.42), 0, 1); ctx.restore(); ptext('VISITED!', x, y + 50, 13, '#c62828'); }
+      else ptext(e.secret ? 'secret ⭐' : 'stamp here', x, y + 6, 16, '#bdbdbd');
+      fit(e.secret && !seen ? '???' : e.name, x, y + 76, 17, 220, '#283593', 'center', false); });
+  });
+}
+let printBox = null;
+function openPrint(k, i) {
+  const pages = k === 'one' ? [pageOne(i)] : k === 'color' ? [pageColor(i)] : EXTRA_PRINT[k] ? EXTRA_PRINT[k]() : k === 'all' ? [pageAll()] : k === 'cards' ? pagesCards() : k === 'stickers' ? pagesStickers() : [pagePass()];
+  const name = k === 'one' ? EX[i].name + ' Poster' : k === 'color' ? EX[i].name + ' Coloring Page' : SOUV.find(s => s.k === k).name;
+  printBox = document.createElement('div'); printBox.id = 'printBox';
+  const bar = document.createElement('div'); bar.className = 'pbBar';
+  const back = document.createElement('button'); back.className = 'pbBack'; back.textContent = '⬅ BACK';
+  const pr = document.createElement('button'); pr.className = 'pbPrint'; pr.textContent = pages.length > 1 ? `🖨️ PRINT (${pages.length} pages)` : '🖨️ PRINT';
+  back.onclick = () => { if (printBox) { printBox.remove(); printBox = null; } sfx.click(); };
+  pr.onclick = () => { try { window.print(); } catch (_) {} };
+  bar.append(back, pr); printBox.appendChild(bar);
+  const tip = document.createElement('div'); tip.className = 'pbTip'; tip.textContent = '🎁 ' + name + '  •  Tip: turn on color printing!'; printBox.appendChild(tip);
+  for (const cv of pages) { const img = new Image(); img.className = 'pbPage'; img.alt = name; img.src = cv.toDataURL('image/png'); printBox.appendChild(img); }
+  document.body.appendChild(printBox);
+}
+</script>
+<script>
+// ---------- more gifts ----------
+function outlineOf(i, size, sc) {                            // 🖍️ turns an exhibit into a coloring-book outline
+  const cv = document.createElement('canvas'); cv.width = size; cv.height = size;
+  const old = ctx; ctx = cv.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, size, size); const op = PRINTING; PRINTING = true;
+  try { const g = glowBall; glowBall = () => {}; try { drawEx(i, size / 2, size / 2 + size * 0.02, sc, 0, 1); } finally { glowBall = g; } } finally { ctx = old; PRINTING = op; }
+  const c2 = cv.getContext('2d'), src = c2.getImageData(0, 0, size, size).data, out = c2.createImageData(size, size), o = out.data;
+  const lum = k => src[k] * 0.3 + src[k + 1] * 0.59 + src[k + 2] * 0.11;
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    const k = (y * size + x) * 4; let edge = false;
+    for (const [dx, dy] of [[1, 0], [0, 1], [2, 0], [0, 2]]) { if (x + dx >= size || y + dy >= size) continue; const k2 = ((y + dy) * size + x + dx) * 4;
+      if (Math.abs(lum(k) - lum(k2)) > 26 || Math.abs(src[k] - src[k2]) + Math.abs(src[k + 2] - src[k2 + 2]) > 70) { edge = true; break; } }
+    const v = edge ? 40 : 255; o[k] = o[k + 1] = o[k + 2] = v; o[k + 3] = 255;
+  }
+  c2.putImageData(out, 0, 0); return cv;
+}
+function outlineText(str, x, y, size) { ctx.save(); ctx.font = `bold ${size}px "Trebuchet MS", Arial`; ctx.textAlign = 'center'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#333'; ctx.lineWidth = 3; ctx.strokeText(str, x, y); ctx.restore(); }
+function pageColor(i) {
+  return makePage(() => {
+    outlineText('COLOR ME!', PW / 2, 110, 90);
+    ctx.drawImage(outlineOf(i, 700, scaleFor(i, 2.8)), (PW - 700) / 2, 160);
+    ctx.save(); ctx.font = 'bold 56px "Trebuchet MS", Arial'; const w = ctx.measureText(EX[i].name.toUpperCase()).width; ctx.restore();
+    outlineText(EX[i].name.toUpperCase(), PW / 2, 960, w > PW - 80 ? Math.floor(56 * (PW - 80) / w) : 56);
+    ptext('The Midnight Museum  •  Coloring Page', PW / 2, 1040, 20, '#999');
+  });
+}
+function pagesTrading() {
+  const list = shown().concat([BEAMY]), pages = [], per = 9;
+  for (let pg = 0; pg < Math.ceil(list.length / per); pg++) pages.push(makePage(() => {
+    ptext(`🃏 MIDNIGHT MUSEUM TRADING CARDS (page ${pg + 1})  Cut on the dotted lines!`, PW / 2, 32, 20, '#555');
+    list.slice(pg * per, pg * per + per).forEach((it, k) => { const n = pg * per + k, x = 37 + (k % 3) * 263, y = 50 + Math.floor(k / 3) * 345, w = 250, h = 330, sec = it !== BEAMY && EX[it].secret;
+      rr(x, y, w, h, 18, sec ? '#b8860b' : '#283593'); rr(x + 8, y + 48, w - 16, h - 56, 12, '#fff');
+      fit(itemName(it), x + w / 2, y + 33, 21, w - 20, '#fff', 'center', false);
+      ctx.save(); ctx.beginPath(); ctx.rect(x + 14, y + 54, w - 28, 150); ctx.clip(); nightBg(x + 14, y + 54, w - 28, 150, 8); drawItem(it, x + w / 2, y + 132, 0.58); ctx.restore();
+      fit(it === BEAMY ? '🔦 SHINE THE LIGHT!' : '✨ ' + EX[it].act, x + w / 2, y + 226, 16, w - 24, '#2e7d32', 'center', false);
+      wrap(it === BEAMY ? 'The friendly night guard. He walks around the museum and gives you hints!' : EX[it].facts[0], 13, w - 30).slice(0, 3).forEach((l, j) => ptext(l, x + w / 2, y + 250 + j * 17, 13, '#333'));
+      ptext(`#${n + 1} of ${list.length}`, x + w / 2, y + h - 14, 14, '#c62828');
+      cutBox(x - 5, y - 5, w + 10, h + 10, 20); });
+  }));
+  return pages;
+}
+function pageMember() {
+  return makePage(() => {
+    ptext('💳 MUSEUM MEMBER CARD  Cut it out, fold on the blue line, and glue it shut!', PW / 2, 34, 20, '#555');
+    const x = 75, y = 70, w = 700, h = 440;
+    ctx.save(); ctx.beginPath(); ctx.rect(x, y + h, w, h); ctx.clip(); nightBg(x, y + h, w, h, 20); ctx.restore(); rr(x, y + h, w, 16, 0, GLOW);
+    glowBall(x + w - 80, y + h + 90, 60, 'rgba(255,246,201,.6)'); circle(x + w - 80, y + h + 90, 30, MOON);
+    bigTitle('THE MIDNIGHT MUSEUM', x + w / 2 - 30, y + h + 80, 40, GLOW, '#1a2350'); ptext('⭐ OFFICIAL MEMBER ⭐', x + w / 2 - 30, y + h + 124, 26, '#fff');
+    rr(x + 40, y + h + 150, 230, 250, 18, '#e8eaf6'); drawBeamy(x + 155, y + h + 380, 2.2, 1, 1);
+    [['NAME:', 'BEN'], ['MEMBER #:', '0001'], ['LEVEL:', 'NIGHT OWL VIP'], ['BEST TIME:', 'MIDNIGHT!']].forEach(([a, b], j) => { ptext(a, x + 300, y + h + 190 + j * 56, 20, '#c5cae9', 'left'); fit(b, x + 470, y + h + 190 + j * 56, 30, 220, '#fff', 'left', false); });
+    ctx.save(); ctx.translate(x + w / 2, y + h / 2); ctx.rotate(Math.PI);           // the back (upside down, so it reads right after folding)
+    rr(-w / 2, -h / 2, w, h, 0, '#e8eaf6'); ptext('This member can visit the', 0, -h / 2 + 80, 28, '#283593'); ptext('MIDNIGHT MUSEUM any time!', 0, -h / 2 + 118, 32, '#283593');
+    ptext(`📘 Passport stamps: ${seenCount()} of ${REG.length}`, 0, -h / 2 + 190, 26, '#3e2723'); ptext('Favorite exhibit: __________________', 0, -h / 2 + 250, 24, '#3e2723');
+    ptext('Signature: ____________________', 0, -h / 2 + 310, 24, '#3e2723'); ['rex', 'mummy', 'robot', 'crystal'].forEach((id, k) => drawEx(EI[id], -240 + k * 160, -h / 2 + 380, 0.32, 0, 1)); ctx.restore();
+    foldLine(x, y + h, x + w, y + h); dash(() => ctx.rect(x, y, w, h * 2)); ptext('(fold here)', x + w + 8, y + h + 6, 14, '#1e88e5', 'left');
+  });
+}
+function pagePuzzle() {
+  return makePage(() => {
+    ptext('🧩 MIDNIGHT MUSEUM PUZZLE  Cut on the lines, mix it up, and put it back together!', PW / 2, 30, 17, '#555');
+    const X = 40, Y = 50, Wd = 770, Hd = 1000;
+    ctx.save(); ctx.beginPath(); ctx.rect(X, Y, Wd, Hd); ctx.clip(); nightBg(X, Y, Wd, Hd, 40);
+    glowBall(X + 640, Y + 190, 130, 'rgba(255,246,201,.6)'); circle(X + 640, Y + 190, 60, MOON);
+    bigTitle('THE MIDNIGHT MUSEUM', PW / 2, Y + 90, 52, GLOW, '#1a2350');
+    ctx.fillStyle = '#283593'; ctx.fillRect(X, Y + 830, Wd, 170);
+    [['whale', 330, 300, 1.1], ['rex', 150, 560, 1.1], ['knight', 390, 540, 1.05], ['crystal', 630, 560, 1.05], ['mummy', 140, 840, 0.95], ['robot', 330, 830, 0.95], ['chest', 520, 850, 0.95], ['cuckoo', 690, 820, 0.9]].forEach(([id, x, y, sc]) => drawEx(EI[id], X + x, Y + y, sc, 0, 1));
+    drawBeamy(X + 690, Y + 990, 1.2, -1, 1); ctx.restore();
+    ctx.save(); ctx.strokeStyle = 'rgba(255,255,255,.95)'; ctx.lineWidth = 3; ctx.setLineDash([8, 6]);
+    const cols = 4, rows = 5, cw = Wd / cols, chh = Hd / rows;
+    const seg = (x1, y1, x2, y2, flip) => { const mx = (x1 + x2) / 2, my = (y1 + y2) / 2, r = 22; ctx.beginPath(); ctx.moveTo(x1, y1);
+      if (x1 === x2) { ctx.lineTo(x1, my - r); ctx.arc(x1, my, r, -Math.PI / 2, Math.PI / 2, flip < 0); } else { ctx.lineTo(mx - r, y1); ctx.arc(mx, y1, r, Math.PI, 0, flip < 0); } ctx.lineTo(x2, y2); ctx.stroke(); };
+    for (let c = 1; c < cols; c++) for (let r = 0; r < rows; r++) seg(X + c * cw, Y + r * chh, X + c * cw, Y + (r + 1) * chh, (c + r) % 2 ? 1 : -1);
+    for (let r = 1; r < rows; r++) for (let c = 0; c < cols; c++) seg(X + c * cw, Y + r * chh, X + (c + 1) * cw, Y + r * chh, (c + r) % 2 ? 1 : -1);
+    ctx.restore(); ctx.strokeStyle = '#9e9e9e'; ctx.lineWidth = 2; ctx.strokeRect(X, Y, Wd, Hd);
+    ptext('20 pieces!', PW / 2, PH - 22, 18, '#555');
+  });
+}
+function pagesStandups() {
+  const list = shown().concat([BEAMY]), pages = [];
+  for (let pg = 0; pg < Math.ceil(list.length / 4); pg++) pages.push(makePage(() => {
+    ptext(`🧍 STAND-UPS (page ${pg + 1})  Cut out, fold on the blue line, and stand them up!`, PW / 2, 30, 18, '#555');
+    list.slice(pg * 4, pg * 4 + 4).forEach((it, k) => { const x = 30 + (k % 2) * 400, y = 50 + Math.floor(k / 2) * 520, w = 390, h = 500;
+      rr(x, y, w, h, 10, PAST[(pg * 4 + k) % PAST.length]);
+      ctx.save(); ctx.translate(x + w / 2, y + h / 4); ctx.rotate(Math.PI); drawItem(it, 0, -10, 0.9); fit(itemName(it), 0, 112, 22, w - 30, '#283593', 'center', false); ctx.restore();
+      drawItem(it, x + w / 2, y + h * 0.75 - 10, 0.9); fit(itemName(it), x + w / 2, y + h - 14, 22, w - 30, '#283593', 'center', false);
+      foldLine(x, y + h / 2, x + w, y + h / 2); dash(() => ctx.rect(x, y, w, h)); });
+  }));
+  return pages;
+}
+</script>
+<script>
+// 🔦 SPECIAL: a paper flashlight with a yellow beam you tape on (paper + scissors + tape only)
+function pageFlash() {
+  return makePage(() => {
+    bigTitle('PAPER FLASHLIGHT', PW / 2, 70, 54, GLOW, '#283593'); ptext('🔦 Be a night guard, just like Beamy!', PW / 2, 108, 22, '#283593');
+    const hx = 50, hy = 140, hw = 750, hh = 330, my = hy + hh / 2;
+    const g = ctx.createLinearGradient(0, hy, 0, hy + hh); g.addColorStop(0, '#c62828'); g.addColorStop(0.45, '#ff8a80'); g.addColorStop(1, '#c62828'); ctx.fillStyle = g; ctx.fillRect(hx, hy, hw - 50, hh);
+    ctx.fillStyle = 'rgba(0,0,0,.18)'; for (let k = 0; k < 6; k++) ctx.fillRect(hx + 50 + k * 26, hy, 12, hh);
+    rr(hx + hw - 50, hy, 50, hh, 0, '#ffcdd2'); ctx.save(); ctx.translate(hx + hw - 20, my); ctx.rotate(-Math.PI / 2); ptext('tape here', 0, 0, 20, '#c62828'); ctx.restore();
+    circle(hx + 330, my, 50, '#f57f17'); circle(hx + 330, my, 42, '#ffca28'); ptext('ON', hx + 330, my + 13, 36, '#5d4037');
+    ptext('NIGHT GUARD', hx + 545, my - 8, 40, '#fff'); ptext('⭐ BEN ⭐', hx + 545, my + 40, 32, GLOW);
+    dash(() => ctx.rect(hx, hy, hw, hh));
+    const bx = 60, by = 735;
+    rr(bx, by - 50, 50, 100, 0, '#fff59d'); ctx.save(); ctx.translate(bx + 30, by); ctx.rotate(-Math.PI / 2); ptext('tape', 0, 0, 18, '#f57f17'); ctx.restore();
+    const beam = () => { ctx.moveTo(bx + 50, by - 60); ctx.lineTo(780, by - 200); ctx.quadraticCurveTo(850, by, 780, by + 200); ctx.lineTo(bx + 50, by + 60); ctx.closePath(); };
+    const bg = ctx.createLinearGradient(bx, 0, 820, 0); bg.addColorStop(0, '#ffee58'); bg.addColorStop(1, '#fffde7'); ctx.fillStyle = bg; ctx.beginPath(); beam(); ctx.fill();
+    for (let k = 0; k < 9; k++) star(300 + (k * 97) % 420, by - 120 + (k * 71) % 240, 10 + (k % 3) * 5, k % 2 ? '#fff' : '#ffd54f', k);
+    ptext('✨ SHINE! ✨', 520, by + 14, 44, '#f9a825');
+    dash(() => { beam(); ctx.rect(bx, by - 50, 50, 100); });
+    ['1. Cut out the flashlight and the yellow beam.', '2. Roll the flashlight into a tube and tape it.', '3. Tape the small end of the beam inside the top.', '4. Press ON and shine it on your toys at midnight!'].forEach((l, j) => ptext(l, 70, 978 + j * 31, 23, '#283593', 'left'));
+  });
+}
+// 🛡️ SPECIAL: glow-in-the-dark style NIGHT GUARD badges (one for Ben + two for the family)
+function badge(cx, cy, R, name) {
+  circle(cx, cy, R * 1.12, '#0d1233'); glowBall(cx, cy, R * 1.12, 'rgba(198,255,0,.6)');
+  star(cx, cy, R, '#f57f17', 0, 0.56); star(cx, cy, R * 0.9, GLOW, 0, 0.56);
+  circle(cx, cy - R * 0.05, R * 0.36, '#c6ff00'); circle(cx, cy - R * 0.05, R * 0.32, '#283593');
+  circle(cx, cy - R * 0.05, R * 0.2, MOON); circle(cx + R * 0.09, cy - R * 0.11, R * 0.17, '#283593');
+  for (let k = 0; k < 3; k++) star(cx - R * 0.18 + k * R * 0.18, cy - R * 0.28 + (k % 2) * R * 0.05, R * 0.03, '#fff', 0);
+  rr(cx - R * 0.98, cy + R * 0.34, R * 1.96, R * 0.3, R * 0.08, '#283593'); fit('NIGHT GUARD', cx, cy + R * 0.57, R * 0.2, R * 1.8, GLOW, 'center', false);
+  rr(cx - R * 0.62, cy + R * 0.7, R * 1.24, R * 0.26, R * 0.08, '#c6ff00'); fit(name, cx, cy + R * 0.9, R * 0.18, R * 1.1, '#1a2350', 'center', false);
+  dash(() => ctx.arc(cx, cy, R * 1.15, 0, 7));
+}
+function pageBadge() {
+  return makePage(() => {
+    ptext('🛡️ NIGHT GUARD BADGES  Cut them out. Tape a paper loop on the back to wear them!', PW / 2, 34, 18, '#555');
+    badge(PW / 2, 390, 270, 'BEN');
+    ptext('Glow-in-the-dark style! Make the other two for your family:', PW / 2, 745, 20, '#283593');
+    badge(225, 915, 120, 'Name: ______'); badge(625, 915, 120, 'Name: ______');
+  });
+}
+const EXTRA_PRINT = { trading: pagesTrading, member: () => [pageMember()], puzzle: () => [pagePuzzle()], stand: pagesStandups, flash: () => [pageFlash()], badge: () => [pageBadge()] };
+</script>
