@@ -52,6 +52,32 @@
   // the book calls this to start the music: the code runs in the game's own scope, so it can reach the game's music variables
   J.start = function (code) { J.started = true; return (0, eval)(String(code)); };
 })();
+// ---------- 🛡️ no scary sound blasts ----------
+// If a game makes sounds before Ben taps (Chrome keeps the speaker paused until then), they used to pile up
+// and ALL play at once when the speaker woke up: a loud, scary burst. Now sounds made while the speaker is
+// paused are skipped, and no more than a handful of sounds can start in the same split-second.
+(function () {
+  try {
+    const started = new WeakSet(), recent = new WeakMap();
+    const guard = function (proto) {
+      if (!proto || proto.__gfGuard) return; proto.__gfGuard = true;
+      const start = proto.start, stop = proto.stop;
+      proto.start = function (...a) {
+        const c = this.context;
+        if (c && c.state && c.state !== 'running' && !(navigator.userActivation && navigator.userActivation.isActive)) return;                 // speaker still asleep: skip, don't save it up
+        if (c) {                                                            // too many sounds at the very same moment: skip the extras
+          const now = performance.now(); let r = recent.get(c);
+          if (!r || now - r.t > 120) { r = { t: now, n: 0 }; recent.set(c, r); }
+          if (++r.n > 48) return;
+        }
+        started.add(this); return start.apply(this, a);
+      };
+      proto.stop = function (...a) { if (!started.has(this)) return; try { return stop.apply(this, a); } catch (_) {} };
+    };
+    if (window.AudioScheduledSourceNode) guard(AudioScheduledSourceNode.prototype);
+    else { if (window.OscillatorNode) guard(OscillatorNode.prototype); if (window.AudioBufferSourceNode) guard(AudioBufferSourceNode.prototype); }
+  } catch (_) {}
+})();
 // ---------- 🔊 talking voices that keep working ----------
 // Chrome only lets a page talk after a tap IN THAT PAGE, and games inside the book are their own little page.
 // So a game borrows the book's voice (the book already got Ben's tap). If the voice gets stuck, it un-sticks it and tries again.
