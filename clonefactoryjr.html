@@ -1,0 +1,987 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clone Factory Jr.</title>
+<script>TOUCHPAD = { dpad: true, south: [' ', 'JUMP'], east: ['x', 'ZAP'] };</script>
+<script src="touchpad.js?v=10"></script>
+<style>
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: #0b1440; display: flex;
+    align-items: center; justify-content: center; overflow: hidden;
+  }
+  canvas {
+    width: min(100vw, calc(100vh * 960 / 520));
+    height: auto; display: block; border-radius: 12px;
+    box-shadow: 0 10px 40px rgba(0,0,0,.6);
+  }
+</style>
+<canvas id="game" width="960" height="520"></canvas>
+<script>
+// ===== CLONE FACTORY JR.: the EASY Clone Factory (Ben's idea: an easy Clone Factory for his brother!) =====
+// No hearts, no losing: bumps are just happy bounces, pits pop Robo back on the edge, the boss is a big friendly Mecha Robo.
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }   // for the Trophy Room in the Game Factory book
+function sticker(id) { try { const s = JSON.parse(localStorage.getItem('gfStickers') || '{}'); if (!s[id]) { s[id] = 1; localStorage.setItem('gfStickers', JSON.stringify(s)); stickerNew = 150; } } catch (_) {} }   // for the Sticker Book
+let stickerNew = 0;
+
+// ---------- Saved progress (localStorage.cloneFactoryJr) ----------
+const NUM_LEVELS = 5, BOSS = 4, LAST = NUM_LEVELS - 1;
+let unlocked = 1, everWon = false, totalArmy = 0, autoWalk = true;
+try {
+  const s = JSON.parse(localStorage.getItem('cloneFactoryJr') || '{}') || {};
+  everWon = !!s.won; totalArmy = Math.max(0, s.army || 0);
+  unlocked = Math.max(1, Math.min(NUM_LEVELS, s.unlocked || 1));
+  if (s.auto === false) autoWalk = false;
+  if (everWon) unlocked = NUM_LEVELS;
+} catch (_) {}
+function saveProgress(won) {
+  try {
+    const s = JSON.parse(localStorage.getItem('cloneFactoryJr') || '{}') || {};
+    s.unlocked = Math.max(s.unlocked || 1, unlocked); s.army = Math.max(s.army || 0, totalArmy); s.auto = autoWalk;
+    if (won) s.won = true;
+    localStorage.setItem('cloneFactoryJr', JSON.stringify(s));
+  } catch (_) {}
+}
+
+const C = document.getElementById('game'), ctx = C.getContext('2d');
+const W = 960, H = 520, T = 40, FLOOR = 440;
+const GRAV = 0.6, SPEED = 3.4, JUMP = 13.2, MAXFALL = 12;
+const RS = 1.3, CS = 1.25;                                  // Robo and the clones are drawn a bit BIGGER than in Clone Factory
+
+function hex(c) { const n = parseInt(c.slice(1), 16); return [n >> 16, (n >> 8) & 255, n & 255]; }
+function mix(a, b, t) {
+  const A = hex(a), B = hex(b), k = Math.max(0, Math.min(1, t));
+  return `rgb(${Math.round(A[0] + (B[0] - A[0]) * k)},${Math.round(A[1] + (B[1] - A[1]) * k)},${Math.round(A[2] + (B[2] - A[2]) * k)})`;
+}
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const rnd = (a, b) => a + Math.random() * (b - a);
+
+// ---------- Sound (soft and gentle: no booms, no blasts) ----------
+let actx = null, woke = false;
+function wake() { woke = true; if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {} } }
+function note(freq, start, dur, wave = 'triangle', vol = 0.08, slideTo = null) {
+  if (!actx) return;
+  vol = Math.min(0.09, vol * 0.7);
+  const t = actx.currentTime + start;
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type = wave; o.frequency.setValueAtTime(freq, t);
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+  g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(vol, t + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g); g.connect(actx.destination);
+  o.start(t); o.stop(t + dur + 0.02);
+}
+const sfx = {
+  jump:   () => note(380, 0, 0.16, 'sine', 0.1, 720),
+  beam:   () => { note(1200, 0, 0.12, 'sine', 0.06, 1700); note(1600, 0.05, 0.1, 'triangle', 0.04); },
+  good:   () => [784, 988, 1175, 1568].forEach((f, i) => note(f, i * 0.07, 0.18, 'triangle', 0.1)),
+  boing:  () => note(260, 0, 0.28, 'sine', 0.12, 620),
+  star:   () => { note(1320, 0, 0.1, 'sine', 0.08); note(1760, 0.07, 0.14, 'sine', 0.08); },
+  pop:    () => note(900, 0, 0.12, 'sine', 0.08, 500),
+  tick:   () => note(700, 0, 0.06, 'triangle', 0.06, 900),
+  bridge: () => [523, 659, 784, 1047].forEach((f, i) => note(f, i * 0.08, 0.2, 'sine', 0.09)),
+  door:   () => [392, 523, 659, 784, 1047].forEach((f, i) => note(f, i * 0.09, 0.22, 'triangle', 0.09)),
+  giggle: () => [880, 990, 880, 1100].forEach((f, i) => note(f, i * 0.07, 0.08, 'sine', 0.08)),
+  land:   () => note(140, 0, 0.18, 'sine', 0.1, 90),
+  glow:   () => [660, 880, 660, 880].forEach((f, i) => note(f, i * 0.12, 0.1, 'sine', 0.06)),
+  win:    () => [523, 659, 784, 1047, 784, 1047, 1319].forEach((f, i) => note(f, i * 0.13, 0.24, 'triangle', 0.1)),
+};
+
+// ---------- Music: the same bouncy "Clone Factory" tune, a little softer ----------
+let musicOn = true, nextNoteTime = 0, step = 0;
+const BPM = 128;
+const MELODY = [
+  72, 0, 76, 0, 79, 0, 76, 0, 77, 0, 74, 0, 71, 0, 67, 0,
+  72, 0, 76, 79, 84, 0, 79, 0, 81, 79, 77, 76, 74, 0, 0, 0,
+  69, 0, 72, 0, 77, 0, 72, 0, 76, 0, 79, 0, 84, 0, 79, 0,
+  77, 76, 74, 72, 71, 0, 74, 0, 72, 0, 67, 0, 72, 0, 0, 0,
+];
+const BASS = [48, 43, 48, 43, 41, 48, 43, 48].flatMap(r => [r, 0, r + 12, 0, r + 7, 0, r + 12, 0]);
+const midi = n => 440 * Math.pow(2, (n - 69) / 12);
+function playMusic() {
+  if (!actx || !musicOn) return;
+  const stepDur = 60 / BPM / 2, shift = state === 'win' ? 5 : 0;
+  if (nextNoteTime < actx.currentTime) nextNoteTime = actx.currentTime + 0.05;
+  while (nextNoteTime < actx.currentTime + 0.2) {
+    const t = nextNoteTime - actx.currentTime;
+    const m = MELODY[step % MELODY.length], b = BASS[step % BASS.length];
+    if (m) note(midi(m + shift), t, stepDur * 0.85, 'square', 0.035);
+    if (b) note(midi(b + shift), t, stepDur * 0.9, 'triangle', 0.08);
+    if (step % 4 === 0) note(2400, t, 0.03, 'sine', 0.012);
+    nextNoteTime += stepDur; step++;
+  }
+}
+
+// ---------- A friendly voice reads the short instructions out loud ----------
+let lastSaid = '', sayT = 0;
+function speak(str) {
+  if (!woke || !str) return;
+  try {
+    const s = window.speechSynthesis; if (!s || !window.SpeechSynthesisUtterance) return;
+    s.cancel();
+    const u = new SpeechSynthesisUtterance(str); u.rate = 0.9; u.pitch = 1.15;
+    s.speak(u); lastSaid = str; sayT = 0;
+  } catch (_) {}
+}
+const PRAISE = ['Great job!', 'Yay!', 'Super!', 'Wow!', 'Awesome!', 'You did it!', 'Hooray!', 'Nice zap!'];
+const praiseWord = () => PRAISE[Math.floor(Math.random() * PRAISE.length)];
+
+// ---------- Input: arrows / SPACE = jump / X = zap / Enter / Escape, plus big taps ----------
+const keys = { left: false, right: false, jump: false, fire: false };
+let jumpPressed = false, okPressed = false, firePressed = false;
+addEventListener('keydown', e => {
+  wake();
+  const k = e.key;
+  if (k === 'ArrowLeft' || k === 'a' || k === 'A') { if (!keys.left && state === 'map') moveSel(-1); keys.left = true; }
+  if (k === 'ArrowRight' || k === 'd' || k === 'D') { if (!keys.right && state === 'map') moveSel(1); keys.right = true; }
+  if (k === ' ' || k === 'ArrowUp' || k === 'w' || k === 'W') {
+    if (!keys.jump) jumpPressed = true;
+    keys.jump = true; if (e.preventDefault) e.preventDefault();
+  }
+  if (k === 'ArrowDown' && e.preventDefault) e.preventDefault();
+  if (k === 'x' || k === 'X' || k === 'z' || k === 'Z' || k === 'f' || k === 'F') { if (!keys.fire) firePressed = true; keys.fire = true; }
+  if ((k === ' ' || k === 'Enter' || k === 'x' || k === 'X') && !e.repeat) okPressed = true;
+  if (k === 't' || k === 'T') toggleAuto();
+  if (state === 'map' && k >= '1' && k <= '5') { mapSel = +k - 1; tryStart(mapSel); }
+  if (k === 'm' || k === 'M') musicOn = !musicOn;
+  if (k === 'Escape') goBack();
+});
+addEventListener('keyup', e => {
+  const k = e.key;
+  if (k === 'ArrowLeft' || k === 'a' || k === 'A') keys.left = false;
+  if (k === 'ArrowRight' || k === 'd' || k === 'D') keys.right = false;
+  if (k === ' ' || k === 'ArrowUp' || k === 'w' || k === 'W') keys.jump = false;
+  if (k === 'x' || k === 'X' || k === 'z' || k === 'Z' || k === 'f' || k === 'F') keys.fire = false;
+});
+const PLAY_BTN = { x: W / 2 - 170, y: 318, w: 340, h: 86 };
+const BACK_BTN = { x: 14, y: 12, w: 110, h: 60 };
+const AUTO_BTN = { x: 10, y: 10, w: 270, h: 60 };
+const HOME_BTN = { x: 290, y: 10, w: 66, h: 60 };
+const NEXT_BTN = { x: W / 2 - 150, y: 318, w: 300, h: 82 };
+const NODES = [{ x: 120, y: 250 }, { x: 300, y: 300 }, { x: 480, y: 250 }, { x: 660, y: 300 }, { x: 850, y: 260 }];
+const inBox = (b, x, y) => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h;
+function toggleAuto() { autoWalk = !autoWalk; sfx.tick(); saveProgress(); if (state === 'play') speak(autoWalk ? 'Auto walk on!' : 'Auto walk off!'); }
+C.addEventListener('mousedown', e => {                 // taps: big buttons on the menus; in the game a tap = JUMP + ZAP
+  wake();
+  const r = C.getBoundingClientRect(), x = (e.clientX - r.left) * W / r.width, y = (e.clientY - r.top) * H / r.height;
+  if (state === 'title') { okPressed = true; return; }
+  if (state === 'map') {
+    if (inBox(BACK_BTN, x, y)) { goBack(); return; }
+    for (let i = 0; i < NUM_LEVELS; i++) if (Math.hypot(x - NODES[i].x, y - NODES[i].y) < 66) { mapSel = i; tryStart(i); return; }
+    return;
+  }
+  if (state === 'play') {
+    if (inBox(AUTO_BTN, x, y)) { toggleAuto(); return; }
+    if (inBox(HOME_BTN, x, y)) { goBack(); return; }
+    jumpPressed = true; firePressed = true; return;
+  }
+  if (state === 'levelDone' || state === 'win') okPressed = true;
+});
+
+// ---------- Levels: short and flat, tiny gaps, slow clones ----------
+//  fl = the floor ('_' ground, ' ' a tiny gap)      hi = big chunky ledges ('=' ledge, '*' ledge with a star on top)
+//  lo = things on the floor:  P start   D exit door   * star   clones: g gray  b bouncy  r round  i ice  j jet-pack
+const LEVELS = [
+  { name: 'The Clone Lab', icon: '🧪', bg: 'lab', sky: ['#1e3c72', '#7fd3ff'], top: '#00e5ff', dirt: '#2c3e70', ledge: '#cfd8dc',
+    say: 'Grumpy clones! Press ZAP to make them happy!',
+    fl: '____________________________________________',
+    hi: '            ==*==             ==*==         ',
+    lo: '  P      g        *     g          *  g   D ' },
+  { name: 'The Bouncy Room', icon: '🎈', bg: 'size', sky: ['#ff9a8b', '#ffe29f'], top: '#ff6f00', dirt: '#8d4a2f', ledge: '#fff3e0',
+    say: 'Bouncy clones! Zap them! Jump over the hole!',
+    fl: '____________________ _________________________',
+    hi: '         ==*==                  ==*==         ',
+    lo: '  P    b       *          *  r         b    D ' },
+  { name: 'The Freezer', icon: '❄️', bg: 'ice', sky: ['#4fc3f7', '#e1f5fe'], top: '#ffffff', dirt: '#5fa8d3', ledge: '#e1f5fe',
+    say: 'Brrr! Icy clones! Zap them warm and happy!',
+    fl: '________________ ________________ ________________',
+    hi: '                      ==*==                       ',
+    lo: '  P     i     *     i      *  i       *    i   D  ' },
+  { name: 'The Sky Lab', icon: '☁️', bg: 'sky', sky: ['#64b5f6', '#fff9c4'], top: '#ffffff', dirt: '#bbdefb', ledge: '#ffffff',
+    say: 'Way up high! Zap the jet pack clones!',
+    fl: '______________ _______________  ____________________',
+    hi: '       ==*==          ==*==           ==*==         ',
+    lo: '  P   j     *    g    *    j      *   g     j    D  ' },
+  { name: 'Friendly Mecha', icon: '🤖', bg: 'mecha', sky: ['#0f2027', '#2c5364'], top: '#ffd740', dirt: '#1c2b33', ledge: '#cfd8dc',
+    say: 'Mecha Robo is lonely. Zap him when he glows!',
+    fl: '________________________', hi: '', lo: '     P                  ' },
+];
+const CT = {   // clone kinds (all SLOW and only one zap each)
+  g: { shape: 'robo',  s: 1, speed: 0.45, range: 70, pal: 'gray' },
+  b: { shape: 'robo',  s: 1, speed: 0.4,  range: 60, pal: 'bouncy' },
+  r: { shape: 'round', s: 1, speed: 0.45, range: 70, pal: 'round' },
+  i: { shape: 'robo',  s: 1, speed: 0.4,  range: 70, pal: 'ice' },
+  j: { shape: 'robo',  s: 1, speed: 0.5,  range: 80, pal: 'jet' },
+};
+const PAL = {
+  gray:   { body: '#9e9e9e', belly: '#bdbdbd', visor: '#424242', eye: '#e0e0e0', ear: '#757575', feet: '#616161' },
+  bouncy: { body: '#90a4ae', belly: '#b0bec5', visor: '#37474f', eye: '#e0e0e0', ear: '#607d8b', feet: '#546e7a' },
+  round:  { body: '#a1a1a1', belly: '#c4c4c4', visor: '#454545', eye: '#e0e0e0', ear: '#7a7a7a', feet: '#5e5e5e' },
+  ice:    { body: '#b3e5fc', belly: '#e1f5fe', visor: '#01579b', eye: '#ffffff', ear: '#4fc3f7', feet: '#0288d1' },
+  jet:    { body: '#b0bec5', belly: '#cfd8dc', visor: '#263238', eye: '#ffab40', ear: '#ff7043', feet: '#546e7a' },
+};
+const GOOD_COLS = ['#ff80ab', '#69f0ae', '#ffd740', '#80d8ff', '#b388ff', '#ffab40', '#a7ffeb', '#f4ff81'];
+const goodPal = col => ({ body: col, belly: '#ffffff', visor: '#111827', eye: '#40c4ff', ear: '#ffffff', feet: '#3d5afe' });
+const THANKS = ['Thanks, Robo!', 'I feel GOOD!', 'Yay!', 'Robo Army!', 'Hooray!', 'I am happy!'];
+
+let state = 'title', levelIndex = 0, frame = 0, mapSel = 0, doneT = 0, winT = 0, titleT = 0;
+let map = [], rows = 13, cols = 24, gaps = [];
+let player = null, clones = [], army = [], beams = [], parts = [], bubbles = [], pops = [], stars = [], door = null;
+let camX = 0, banner = 0, bannerText = '', bannerSub = '', savedHere = 0, starsHere = 0, hintT = 0, zapHint = 0;
+let boss = null, bossState = 'none', bossT = 0;
+
+function newPlayer(x, y) { return { x, y, w: 30, h: 46, vx: 0, vy: 0, kb: 0, onGround: false, face: 1, coyote: 0, jbuf: 0, cd: 0, boing: 0, inPit: null, wait: 0, waitGap: null }; }
+function makeClone(type, x) {
+  const k = CT[type], w = Math.round(28 * CS), h = Math.round(36 * CS);
+  return { type, x, y: FLOOR - h, w, h, vx: 0, vy: 0, dir: Math.random() < 0.5 ? -1 : 1, home: x, onGround: true, face: -1,
+           good: false, flash: 0, col: '#ffffff', t: Math.floor(rnd(0, 200)), lineT: 0 };
+}
+function buildLevel(i) {
+  const L = LEVELS[i];
+  cols = Math.max(L.fl.length, L.lo.length, L.hi.length); rows = 13;
+  map = []; for (let r = 0; r < rows; r++) map.push(new Array(cols).fill(r >= 11 ? '#' : ' '));
+  clones = []; army = []; beams = []; parts = []; bubbles = []; pops = []; stars = []; gaps = []; door = null;
+  boss = null; bossState = 'none'; bossT = 0; savedHere = 0; starsHere = 0; hintT = 0; zapHint = 0;
+  for (let c = 0; c < cols; c++) if (L.fl[c] === ' ') { map[11][c] = ' '; map[12][c] = ' '; }
+  for (let c = 0; c < cols; c++) if (map[11][c] === ' ' && (c === 0 || map[11][c - 1] !== ' ')) { let e = c; while (e < cols && map[11][e] === ' ') e++; gaps.push({ c0: c, c1: e - 1, falls: 0, bridge: 0 }); }
+  for (let c = 0; c < L.hi.length; c++) {
+    const ch = L.hi[c];
+    if (ch === '=' || ch === '*') map[8][c] = '=';
+    if (ch === '*') stars.push({ x: c * T + 20, y: 8 * T - 34, got: false });
+  }
+  let start = { x: 80, y: FLOOR - 46 };
+  for (let c = 0; c < L.lo.length; c++) {
+    const ch = L.lo[c];
+    if (ch === 'P') start = { x: c * T + 6, y: FLOOR - 46 };
+    else if (CT[ch]) clones.push(makeClone(ch, c * T + 4));
+    else if (ch === '*') stars.push({ x: c * T + 20, y: FLOOR - 70, got: false });
+    else if (ch === 'D') door = { x: c * T - 20, y: FLOOR - 118, w: 84, h: 118 };
+  }
+  player = newPlayer(start.x, start.y);
+  camX = 0;
+}
+function startLevel(i) {
+  levelIndex = i; buildLevel(i); state = 'play';
+  jumpPressed = false; okPressed = false; firePressed = false; keys.fire = false;
+  banner = 170; bannerText = LEVELS[i].icon + ' ' + LEVELS[i].name; bannerSub = '';
+  speak(LEVELS[i].say);
+  if (i === BOSS) startBoss();
+}
+function tryStart(i) { if (i < unlocked) { sfx.tick(); startLevel(i); } else { sfx.pop(); speak('Play the one before it first!'); } }
+function moveSel(d) { mapSel = clamp(mapSel + d, 0, LAST); sfx.tick(); }
+function goMap(sel) { state = 'map'; mapSel = clamp(sel == null ? mapSel : sel, 0, Math.max(0, unlocked - 1)); boss = null; bossState = 'none'; okPressed = false; jumpPressed = false; speak('Pick a level!'); }
+function goBack() {
+  if (state === 'play' || state === 'levelDone' || state === 'win') goMap(levelIndex);
+  else if (state === 'map') { state = 'title'; okPressed = false; }
+}
+
+// ---------- Moving things around ----------
+const tileAt = (c, r) => (c < 0 || c >= cols) ? '#' : (r < 0 || r >= rows) ? ' ' : map[r][c];
+const isGap = x => { const c = Math.floor(x / T); return c >= 0 && c < cols && map[11][c] === ' '; };
+const gapAt = x => { const c = Math.floor(x / T); return gaps.find(g => c >= g.c0 && c <= g.c1) || null; };
+const overlap = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+const midX = o => o.x + o.w / 2;
+function moveX(o) {
+  o.x += o.vx; let hit = false;
+  if (o.x < 0) { o.x = 0; hit = true; }
+  if (o.x + o.w > cols * T) { o.x = cols * T - o.w; hit = true; }
+  return hit;
+}
+function moveY(o) {                                         // ledges are one-way: jump up through them, land on top
+  const prevBottom = o.y + o.h;
+  o.vy = Math.min(o.vy, MAXFALL);
+  o.y += o.vy; o.onGround = false;
+  if (o.vy >= 0) {
+    const r = Math.floor((o.y + o.h) / T);
+    if (r < 11) {
+      const c0 = Math.floor((o.x + 4) / T), c1 = Math.floor((o.x + o.w - 4) / T);
+      for (let c = c0; c <= c1; c++) if (tileAt(c, r) === '=' && prevBottom <= r * T + 0.5) { o.y = r * T - o.h; o.vy = 0; o.onGround = true; break; }
+    }
+  }
+  if (!o.onGround && o.y + o.h >= FLOOR && prevBottom <= FLOOR + 0.5 && !isGap(midX(o))) { o.y = FLOOR - o.h; o.vy = 0; o.onGround = true; }
+}
+function burst(x, y, colors, n = 10, sp = 4, kind = 'dot') {
+  for (let i = 0; i < n; i++) parts.push({ x, y, vx: rnd(-sp, sp), vy: rnd(-sp, sp * 0.4) - 1, life: 34 + Math.random() * 26, col: colors[i % colors.length], size: 5 + Math.random() * 5, kind });
+}
+function confetti(n = 30) { for (let i = 0; i < n; i++) parts.push({ x: camX + rnd(0, W), y: rnd(-40, -5), vx: rnd(-1, 1), vy: rnd(1, 3), life: 200, col: GOOD_COLS[Math.floor(rnd(0, 8))], size: rnd(6, 11), kind: 'conf' }); }
+function say(o, txt, t = 130, col = '#1a237e') { bubbles = bubbles.filter(b => b.o !== o); bubbles.push({ o, text: txt, t, col }); }
+function pop(txt, x, y, col = '#ffeb3b', size = 40) { pops.push({ txt, x, y, col, size, t: 70 }); }   // big floating words: "Great job!"
+
+// ---------- Robo (he can never lose!) ----------
+function makeBridge(g) {
+  if (g.bridge) return;
+  g.bridge = 1; for (let c = g.c0; c <= g.c1; c++) { map[11][c] = 'B'; map[12][c] = 'B'; }
+  sfx.bridge(); burst((g.c0 + g.c1 + 1) * T / 2, FLOOR, GOOD_COLS, 22, 5, 'star');
+  pop('🌈 A bridge!', (g.c0 + g.c1 + 1) * T / 2, FLOOR - 150, '#ffffff', 40); speak('Here is a rainbow bridge!');
+}
+function nearestBad(x, range) {
+  let best = null, bd = range;
+  for (const c of clones) if (!c.good) { const d = Math.abs(midX(c) - x); if (d < bd) { bd = d; best = c; } }
+  return best;
+}
+function autoStop(p) {                                     // auto-walk waits at holes (JUMP!) and grumpy clones (ZAP!)
+  if (!p.onGround) return false;
+  const g = gapAt(midX(p) + 34);
+  if (g && !g.bridge && !isGap(midX(p))) { p.waitGap = g; hintT = 2; if (++p.wait > 300) { makeBridge(g); p.wait = 0; } if (p.wait === 20) speak('Jump!'); return true; }
+  for (const c of clones) if (!c.good && !c.skip && midX(c) > midX(p) && midX(c) - midX(p) < 240 && c.y > FLOOR - 200) {
+    zapHint = 2; if (++p.wait > 240) { c.skip = true; p.wait = 0; } if (p.wait === 20) speak('Zap!'); return true;
+  }
+  if (boss && midX(p) > 300) return true;                  // the boss room: wait in a good zapping spot
+  p.wait = 0; return false;
+}
+function updatePlayer() {
+  const p = player;
+  let dir = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+  if (!dir && autoWalk && bossState !== 'good' && !autoStop(p)) dir = 1;
+  p.vx = dir * SPEED + p.kb; p.kb *= 0.85; if (Math.abs(p.kb) < 0.2) p.kb = 0;
+  if (dir) p.face = dir;
+  if (p.onGround) p.coyote = 9; else p.coyote--;
+  if (jumpPressed) p.jbuf = 10; else p.jbuf--;
+  jumpPressed = false;
+  if (p.jbuf > 0 && p.coyote > 0 && !p.inPit) { p.vy = -JUMP; p.coyote = 0; p.jbuf = 0; p.wait = 0; sfx.jump(); }
+  p.vy += GRAV;
+  if (keys.jump && p.vy > 0) p.vy = Math.min(p.vy, 2.2);  // holding JUMP = float down slowly (easy landings)
+  moveX(p);
+  if (p.inPit) { const g = p.inPit; p.x = clamp(p.x, g.c0 * T + 2, (g.c1 + 1) * T - p.w - 2); }
+  moveY(p);
+  if (!p.inPit && p.y + p.h > FLOOR + 2) p.inPit = gapAt(midX(p));
+  if (p.inPit && p.y + p.h > FLOOR + 40) {                 // fell in a tiny hole: BOING, right back on the edge!
+    const g = p.inPit, fromLeft = p.face > 0;
+    p.x = fromLeft ? g.c0 * T - p.w - 8 : (g.c1 + 1) * T + 8; p.y = FLOOR - p.h; p.vy = -7; p.kb = 0; p.inPit = null;
+    sfx.boing(); burst(midX(p), FLOOR, ['#ffffff', '#80d8ff', '#ffd740'], 10, 4, 'star'); say(p, 'Boing!', 70);
+    if (++g.falls >= 2) makeBridge(g); else speak('Boing! Jump over the hole!');
+  }
+  if (p.boing > 0) p.boing--;
+  if (p.cd > 0) p.cd--;
+  if ((firePressed || keys.fire) && p.cd <= 0) fireBeam(p);
+  firePressed = false;
+}
+
+// ---------- The BIG slow sparkle beam: it finds the nearest grumpy clone all by itself ----------
+function zapTarget(p) {
+  if (boss && bossState === 'fight') return boss;
+  return nearestBad(midX(p), 700);
+}
+function fireBeam(p) {
+  const tg = zapTarget(p);
+  if (tg) p.face = midX(tg) < midX(p) ? -1 : 1;
+  beams.push({ x: midX(p) + p.face * 20, y: p.y + 20, vx: p.face * 6, vy: 0, life: 150, r: 24, tg, spin: Math.random() * 6 });
+  p.cd = 22; sfx.beam();
+}
+function updateBeams() {
+  for (const m of beams) {
+    m.life--; m.spin += 0.2;
+    if (m.tg && m.tg.good && m.tg !== boss) m.tg = nearestBad(m.x, 700);
+    const tg = m.tg;
+    if (tg) {
+      const tx = midX(tg), ty = tg.y + tg.h * (tg === boss ? 0.45 : 0.5), dx = tx - m.x, dy = ty - m.y, d = Math.hypot(dx, dy) || 1;
+      m.vx += (dx / d * 6 - m.vx) * 0.12; m.vy += (dy / d * 6 - m.vy) * 0.12;
+      if (d < m.r + Math.min(tg.w, tg.h) * 0.5) { m.life = 0; if (tg === boss) bossZap(m); else turnGood(tg); }
+    }
+    m.x += m.vx; m.y += m.vy;
+    if (frame % 3 === 0) parts.push({ x: m.x, y: m.y, vx: rnd(-1, 1), vy: rnd(-1, 1), life: 22, col: GOOD_COLS[Math.floor(rnd(0, 8))], size: 4, kind: 'star' });
+  }
+  beams = beams.filter(m => m.life > 0 && m.x > camX - 80 && m.x < camX + W + 80);
+}
+
+// ---------- Clones: slow, grumpy... then HAPPY ----------
+function turnGood(c) {
+  if (c.good) return;
+  c.good = true; c.flash = 40; c.col = GOOD_COLS[(totalArmy + savedHere) % GOOD_COLS.length];
+  say(c, THANKS[Math.floor(Math.random() * THANKS.length)], 120);
+  army.push(c); savedHere++; totalArmy++; saveProgress();
+  sfx.good(); burst(midX(c), c.y + c.h / 2, ['#ff80ab', '#ffd740', '#69f0ae', '#80d8ff'], 22, 5, 'heart');
+  burst(midX(c), c.y + c.h / 2, ['#ffeb3b', '#ffffff'], 10, 5, 'star');
+  const w = praiseWord(); pop(w, midX(c), c.y - 50, GOOD_COLS[savedHere % 8], 44);
+  if (sayT > 80) speak(w);
+}
+function updateClone(c) {
+  const k = CT[c.type];
+  c.t++;
+  c.vx = c.dir * k.speed;
+  if (c.type === 'j') {                                    // jet-pack: floats low and slow (easy to zap)
+    c.x += c.vx; c.y = FLOOR - c.h - 50 - Math.sin(c.t * 0.025) * 25; c.onGround = false;
+  } else {
+    if (c.type === 'b' && c.onGround && c.t % 80 === 0) c.vy = -6;   // a little boing
+    if (isGap(midX(c) + c.dir * 24)) c.dir *= -1;
+    c.vy += GRAV; moveX(c); moveY(c);
+    if (c.y + c.h > FLOOR) { c.y = FLOOR - c.h; c.vy = 0; c.onGround = true; }
+  }
+  if (c.x > c.home + k.range) c.dir = -1;
+  if (c.x < c.home - k.range) c.dir = 1;
+  if (c.vx) c.face = Math.sign(c.vx);
+  const p = player;
+  if (p.boing <= 0 && overlap(p, c)) {                     // bump = a happy little hop right over them. No ouch!
+    p.vy = -10; p.boing = 40; sfx.boing(); burst(midX(p), p.y + p.h, ['#ffffff', '#ffd740'], 8, 3, 'star'); say(p, 'Boing!', 60);
+  }
+}
+function updateFollower(c, i) {                            // the Robo Army walks behind Robo in a cheerful line
+  if (c.flash > 0) c.flash--;
+  c.t++;
+  const p = player;
+  let tx = midX(p) - p.face * (50 + i * 34) - c.w / 2;
+  tx = clamp(tx, 4, cols * T - c.w - 4);
+  const dx = tx - c.x;
+  c.vx = Math.abs(dx) > 8 ? Math.sign(dx) * Math.min(4.5, Math.abs(dx) * 0.06 + 0.8) : 0;
+  if (c.type === 'j') {                                    // jet-pack buddies just fly along
+    c.x += c.vx; c.y += ((p.y - 30 + Math.sin(c.t * 0.05) * 10) - c.y) * 0.08;
+  } else {
+    if (c.onGround) {
+      if (c.vx && isGap(midX(c) + Math.sign(c.vx) * 30)) c.vy = -11;       // hop over holes
+      else if (p.y + p.h < c.y + c.h - 60 && Math.abs(dx) < 120 && Math.random() < 0.05) c.vy = -12.5;
+      else if (!c.vx && Math.random() < 0.012) c.vy = -6;                // cheer hop!
+    }
+    c.vy += GRAV; moveX(c); moveY(c);
+    if (c.y > FLOOR + 30) { c.x = clamp(midX(p) - p.face * 50, 4, cols * T - 40); c.y = p.y; c.vy = 0; burst(midX(c), c.y + 10, ['#ffffff', '#80d8ff'], 6, 3); }
+  }
+  if (Math.abs(midX(c) - midX(p)) > 700) { c.x = clamp(midX(p) - p.face * 60, 4, cols * T - 40); c.y = Math.min(p.y, FLOOR - c.h); c.vy = 0; }
+  c.face = c.vx ? Math.sign(c.vx) : p.face;
+}
+
+// ---------- The big FRIENDLY Mecha Robo: 3 zaps, no attacks. He bounces, then glows: "ZAP ME!" ----------
+const MS = 0.8;
+function startBoss() {
+  bossState = 'fight';
+  boss = { name: 'MECHA ROBO', x: 700, y: FLOOR - 300 * MS, w: 180 * MS, h: 300 * MS, vx: 0, vy: 0, onGround: true, face: -1,
+           mode: 'bounce', t: 0, hits: 0, need: 3, gk: 0.25, glow: 0, squash: 1, hops: 0 };
+  const n = clamp(totalArmy, 5, 12);
+  for (let i = 0; i < n; i++) {
+    const kinds = 'gbrij', c = makeClone(kinds[i % 5], 20 + i * 14);
+    c.good = true; c.col = GOOD_COLS[i % 8]; c.y = FLOOR - c.h; army.push(c);
+  }
+  say(boss, 'Will you play with me?', 160, '#1a237e');
+}
+function bossZap(m) {
+  const b = boss;
+  burst(m.x, m.y, ['#ff80ab', '#ffffff', '#ffd740'], 12, 4, 'heart');
+  if (b.mode !== 'zapme') { sfx.giggle(); say(b, 'Hee hee! Wait for my glow!', 90); return; }
+  b.hits++; b.mode = 'giggle'; b.t = 0; b.gk = 0.25 + b.hits * 0.22; b.squash = 0.85;
+  sfx.good(); sfx.giggle(); confetti(25);
+  burst(midX(b), b.y + 80, ['#ffeb3b', '#ffffff', '#69f0ae'], 24, 6, 'star');
+  const w = b.hits === 1 ? 'One!' : b.hits === 2 ? 'Two!' : 'THREE!';
+  pop(w + ' ' + praiseWord(), midX(b), b.y - 20, '#ffeb3b', 50); speak(w + ' Great job!');
+  say(b, b.hits < 3 ? 'Hee hee! That tickles!' : 'I feel SO happy!', 110);
+  if (b.hits >= b.need) bossGood();
+}
+function bossGood() {
+  const b = boss;
+  bossState = 'good'; bossT = 0; b.mode = 'good'; b.vx = 0;
+  everWon = true; unlocked = NUM_LEVELS; saveProgress(true);
+  trophy('cloneJr'); sticker('friendly-mecha');
+  setTimeout(() => { if (bossState === 'good') speak('Thank you, Robo! Can I be your friend?'); }, 1500);
+}
+function updateBoss() {
+  const b = boss; if (!b) return;
+  b.t++; b.squash += (1 - b.squash) * 0.15;
+  const lo = 500, hi = W - b.w - 20;
+  if (bossState === 'good') {
+    b.gk = Math.min(1, b.gk + 0.02); bossT++;
+    if (bossT === 60) say(b, 'Thank you! Can I be your friend?', 200, '#1a237e');
+    if (bossT % 20 === 0) confetti(10);
+    if (b.onGround && bossT % 50 === 0) { b.vy = -6; b.onGround = false; }     // happy dance hops
+    if (bossT > 330) winGame();
+  } else if (b.mode === 'bounce') {
+    if (b.onGround && b.t % 55 === 20) {                   // a slow, soft hop to a new spot
+      const tx = rnd(lo, hi); b.vy = -9; b.onGround = false;
+      b.vx = (tx - b.x) / (2 * 9 / GRAV); b.hops++;
+    }
+    if (b.t > 150 && b.onGround) { b.mode = 'zapme'; b.t = 0; b.vx = 0; sfx.glow(); if (sayT > 60) speak('Zap me!'); }
+  } else if (b.mode === 'zapme') {
+    b.glow = b.t;
+    if (b.t > 300) { b.mode = 'bounce'; b.t = 0; }
+  } else if (b.mode === 'giggle') {
+    if (b.t > 70) { b.mode = 'bounce'; b.t = 0; }
+  }
+  if (!b.onGround) {
+    b.vy += GRAV; b.x = clamp(b.x + b.vx, lo - 40, hi); b.y += b.vy;
+    if (b.y + b.h >= FLOOR) { b.y = FLOOR - b.h; b.vy = 0; b.vx = 0; b.onGround = true; b.squash = 0.82; sfx.land(); burst(midX(b), FLOOR, ['#ffffff', '#ffd740'], 8, 3); }
+  }
+  const p = player;
+  if (p.boing <= 0 && overlap(p, b)) {                     // bump into him = a soft BOING back. No ouch!
+    p.vy = -9; p.kb = midX(p) < midX(b) ? -7 : 7; p.boing = 40; sfx.boing(); say(p, 'Boing!', 60);
+  }
+}
+
+// ---------- Stars, the exit, and the big happy ending ----------
+function updateStars() {
+  const p = player;
+  for (const s of stars) {
+    if (s.got) continue;
+    if (Math.abs(s.x - midX(p)) < 34 && Math.abs(s.y - (p.y + p.h / 2)) < 44) {
+      s.got = true; starsHere++; sfx.star(); burst(s.x, s.y, ['#ffeb3b', '#ffffff', '#ffd740'], 12, 4, 'star'); pop('⭐', s.x, s.y - 20, '#ffeb3b', 40);
+    }
+  }
+}
+function finishLevel() {
+  sfx.door(); unlocked = Math.max(unlocked, Math.min(NUM_LEVELS, levelIndex + 2)); saveProgress();
+  state = 'levelDone'; doneT = 0; confetti(40);
+  speak(praiseWord() + ' You did it!');
+}
+function winGame() {
+  state = 'win'; winT = 0; parts = []; pops = []; camX = 0;
+  sfx.win(); speak('Hooray! Mecha Robo is your friend! You did it!');
+}
+function updateParts() {
+  for (const q of parts) { q.x += q.vx; q.y += q.vy; q.vy += q.kind === 'conf' ? 0.04 : 0.15; q.life--; if (q.kind === 'conf') q.vx += Math.sin((frame + q.size * 10) * 0.05) * 0.05; }
+  parts = parts.filter(q => q.life > 0);
+  for (const q of pops) { q.t--; q.y -= 0.8; }
+  pops = pops.filter(q => q.t > 0);
+}
+function updatePlay() {
+  if (banner > 0) banner--;
+  if (hintT > 0) hintT--;
+  if (zapHint > 0) zapHint--;
+  updatePlayer();
+  for (const c of clones) if (!c.good) updateClone(c);
+  army.forEach((c, i) => updateFollower(c, i));
+  updateBeams(); updateBoss(); updateStars();
+  if (state !== 'play') return;
+  const p = player;
+  if (door && overlap(p, door)) { finishLevel(); return; }
+  if (boss) camX = 0;
+  else camX = clamp(midX(p) - W * 0.38, 0, Math.max(0, cols * T - W));
+  updateParts();
+  for (const b of bubbles) b.t--;
+  bubbles = bubbles.filter(b => b.t > 0);
+}
+function update() {
+  frame++; sayT++;
+  if (stickerNew > 0) stickerNew--;
+  if (state === 'title') { titleT++; if (okPressed) { state = 'map'; mapSel = Math.max(0, unlocked - 1); sfx.tick(); speak('Pick a level!'); } }
+  else if (state === 'map') { if (okPressed) tryStart(mapSel); }
+  else if (state === 'play') updatePlay();
+  else if (state === 'levelDone') {
+    doneT++; updateParts(); if (doneT % 6 === 0) confetti(3);
+    if (okPressed && doneT > 50) { if (levelIndex < LAST) startLevel(levelIndex + 1); else goMap(LAST); }
+  }
+  else if (state === 'win') {
+    winT++; if (winT % 2 === 0) confetti(2);
+    updateParts(); if (okPressed && winT > 120) goMap(LAST);
+  }
+  okPressed = false; firePressed = false; if (state !== 'play') jumpPressed = false;
+}
+
+
+// ---------- Drawing helpers ----------
+function roundRect(x, y, w, h, r, fill) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); ctx.fillStyle = fill; ctx.fill(); }
+function dot(x, y, r, c) { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x, y, Math.max(0.1, r), 0, 7); ctx.fill(); }
+function text(str, x, y, size, color = '#fff', align = 'center') {
+  ctx.font = `bold ${size}px "Comic Sans MS", "Chalkboard SE", sans-serif`;
+  ctx.textAlign = align; ctx.lineJoin = 'round';
+  ctx.lineWidth = size / 5; ctx.strokeStyle = '#0b1440'; ctx.strokeText(str, x, y);
+  ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function rainbowText(str, x, y, size) {                    // bouncy letters in all the clone colors
+  ctx.font = `bold ${size}px "Comic Sans MS", "Chalkboard SE", sans-serif`;
+  const wAll = ctx.measureText(str).width; let cx = x - wAll / 2;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i], cw = ctx.measureText(ch).width;
+    text(ch, cx + cw / 2, y + Math.sin(frame * 0.08 + i * 0.6) * 5, size, GOOD_COLS[i % GOOD_COLS.length]);
+    cx += cw;
+  }
+}
+function drawHeart(x, y, s, col) {                         // x = middle, y = top
+  ctx.fillStyle = col === true ? '#ff4081' : col === false ? 'rgba(255,255,255,.25)' : col;
+  ctx.beginPath(); ctx.moveTo(x, y + s * 0.3);
+  ctx.bezierCurveTo(x, y, x - s / 2, y, x - s / 2, y + s * 0.3); ctx.bezierCurveTo(x - s / 2, y + s * 0.6, x, y + s * 0.8, x, y + s);
+  ctx.bezierCurveTo(x, y + s * 0.8, x + s / 2, y + s * 0.6, x + s / 2, y + s * 0.3); ctx.bezierCurveTo(x + s / 2, y, x, y, x, y + s * 0.3); ctx.fill();
+}
+function dizzyEyes(x, y, r, col) {                        // swirly @ eyes
+  ctx.strokeStyle = col; ctx.lineWidth = Math.max(1.5, r * 0.35); ctx.beginPath();
+  for (let a = 0; a < Math.PI * 4; a += 0.3) { const rr = r * a / (Math.PI * 4); ctx.lineTo(x + Math.cos(a + frame * 0.2) * rr, y + Math.sin(a + frame * 0.2) * rr); }
+  ctx.stroke();
+}
+function orbitStars(cx, y, n = 3, r = 30) { for (let k = 0; k < n; k++) { const a = frame * 0.12 + k * 2.1; text('★', cx + Math.cos(a) * r, y + Math.sin(a) * 8, 22, '#ffeb3b'); } }
+
+// Robo (the real one!): white body, dark visor, blue eyes, blue ear pods. evil = black body + red visor (the Evil Clone)
+function drawRobo(cx, by, s, face, opt = {}) {
+  const evil = !!opt.evil, gk = opt.gk || 0, sq = opt.squash || 1;
+  const k = (e, n) => evil ? mix(e, n, gk) : n;
+  const w = 28 * s / sq, h = 36 * s * sq, x = cx - w / 2, y = by - h;
+  if (opt.hov) {
+    ctx.fillStyle = evil ? mix('#ff1744', '#7df9ff', gk) : '#7df9ff';
+    for (const fx of [x + 7 * s, x + w - 7 * s]) { const f = (8 + Math.random() * 8) * s; ctx.beginPath(); ctx.moveTo(fx - 4 * s, y + h); ctx.lineTo(fx, y + h + f); ctx.lineTo(fx + 4 * s, y + h); ctx.fill(); }
+  }
+  ctx.fillStyle = k('#4a0000', '#3d5afe');
+  ctx.fillRect(x + 4 * s, y + h - 7 * s, 8 * s, 7 * s); ctx.fillRect(x + w - 12 * s, y + h - 7 * s, 8 * s, 7 * s);
+  roundRect(x + 2 * s, y + h * 0.5, w - 4 * s, h * 0.4, 6 * s, k('#212121', '#f5f7ff'));
+  dot(x + w / 2, y + h * 0.7, 3 * s, k('#ff1744', '#2979ff'));
+  roundRect(x - 5 * s, y + h * 0.3 - 3 * s, 6 * s, 9 * s, 3 * s, k('#b71c1c', '#2979ff'));
+  roundRect(x + w - 1 * s, y + h * 0.3 - 3 * s, 6 * s, 9 * s, 3 * s, k('#b71c1c', '#2979ff'));
+  roundRect(x - 2 * s, y, w + 4 * s, h * 0.55, 12 * s, k('#2b2b2b', '#ffffff'));
+  roundRect(x + 2 * s, y + 4 * s, w - 4 * s, h * 0.55 - 9 * s, 9 * s, k('#3a0008', '#111827'));
+  const ex = x + w / 2 + face * 3 * s, ey = y + h * 0.27;
+  if (opt.dizzy) { dizzyEyes(ex - 6 * s, ey, 4 * s, k('#ff1744', '#40c4ff')); dizzyEyes(ex + 6 * s, ey, 4 * s, k('#ff1744', '#40c4ff')); }
+  else if (opt.happy || (evil && gk > 0.5)) {
+    ctx.strokeStyle = '#40c4ff'; ctx.lineWidth = 2.2 * s; ctx.lineCap = 'round'; ctx.beginPath();
+    ctx.arc(ex - 6 * s, ey + 2 * s, 3.5 * s, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke();
+    ctx.beginPath(); ctx.arc(ex + 6 * s, ey + 2 * s, 3.5 * s, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke();
+  } else {
+    const blink = frame % 180 < 6 ? 1 : 5;
+    ctx.fillStyle = k('#ff1744', '#40c4ff');
+    ctx.beginPath(); ctx.ellipse(ex - 6 * s, ey, 3.5 * s, blink * s, 0, 0, 7); ctx.ellipse(ex + 6 * s, ey, 3.5 * s, blink * s, 0, 0, 7); ctx.fill();
+    if (evil && gk < 0.5) {                               // angry eyebrows
+      ctx.strokeStyle = '#ff1744'; ctx.lineWidth = 2 * s; ctx.beginPath();
+      ctx.moveTo(ex - 10 * s, ey - 7 * s); ctx.lineTo(ex - 3 * s, ey - 4 * s); ctx.moveTo(ex + 10 * s, ey - 7 * s); ctx.lineTo(ex + 3 * s, ey - 4 * s); ctx.stroke();
+    }
+  }
+}
+// A Robo clone: same Robo shape (or square / round), but with its own colors. tint = one flat color (for glitch ghosts / flashes)
+function drawBot(cx, by, s, face, pal, o = {}) {
+  const sx = s * (o.sx || 1), sy = s * (o.sy || 1), tint = o.tint;
+  const P = k => tint || pal[k];
+  const w = 28 * sx, h = 36 * sy, x = cx - w / 2, y = by - h;
+  let ey;
+  if (o.shape === 'round') {
+    ctx.fillStyle = P('feet'); ctx.fillRect(cx - 11 * sx, by - 6 * sy, 8 * sx, 6 * sy); ctx.fillRect(cx + 3 * sx, by - 6 * sy, 8 * sx, 6 * sy);
+    roundRect(x - 6 * sx, by - h * 0.66, 7 * sx, 11 * sy, 3 * s, P('ear')); roundRect(x + w - 1 * sx, by - h * 0.66, 7 * sx, 11 * sy, 3 * s, P('ear'));
+    ctx.fillStyle = P('body'); ctx.beginPath(); ctx.ellipse(cx, by - h * 0.5 - 2 * sy, w / 2 + 2 * sx, h / 2, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = P('visor'); ctx.beginPath(); ctx.ellipse(cx, by - h * 0.62, w / 2 - 3 * sx, h * 0.2, 0, 0, 7); ctx.fill();
+    ey = by - h * 0.62;
+  } else {
+    const sq = o.shape === 'square';
+    ctx.fillStyle = P('feet'); ctx.fillRect(x + 4 * sx, y + h - 7 * sy, 8 * sx, 7 * sy); ctx.fillRect(x + w - 12 * sx, y + h - 7 * sy, 8 * sx, 7 * sy);
+    roundRect(x + 2 * sx, y + h * 0.5, w - 4 * sx, h * 0.4, (sq ? 2 : 6) * s, P('belly'));
+    if (!tint) dot(cx, y + h * 0.7, 3 * s, pal.ear === '#ffffff' ? '#ff4081' : P('ear'));
+    roundRect(x - 5 * sx, y + h * 0.3 - 3 * sy, 6 * sx, 9 * sy, 3 * s, P('ear'));
+    roundRect(x + w - 1 * sx, y + h * 0.3 - 3 * sy, 6 * sx, 9 * sy, 3 * s, P('ear'));
+    roundRect(x - 2 * sx, y, w + 4 * sx, h * 0.55, (sq ? 3 : 12) * s, P('body'));
+    roundRect(x + 2 * sx, y + 4 * sy, w - 4 * sx, h * 0.55 - 9 * sy, (sq ? 2 : 9) * s, P('visor'));
+    ey = y + h * 0.27;
+  }
+  if (tint) return;
+  const ex = cx + face * 3 * sx;
+  ctx.lineCap = 'round';
+  if (o.mood === 'dizzy') { dizzyEyes(ex - 6 * sx, ey, 4 * s, P('eye')); dizzyEyes(ex + 6 * sx, ey, 4 * s, P('eye')); }
+  else if (o.mood === 'happy') {
+    ctx.strokeStyle = P('eye'); ctx.lineWidth = 2.2 * s; ctx.beginPath();
+    ctx.arc(ex - 6 * sx, ey + 2 * s, 3.5 * s, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke();
+    ctx.beginPath(); ctx.arc(ex + 6 * sx, ey + 2 * s, 3.5 * s, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke();
+  } else if (o.mood === 'grumpy') {                    // flat grumpy eyes
+    ctx.fillStyle = P('eye'); ctx.fillRect(ex - 9.5 * sx, ey - 1 * s, 7 * sx, 3 * s); ctx.fillRect(ex + 2.5 * sx, ey - 1 * s, 7 * sx, 3 * s);
+    ctx.strokeStyle = P('eye'); ctx.lineWidth = 1.5 * s; ctx.beginPath();
+    ctx.moveTo(ex - 9.5 * sx, ey - 4 * s); ctx.lineTo(ex - 3 * sx, ey - 3 * s); ctx.moveTo(ex + 9.5 * sx, ey - 4 * s); ctx.lineTo(ex + 3 * sx, ey - 3 * s); ctx.stroke();
+  } else {
+    ctx.fillStyle = P('eye'); ctx.beginPath(); ctx.ellipse(ex - 6 * sx, ey, 3.5 * s, 4 * s, 0, 0, 7); ctx.ellipse(ex + 6 * sx, ey, 3.5 * s, 4 * s, 0, 0, 7); ctx.fill();
+    if (o.mood === 'angry') {
+      ctx.strokeStyle = '#ff1744'; ctx.lineWidth = 2 * s; ctx.beginPath();
+      ctx.moveTo(ex - 10 * sx, ey - 7 * s); ctx.lineTo(ex - 3 * sx, ey - 4 * s); ctx.moveTo(ex + 10 * sx, ey - 7 * s); ctx.lineTo(ex + 3 * sx, ey - 4 * s); ctx.stroke();
+    }
+  }
+}
+function drawJetpack(x, by, s, face, on = true) {
+  const px = x - face * 13 * s;
+  roundRect(px - 6 * s, by - 30 * s, 12 * s, 20 * s, 4 * s, '#ff7043');
+  if (on) { ctx.fillStyle = frame % 4 < 2 ? '#ffeb3b' : '#ff9100'; ctx.beginPath(); ctx.moveTo(px - 5 * s, by - 10 * s); ctx.lineTo(px, by - 10 * s + (10 + Math.random() * 8) * s); ctx.lineTo(px + 5 * s, by - 10 * s); ctx.fill(); }
+}
+function drawMechaJr(b, cx, base) {                        // a BIG, round, friendly Mecha Robo (faces left)
+  const g = b.gk || 0, m = (e, n) => mix(e, n, g), zap = b.mode === 'zapme', good = b.mode === 'good';
+  ctx.save(); ctx.translate(cx, base); ctx.scale(MS * (2 - b.squash), MS * b.squash);
+  if (zap) {                                               // the bright "ZAP ME!" glow
+    const pulse = 1 + Math.sin(frame * 0.2) * 0.06;
+    ctx.globalAlpha = 0.35; dot(0, -160, 190 * pulse, '#fff59d'); ctx.globalAlpha = 0.5; dot(0, -160, 150 * pulse, '#ffeb3b'); ctx.globalAlpha = 1;
+  }
+  roundRect(-62, -92, 40, 92, 14, m('#78909c', '#e3f2fd')); roundRect(22, -92, 40, 92, 14, m('#78909c', '#e3f2fd'));
+  roundRect(-74, -22, 62, 22, 10, m('#5c6bc0', '#3d5afe')); roundRect(12, -22, 62, 22, 10, m('#5c6bc0', '#3d5afe'));
+  roundRect(-96, -212, 192, 132, 40, m('#90a4ae', '#ffffff'));
+  roundRect(-62, -192, 124, 86, 24, m('#b0bec5', '#e8eaf6'));
+  drawHeart(0, -178, 54, g > 0.9 || zap ? '#ff4081' : '#f48fb1');
+  const wave = good ? Math.sin(frame * 0.25) * 0.6 : 0;   // round arms; he WAVES when he is your friend
+  for (const sd of [-1, 1]) {
+    ctx.save(); ctx.translate(sd * 104, -190); ctx.rotate(sd === -1 ? -wave - 0.2 : 0.2);
+    roundRect(-20, 0, 40, 74, 18, m('#90a4ae', '#bbdefb')); dot(0, 84, 26, m('#b0bec5', '#ffffff')); ctx.restore();
+  }
+  roundRect(-94, -284, 20, 46, 9, m('#4fc3f7', '#2979ff')); roundRect(74, -284, 20, 46, 9, m('#4fc3f7', '#2979ff'));
+  ctx.strokeStyle = m('#b0bec5', '#ffffff'); ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(0, -300); ctx.lineTo(0, -326); ctx.stroke();
+  dot(0, -332, 11, good ? '#69f0ae' : zap ? (frame % 20 < 10 ? '#ffeb3b' : '#ffffff') : '#80d8ff');
+  roundRect(-80, -306, 160, 108, 44, m('#b0bec5', '#ffffff'));
+  roundRect(-66, -294, 132, 80, 32, '#1a237e');
+  const ey = -258;
+  if (good || b.mode === 'giggle') {                       // happy closed eyes + a big smile
+    ctx.strokeStyle = '#40c4ff'; ctx.lineWidth = 7; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.arc(-28, ey + 6, 13, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke();
+    ctx.beginPath(); ctx.arc(28, ey + 6, 13, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke();
+    ctx.strokeStyle = '#ff80ab'; ctx.beginPath(); ctx.arc(0, ey + 14, 16, 0.15 * Math.PI, 0.85 * Math.PI); ctx.stroke();
+  } else {                                                 // big round cute eyes (a little lonely)
+    const lk = zap ? 0 : -4, big = zap ? 17 : 15;
+    dot(-28, ey, big, '#ffffff'); dot(28, ey, big, '#ffffff');
+    dot(-28 + lk, ey + 2, big * 0.55, '#40c4ff'); dot(28 + lk, ey + 2, big * 0.55, '#40c4ff');
+    dot(-31 + lk, ey - 3, 3.5, '#ffffff'); dot(25 + lk, ey - 3, 3.5, '#ffffff');
+    ctx.strokeStyle = '#80d8ff'; ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.beginPath();
+    if (zap) { ctx.arc(0, ey + 26, 9, 0, Math.PI); }       // excited open smile
+    else { ctx.moveTo(-8, ey + 30); ctx.quadraticCurveTo(0, ey + 25, 8, ey + 30); }
+    ctx.stroke();
+  }
+  dot(-50, ey + 22, 8, 'rgba(255,128,171,.6)'); dot(50, ey + 22, 8, 'rgba(255,128,171,.6)');
+  ctx.restore();
+}
+
+// ---------- The world ----------
+function drawBackground(L) {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, L.sky[0]); g.addColorStop(1, L.sky[1]);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  const bg = L.bg;
+  if (bg === 'sky') {                                      // fluffy clouds
+    for (let i = -1; i < 6; i++) { const px = i * 230 - (camX * 0.25) % 230, py = 90 + (i % 3) * 70; ctx.globalAlpha = 0.85; dot(px, py, 34, '#ffffff'); dot(px + 34, py - 12, 40, '#ffffff'); dot(px + 72, py, 30, '#ffffff'); ctx.globalAlpha = 1; }
+  } else for (let i = -1; i < 6; i++) {                    // clone tubes along the back wall (with sleepy clone shapes inside)
+    const px = i * 240 - (camX * 0.3) % 240 + 60;
+    roundRect(px, 170, 90, 230, 44, 'rgba(255,255,255,.13)');
+    roundRect(px - 6, 160, 102, 20, 8, 'rgba(0,0,0,.25)'); roundRect(px - 6, 392, 102, 20, 8, 'rgba(0,0,0,.25)');
+    ctx.globalAlpha = 0.25; drawBot(px + 45, 370 + Math.sin(frame * 0.03 + i) * 6, 1.8, 1, PAL.gray, { tint: '#0b1440' }); ctx.globalAlpha = 1;
+    dot(px + 30, 220 + ((frame * 0.8 + i * 40) % 150), 4, 'rgba(255,255,255,.35)');
+  }
+  if (bg === 'size') {                                     // balloons floating up
+    for (let i = 0; i < 6; i++) { const px = i * 170 - (camX * 0.4) % 170 + 40, py = 120 + Math.sin(frame * 0.02 + i) * 14; ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(px, py + 26); ctx.lineTo(px, py + 70); ctx.stroke(); ctx.globalAlpha = 0.7; dot(px, py, 24, GOOD_COLS[i % 8]); ctx.globalAlpha = 1; }
+  } else if (bg === 'ice') {                               // snowflakes
+    for (let i = 0; i < 22; i++) { const px = (i * 97 + frame * 0.4 * (1 + i % 3)) % W, py = (i * 53 + frame * (0.6 + (i % 3) * 0.3)) % FLOOR; dot(px, py, 2 + (i % 3), 'rgba(255,255,255,.8)'); }
+  } else if (bg === 'mecha') {                             // soft spotlights + party lights
+    for (let i = 0; i < 3; i++) {
+      const a = Math.sin(frame * 0.01 + i * 2) * 0.4; ctx.save(); ctx.translate(200 + i * 280, 0); ctx.rotate(a);
+      ctx.globalAlpha = 0.1; ctx.fillStyle = '#fff59d'; ctx.beginPath(); ctx.moveTo(-20, 0); ctx.lineTo(20, 0); ctx.lineTo(120, 460); ctx.lineTo(-120, 460); ctx.fill(); ctx.globalAlpha = 1; ctx.restore();
+    }
+    for (let i = 0; i < 16; i++) dot(30 + i * 60, 40 + (i % 2) * 10, 7, (frame / 15 + i) % 4 < 2 ? GOOD_COLS[i % 8] : 'rgba(255,255,255,.2)');
+  }
+}
+function drawTiles(L) {
+  const c0 = Math.max(0, Math.floor(camX / T)), c1 = Math.min(cols - 1, Math.floor((camX + W) / T) + 1);
+  for (let c = c0; c <= c1; c++) if (map[8][c] === '=') {    // big chunky ledges
+    const x = c * T - camX, y = 8 * T, left = map[8][c - 1] !== '=', right = map[8][c + 1] !== '=';
+    ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.fillRect(x, y + 30, T, 6);
+    roundRect(x - (left ? 4 : 0), y, T + (left ? 4 : 0) + (right ? 4 : 0), 32, [left ? 12 : 0, right ? 12 : 0, right ? 12 : 0, left ? 12 : 0], L.ledge);
+    ctx.fillStyle = '#ffca28'; ctx.fillRect(x + 8, y + 12, 10, 8); ctx.fillRect(x + 24, y + 12, 10, 8);
+  }
+  ctx.fillStyle = L.dirt; ctx.fillRect(0, FLOOR, W, H - FLOOR);
+  ctx.fillStyle = L.top; ctx.fillRect(0, FLOOR, W, 10);
+  ctx.fillStyle = 'rgba(255,255,255,.18)';
+  for (let x = -((camX) % 80); x < W; x += 80) { ctx.fillRect(x, FLOOR + 22, 60, 6); dot(x + 70, FLOOR + 50, 3, 'rgba(255,255,255,.2)'); }
+  for (let c = c0; c <= c1; c++) {
+    const ch = map[11][c], x = c * T - camX;
+    if (ch === ' ') {                                       // a tiny hole with a soft bouncy cushion at the bottom
+      ctx.fillStyle = '#0b1440'; ctx.fillRect(x, FLOOR, T + 1, H - FLOOR);
+      roundRect(x + 2, H - 22, T - 3, 18, 8, '#ff80ab'); dot(x + T / 2, H - 14, 4, '#ffffff');
+    } else if (ch === 'B') {                                // the rainbow bridge
+      ctx.fillStyle = '#0b1440'; ctx.fillRect(x, FLOOR + 12, T + 1, H - FLOOR);
+      ['#ff5252', '#ffab40', '#ffeb3b', '#69f0ae', '#40c4ff', '#b388ff'].forEach((col, k) => { ctx.fillStyle = col; ctx.fillRect(x, FLOOR + k * 4, T + 1, 4); });
+    }
+  }
+}
+function drawArrow(x, y, dir, col = '#ffeb3b', s = 1) {     // a big chunky arrow. dir: 1 = right, -1 = left, 0 = up, 2 = down
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s); if (dir === 0) ctx.rotate(-Math.PI / 2); else if (dir === 2) ctx.rotate(Math.PI / 2); else if (dir < 0) ctx.rotate(Math.PI);
+  ctx.beginPath(); ctx.moveTo(-26, -12); ctx.lineTo(4, -12); ctx.lineTo(4, -28); ctx.lineTo(32, 0); ctx.lineTo(4, 28); ctx.lineTo(4, 12); ctx.lineTo(-26, 12); ctx.closePath();
+  ctx.lineWidth = 6; ctx.lineJoin = 'round'; ctx.strokeStyle = '#0b1440'; ctx.stroke(); ctx.fillStyle = col; ctx.fill(); ctx.restore();
+}
+function drawWorldBits() {
+  if (door) {
+    const x = door.x - camX;
+    roundRect(x - 10, door.y - 12, door.w + 20, door.h + 12, 18, '#455a64');
+    roundRect(x, door.y, door.w, door.h, 14, '#69f0ae');
+    dot(x + door.w - 16, door.y + door.h / 2, 6, '#1b5e20');
+    text('🏁', x + door.w / 2, door.y + 66, 44);
+    if (x > -100 && x < W + 100) drawArrow(x + door.w / 2, door.y - 46 + Math.sin(frame * 0.15) * 8, 0, '#ffeb3b', 1.1);
+  }
+  for (const s of stars) if (!s.got) { const x = s.x - camX; if (x > -30 && x < W + 30) text('⭐', x, s.y + 12 + Math.sin(frame * 0.1 + s.x) * 4, 38); }
+  for (const g of gaps) {                                   // ⬆ JUMP! over each hole (bigger when Robo is close)
+    if (g.bridge) continue;
+    const gx = (g.c0 + g.c1 + 1) * T / 2 - camX, near = Math.abs(gx + camX - midX(player)) < 220;
+    if (gx < -60 || gx > W + 60) continue;
+    ctx.globalAlpha = near ? 1 : 0.55;
+    drawArrow(gx, FLOOR - 90 + Math.sin(frame * 0.18) * 10, 0, '#69f0ae', near ? 1.15 : 0.8);
+    if (near) text('JUMP!', gx, FLOOR - 140, 34, '#69f0ae');
+    ctx.globalAlpha = 1;
+  }
+}
+function drawClone(c) {
+  const x = midX(c) - camX, by = c.y + c.h, k = CT[c.type];
+  if (x < -60 || x > W + 60) return;
+  let sx = 1, sy = 1;
+  if (c.type === 'b' && !c.onGround) { sy = 1 + clamp(-c.vy * 0.03, -0.2, 0.3); sx = 1 / sy; }
+  if (c.type === 'r' && !c.good) sy = 1 + Math.sin(frame * 0.3 + c.t) * 0.06;
+  const pal = c.good ? goodPal(c.col) : PAL[k.pal];
+  const s = k.s * CS;
+  if (c.type === 'j') drawJetpack(x, by, s, c.face, true);
+  if (c.good && c.flash > 0 && Math.floor(frame / 3) % 2) drawBot(x, by, s, c.face, pal, { shape: k.shape, sx, sy, tint: '#ffffff' });
+  else drawBot(x, by, s, c.face, pal, { shape: k.shape, sx, sy, mood: c.good ? 'happy' : 'grumpy' });
+  if (c.good && c.flash > 0) for (let i = 0; i < 4; i++) { const a = frame * 0.2 + i * 1.57; text('✦', x + Math.cos(a) * 30, c.y + c.h / 2 + Math.sin(a) * 30, 18, '#fff59d'); }
+  if (!c.good && Math.abs(midX(c) - midX(player)) < 520) {   // a bouncing ⚡ over every grumpy clone: zap me!
+    const b = Math.sin(frame * 0.2 + c.t) * 5;
+    dot(x, c.y - 28 + b, 22, 'rgba(255,235,59,.85)'); text('⚡', x, c.y - 17 + b, 28);
+  }
+}
+function drawBeams() {
+  for (const m of beams) {
+    const x = m.x - camX, r = m.r + Math.sin(frame * 0.4) * 3;
+    ctx.globalAlpha = 0.35; dot(x, m.y, r * 1.5, '#fff59d'); ctx.globalAlpha = 0.8; dot(x, m.y, r, '#ffffff'); ctx.globalAlpha = 1;
+    drawHeart(x, m.y - r * 0.6, r * 1.2, '#ff4081');
+    for (let k = 0; k < 4; k++) { const a = m.spin + k * 1.57; text('✦', x + Math.cos(a) * r * 1.3, m.y + Math.sin(a) * r * 1.3 + 6, 18, GOOD_COLS[k * 2]); }
+  }
+}
+function drawPlayer() {
+  const p = player;
+  const x = midX(p) - camX, by = p.y + p.h;
+  const sq = p.boing > 30 ? 0.85 : 1;
+  drawRobo(x, by, RS, p.face, { happy: p.boing > 0 || bossState === 'good', squash: sq, hov: keys.jump && !p.onGround && p.vy > 0 });
+  if (p.boing > 20) orbitStars(x, p.y - 8, 3, 26);
+}
+function drawParts() {
+  for (const q of parts) {
+    ctx.globalAlpha = Math.min(1, q.life / 20);
+    const x = q.x - camX;
+    if (q.kind === 'heart') drawHeart(x, q.y - q.size, q.size * 2, q.col);
+    else if (q.kind === 'star') text('★', x, q.y, q.size * 3, q.col);
+    else if (q.kind === 'conf') { ctx.save(); ctx.translate(x, q.y); ctx.rotate(frame * 0.1 + q.size); ctx.fillStyle = q.col; ctx.fillRect(-q.size / 2, -q.size / 4, q.size, q.size / 2); ctx.restore(); }
+    else { ctx.fillStyle = q.col; ctx.fillRect(x - q.size / 2, q.y - q.size / 2, q.size, q.size); }
+  }
+  ctx.globalAlpha = 1;
+  for (const q of pops) { ctx.globalAlpha = Math.min(1, q.t / 15); text(q.txt, clamp(q.x - camX, 120, W - 120), q.y, q.size * (1 + Math.max(0, q.t - 60) * 0.03), q.col); }
+  ctx.globalAlpha = 1;
+}
+function drawBubble(str, cx, y, col = '#1a237e') {
+  ctx.font = 'bold 22px "Comic Sans MS", "Chalkboard SE", sans-serif';
+  const bw = ctx.measureText(str).width + 28, bx = clamp(cx - bw / 2, 6, W - bw - 6);
+  roundRect(bx, y - 46, bw, 40, 16, '#ffffff');
+  ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.moveTo(clamp(cx, bx + 14, bx + bw - 14) - 8, y - 8); ctx.lineTo(clamp(cx, bx + 14, bx + bw - 14), y + 4); ctx.lineTo(clamp(cx, bx + 14, bx + bw - 14) + 8, y - 8); ctx.fill();
+  ctx.fillStyle = col; ctx.textAlign = 'center'; ctx.fillText(str, bx + bw / 2, y - 19);
+}
+function drawBubbles() { for (const b of bubbles) { if (!b.o) continue; ctx.globalAlpha = Math.min(1, b.t / 15); drawBubble(b.text, midX(b.o) - camX, b.o.y - 6, b.col); } ctx.globalAlpha = 1; }
+
+// ---------- HUD + screens (big pictures, very few words) ----------
+const CONTROLS = '← → walk • SPACE jump • X zap • T auto-walk • ESC back';
+function drawButton(b, label, fill, size = 26) { roundRect(b.x, b.y + 4, b.w, b.h, 18, 'rgba(0,0,0,.3)'); roundRect(b.x, b.y, b.w, b.h, 18, fill); text(label, b.x + b.w / 2, b.y + b.h / 2 + size * 0.36, size); }
+function drawHUD() {
+  drawButton(AUTO_BTN, autoWalk ? '🚶 Auto-walk ✓' : '🚶 Auto-walk', autoWalk ? '#43a047' : '#78909c', 24);
+  drawButton(HOME_BTN, '🏠', '#5c6bc0', 30);
+  const b = boss;
+  if (!b) {                                                 // next to the buttons (the iPad's BACK / START pills live top-right)
+    roundRect(366, 10, 220, 60, 18, 'rgba(0,0,0,.35)');
+    text(`🤖 ${savedHere}`, 392, 52, 32, '#69f0ae', 'left');
+    text(`⭐ ${starsHere}`, 492, 52, 32, '#ffeb3b', 'left');
+  }
+  if (b) {
+    for (let i = 0; i < b.need; i++) {                     // 3 zaps: they light up one by one
+      const x = W / 2 - 70 + i * 70, on = i < b.hits;
+      dot(x, 42, 28, on ? '#ffeb3b' : 'rgba(0,0,0,.4)'); text(on ? '😊' : '⚡', x, 54, 32, on ? '#fff' : 'rgba(255,255,255,.5)');
+    }
+    if (b.mode === 'zapme') {
+      const bx = midX(b), y = b.y - 70 + Math.sin(frame * 0.2) * 8, s = 1 + Math.sin(frame * 0.25) * 0.08;
+      roundRect(bx - 130 * s, y - 50 * s, 260 * s, 76 * s, 24, frame % 20 < 10 ? '#ff4081' : '#f50057');
+      text('⚡ ZAP ME! ⚡', bx, y + 6, 44 * s, '#ffffff');
+      drawArrow(bx, y + 62, 2, "#ffeb3b", 0.9);
+    }
+  } else if (!hintT && !zapHint && door && door.x - camX > W - 40) {   // which way? THIS way!
+    drawArrow(W - 60 + Math.sin(frame * 0.15) * 8, 220, 1, '#ffeb3b', 1.2);
+  }
+  if (zapHint && frame % 40 < 30) { roundRect(W / 2 - 110, 92, 220, 64, 20, 'rgba(0,0,0,.45)'); text('⚡ ZAP!', W / 2, 140, 44, '#ffeb3b'); }
+  if (banner > 0) {
+    ctx.globalAlpha = Math.min(1, banner / 25);
+    roundRect(W / 2 - 300, 168, 600, 84, 26, 'rgba(0,0,0,.4)');
+    text(bannerText, W / 2, 228, 50, '#ffd740'); ctx.globalAlpha = 1;
+  }
+  if (stickerNew > 0) { ctx.globalAlpha = Math.min(1, stickerNew / 20); roundRect(W / 2 - 190, 360, 380, 56, 18, 'rgba(0,0,0,.55)'); text('⭐ NEW STICKER! ⭐', W / 2, 400, 34, '#ffeb3b'); ctx.globalAlpha = 1; }
+  text(musicOn ? '♪' : '♪ off', W - 14, H - 12, 18, '#fff', 'right');
+}
+function drawWorld() {
+  const L = LEVELS[levelIndex];
+  drawBackground(L); drawTiles(L); drawWorldBits();
+  for (const c of clones) if (!c.good) drawClone(c);
+  if (boss) drawMechaJr(boss, midX(boss) - camX, boss.y + boss.h);
+  for (const c of army) drawClone(c);
+  drawBeams(); drawPlayer(); drawParts(); drawBubbles();
+}
+function drawLevelDone() {
+  ctx.fillStyle = 'rgba(10,20,64,.55)'; ctx.fillRect(0, 0, W, H);
+  roundRect(W / 2 - 330, 70, 660, 350, 30, 'rgba(10,20,64,.85)');
+  rainbowText('GREAT JOB!', W / 2, 150, 72);
+  for (let i = 0; i < 3; i++) {                             // three big stars pop in, every time
+    const t = clamp((doneT - 10 - i * 12) / 14, 0, 1), s = t < 1 ? t * 1.3 : 1 + Math.sin(frame * 0.1 + i) * 0.05;
+    if (t > 0) text('⭐', W / 2 - 120 + i * 120, 250 - (i === 1 ? 16 : 0), 80 * s);
+  }
+  text(`🤖 +${savedHere}`, W / 2, 302, 40, '#69f0ae');
+  if (doneT > 50) drawButton(NEXT_BTN, levelIndex < LAST ? 'NEXT ▶' : '▶', frame % 60 < 30 ? '#ff4081' : '#f50057', 44);
+}
+function drawFloorScene(sky0, sky1, top, dirt) {
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, sky0); g.addColorStop(1, sky1);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = dirt; ctx.fillRect(0, FLOOR, W, H - FLOOR); ctx.fillStyle = top; ctx.fillRect(0, FLOOR, W, 10);
+}
+function drawTitle() {
+  camX = 0;
+  drawFloorScene('#1e3c72', '#7fd3ff', '#00e5ff', '#2c3e70');
+  rainbowText('CLONE FACTORY JR.', W / 2, 88, 70);
+  // the whole game in one picture: grumpy clone + ⚡ = happy clone!
+  const gy = 250;
+  drawBot(330, gy, 2, -1, PAL.gray, { shape: 'robo', mood: 'grumpy' });
+  text('+', 420, gy - 30, 60, '#ffffff'); text('⚡', 500, gy - 24, 70);
+  text('=', 580, gy - 30, 60, '#ffffff');
+  drawBot(670, gy - Math.abs(Math.sin(frame * 0.1)) * 14, 2, -1, goodPal('#ff80ab'), { shape: 'robo', mood: 'happy' });
+  const hop = Math.abs(Math.sin(frame * 0.08)) * 16;
+  drawRobo(120, FLOOR - hop, 2.6, 1, { happy: true, hov: hop > 10 });
+  for (let i = 0; i < 4; i++) drawBot(880 - i * 50, FLOOR - Math.abs(Math.sin(frame * 0.1 + i)) * 10, 1.3, -1, goodPal(GOOD_COLS[i + 1]), { shape: i % 2 ? 'round' : 'robo', mood: 'happy' });
+  drawButton(PLAY_BTN, '▶ PLAY', frame % 60 < 30 ? '#ff4081' : '#f50057', 50);
+  if (everWon) text('⭐ Mecha Robo is your friend! ⭐', W / 2, 296, 26, '#ffeb3b');
+  text("💡 Ben's idea: an easy Clone Factory for his brother!", W / 2, 470, 22, '#ffffff');
+  text(CONTROLS, W / 2, 504, 17, '#cfe8ff');
+}
+function drawMap() {
+  camX = 0;
+  ctx.fillStyle = '#123a7a'; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = 'rgba(255,255,255,.08)'; ctx.lineWidth = 2;
+  for (let x = 0; x < W; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = 0; y < H; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  rainbowText('Pick one!', W / 2, 70, 56);
+  drawButton(BACK_BTN, '◀', '#455a64', 34);
+  for (let i = 0; i < LAST; i++) {                    // dotted path
+    const a = NODES[i], b = NODES[i + 1];
+    for (let t = 0; t <= 1; t += 0.08) dot(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, 7, i + 1 < unlocked ? '#ffd740' : 'rgba(255,255,255,.3)');
+  }
+  for (let i = 0; i < NUM_LEVELS; i++) {
+    const n = NODES[i], open = i < unlocked, sel = i === mapSel, big = i === BOSS ? 10 : 0;
+    if (sel) { ctx.strokeStyle = '#ffeb3b'; ctx.lineWidth = 8; ctx.beginPath(); ctx.arc(n.x, n.y, 66 + big + Math.sin(frame * 0.15) * 4, 0, 7); ctx.stroke(); }
+    dot(n.x, n.y, 58 + big, open ? GOOD_COLS[i % GOOD_COLS.length] : '#546e7a');
+    dot(n.x, n.y, 49 + big, open ? '#ffffff' : '#78909c');
+    text(open ? LEVELS[i].icon : '🔒', n.x, n.y + 18, 50 + big);
+    roundRect(n.x - 20, n.y + 40 + big, 40, 32, 10, '#0b1440'); text(String(i + 1), n.x, n.y + 66 + big, 26, '#ffd740');
+  }
+  const s = NODES[mapSel]; drawRobo(s.x, s.y - 62 - Math.abs(Math.sin(frame * 0.12)) * 10, 1.2, 1, { happy: true });
+  if (frame % 50 < 38) drawArrow(s.x, s.y + 120, 0, '#69f0ae', 0.9);
+  text('Tap one!', W / 2, 490, 30, '#ffffff');
+}
+const WIN_MECHA = { gk: 1, mode: 'good', squash: 1 };
+function drawWin() {                                       // THE END: a big happy parade!
+  drawFloorScene('#ff9a8b', '#a8e6cf', '#ffd740', '#3d5afe');
+  for (let i = 0; i < 7; i++) { const px = i * 150 + 40, py = 160 + Math.sin(frame * 0.02 + i) * 14; ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(px, py + 26); ctx.lineTo(px, py + 80); ctx.stroke(); dot(px, py, 24, GOOD_COLS[i % 8]); }
+  const span = W + 900, head = (winT * 1.6 + 900) % span, n = clamp(totalArmy, 6, 14);
+  const at = d => ((head - d) % span + span) % span - 300;  // everyone marches to the right, in one long line
+  const bounce = k => Math.abs(Math.sin(frame * 0.14 + k)) * 14;
+  ctx.save(); ctx.translate(at(n * 52 + 170), FLOOR - bounce(0) * 0.4); ctx.scale(0.62, 0.62); drawMechaJr(WIN_MECHA, 0, 0); ctx.restore();
+  for (let i = 0; i < n; i++) {
+    const kinds = 'gbrij', k = CT[kinds[i % 5]];
+    drawBot(at(80 + i * 52), FLOOR - bounce(i * 0.7), 1.25, 1, goodPal(GOOD_COLS[i % 8]), { shape: k.shape, mood: 'happy' });
+  }
+  drawRobo(at(0), FLOOR - bounce(5) * 1.3, 1.8, 1, { happy: true, hov: bounce(5) > 10 });
+  drawParts();
+  rainbowText('YOU DID IT!', W / 2, 80, 76);
+  text('Mecha Robo is your friend! ♥', W / 2, 136, 34, '#ffffff');
+  text("💡 Ben's idea: an easy Clone Factory for his brother!", W / 2, 500, 22, '#ffffff');
+  if (stickerNew > 0) text('⭐ NEW STICKER! ⭐', W / 2, 186, 32, '#ffeb3b');
+  if (winT > 120) drawButton({ x: W / 2 - 90, y: 200, w: 180, h: 70 }, '▶', frame % 60 < 30 ? '#ff4081' : '#f50057', 40);
+}
+function draw() {
+  ctx.save();
+  if (state === 'title') drawTitle();
+  else if (state === 'map') drawMap();
+  else if (state === 'win') drawWin();
+  else { drawWorld(); drawHUD(); if (state === 'levelDone') { drawLevelDone(); drawParts(); } }
+  ctx.restore();
+}
+
+// ---------- Main loop (steady speed on every screen) ----------
+let last = performance.now(), acc = 0;
+function loop(now) {
+  acc += Math.min(100, now - last); last = now;
+  while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; }
+  playMusic();
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
