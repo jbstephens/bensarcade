@@ -87,7 +87,7 @@ function out() {   // everything plays through one volume knob, so stopping a vi
   if (!master) { master = a.createGain(); master.gain.value = 1; master.connect(a.destination); }
   return master;
 }
-function hush() { if (master) { try { master.disconnect(); } catch (_) {} master = null; } }
+function hush() { voiceStop(); if (master) { try { master.disconnect(); } catch (_) {} master = null; } }
 // one note, exactly like the book's Jukebox plays it (jbNote in arcade.html)
 function jbNote(m, at, dur, wave, vol) {
   const a = audio(), o2 = out(); if (!a || !o2 || !m) return;
@@ -142,6 +142,315 @@ function halfStepMel(str) {   // turn [note, beats] into one slot per half-beat 
 }
 J['Beat Party'] = { icon: '🎸', name: 'Beat Party', step: 60 / 116 / 2, len: 1.8, wave: 'square', vol: 0.05, bp: true,
   mel: halfStepMel('C5:0.5 E5:0.5 G5 E5:0.5 G5:0.5 A5 G5:0.5 E5:0.5 C5:0.5 D5:0.5 E5:2 F5:0.5 A5:0.5 C6 A5:0.5 F5:0.5 G5 E5:0.5 D5:0.5 C5:0.5 D5:0.5 C5:2 A4:0.5 C5:0.5 E5 C5:0.5 E5:0.5 G5 F5:0.5 E5:0.5 D5:0.5 E5:0.5 F5:2 G5:0.5 G5:0.5 A5 G5:0.5 E5:0.5 C5 D5:0.5 E5:0.5 D5:0.5 B4:0.5 C5:2') };
+
+// ---------- 🎤 SONGS WITH WORDS (the 7 new videos) ----------
+// A song is a list of parts (intro, verse, chorus...). Each part has chords (one per bar, "a/b" = two in one bar),
+// a melody written in 8th notes (8 per bar) and the words. Notes are scale steps like Robo Jump 9 writes them
+// ("5'" = step 5 one octave up, "#7" = raised 7, "." = rest, "-" = keep holding), or real notes ("C5", "F#4").
+// Words: one syllable per melody note ("Ro-bo" = two notes), "~" = a note with no word, "/" = start a new karaoke line.
+const SCALES2 = { major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10], dorian: [0, 2, 3, 5, 7, 9, 10], mixo: [0, 2, 4, 5, 7, 9, 10] };
+const PC2 = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+function tok2midi(tk, base, sc) {
+  let m = /^([A-G])([#b]?)(\d)$/.exec(tk);
+  if (m) return 12 * (+m[3] + 1) + PC2[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0);
+  m = /^([b#]?)([1-7])([',]*)$/.exec(tk); if (!m) throw new Error('bad note ' + tk);
+  const oct = (m[3].match(/'/g) || []).length - (m[3].match(/,/g) || []).length;
+  return base + sc[+m[2] - 1] + (m[1] === 'b' ? -1 : m[1] === '#' ? 1 : 0) + 12 * oct;
+}
+function chord2(tk, base, sc) {   // "Am", "F#", "G7", "Bbmaj7", "Dsus4"  or scale steps like Robo Jump 9: "6", "5M", "b7", "47"
+  let root, ivs;
+  const m = /^([A-G])([#b]?)(.*)$/.exec(tk);
+  if (m) {
+    root = PC2[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0); const q = m[3];
+    ivs = q.startsWith('dim') ? [0, 3, 6] : q.startsWith('sus4') ? [0, 5, 7] : q.startsWith('sus2') ? [0, 2, 7] : q.startsWith('aug') ? [0, 4, 8] : q.startsWith('m') && !q.startsWith('maj') ? [0, 3, 7] : [0, 4, 7];
+    if (q.includes('maj7')) ivs.push(11); else if (q.includes('7')) ivs.push(10); else if (q.includes('6')) ivs.push(9);
+  } else {
+    const d = /^(b?)([1-7])(.*)$/.exec(tk); if (!d) throw new Error('bad chord ' + tk);
+    const r = +d[2], q = d[3], st = k => sc[((k - 1) % 7 + 7) % 7] + 12 * Math.floor((k - 1) / 7);
+    root = (base + sc[r - 1] - (d[1] ? 1 : 0)) % 12;
+    let third = d[1] ? 4 : st(r + 2) - st(r); if (q.includes('M')) third = 4; if (q.includes('m')) third = 3;
+    ivs = [0, third, 7]; if (q.includes('7')) ivs.push(d[1] ? 10 : st(r + 6) - st(r));
+  }
+  const r0 = 48 + ((root % 12) + 12) % 12;   // root between C3 and B3
+  return { name: tk, root: r0, pcs: ivs.map(i => (r0 + i) % 12), tones: ivs.map(i => r0 + i) };
+}
+function song2(def) {
+  const sc = SCALES2[def.scale || 'major'], mel = [], dur = [], chAt = [], secAt = [], sylAt = [], lines = [], parts = [];
+  let line = null;
+  def.parts.forEach((P, pi) => {
+    const tr = P.tr || 0, base = (P.base || def.base) + tr, start = mel.length;
+    const bars = P.ch.trim().split(/\s+/);
+    const toks = P.m ? P.m.replace(/\|/g, ' ').trim().split(/\s+/) : new Array(bars.length * 8).fill('.');
+    if (toks.length !== bars.length * 8) throw new Error(def.name + ' / ' + P.n + ': ' + toks.length + ' notes for ' + bars.length + ' bars');
+    bars.forEach((b, bi) => { const cs = b.split('/'); for (let j = 0; j < 8; j++) chAt.push(chord2(cs[Math.floor(j * cs.length / 8)], base, sc)); });
+    let last = -1;
+    toks.forEach(tk => {
+      if (tk === '-') { mel.push(0); if (last >= 0) dur[last]++; dur.push(0); }
+      else if (tk === '.') { mel.push(0); dur.push(0); last = -1; }
+      else { last = mel.length; mel.push(tok2midi(tk, base, sc) + (P.oct || 0) * 12); dur.push(1); }
+      secAt.push(Object.assign({ i: pi, from: start }, P)); sylAt.push(null);
+    });
+    parts.push({ n: P.n, from: start, to: mel.length });
+    if (P.w != null) {   // match each syllable to the next note
+      const ons = []; for (let k = start; k < mel.length; k++) if (mel[k]) ons.push(k);
+      const words = P.w.replace(/\//g, ' / ').trim().split(/\s+/);
+      let oi = 0, newLine = true;
+      for (const wd of words) {
+        if (wd === '/') { newLine = true; continue; }
+        for (const s0 of wd.split('-').map((q, i, a) => i < a.length - 1 ? q + '-' : q).filter(Boolean)) {
+          if (oi >= ons.length) throw new Error(def.name + ' / ' + P.n + ': too many words at "' + wd + '"');
+          const k = ons[oi++]; if (s0 === '~') continue;
+          if (newLine || !line) { line = { syls: [], part: pi }; lines.push(line); newLine = false; }
+          const s = { k, s: s0.replace(/-$/, ''), join: s0.endsWith('-'), m: mel[k] };
+          line.syls.push(s); sylAt[k] = s;
+        }
+      }
+      if (oi !== ons.length) throw new Error(def.name + ' / ' + P.n + ': ' + (ons.length - oi) + ' notes have no words (use ~)');
+      line = null;
+    }
+  });
+  for (let i = 0; i + 1 < lines.length; i++) {   // short lines (one bar) get joined up in pairs, so each karaoke line is about 2 bars
+    const a = lines[i], b = lines[i + 1];
+    if (a.part === b.part && b.syls[b.syls.length - 1].k - a.syls[0].k < 16 && !a.joined) { a.syls = a.syls.concat(b.syls); a.joined = 1; lines.splice(i + 1, 1); }
+  }
+  const st = 60 / def.bpm / 2;
+  lines.forEach(L => {
+    L.start = L.syls[0].k; L.end = L.syls[L.syls.length - 1].k;
+    L.say = L.syls.map(s => s.s + (s.join ? '' : ' ')).join('').replace(/\s+/g, ' ').trim();
+    L.avg = L.syls.reduce((a, s) => a + s.m, 0) / L.syls.length;
+    L.secs = Math.max(0.8, (L.end - L.start + 2) * st);
+  });
+  const lineAt = new Array(mel.length).fill(-1), lineStart = new Array(mel.length).fill(-1);
+  lines.forEach((L, i) => { lineStart[L.start] = i; });
+  for (let k = 0, cur = -1; k < mel.length; k++) {   // which line to show: from a little before it starts until the next one
+    while (cur + 1 < lines.length && lines[cur + 1].start - 6 <= k) cur++;
+    if (cur >= 0 && (k <= lines[cur].end + 10 || (cur + 1 < lines.length && lines[cur + 1].start - 6 <= k))) lineAt[k] = cur;
+  }
+  const burpAt = new Array(mel.length).fill(0), burps = [];
+  def.parts.forEach((P, pi) => (P.burp || []).forEach(o => { burpAt[parts[pi].from + o] = P.big ? 2 : 1; burps.push(parts[pi].from + o); }));
+  const ns = mel.filter(Boolean), avgNote = ns.reduce((a, b) => a + b, 0) / ns.length;
+  return Object.assign({ step: st, len: 0.92, wave: 'square', vol: 0.035, reps: 1, v2: true }, def,
+    { mel, dur, chAt, secAt, sylAt, lines, lineAt, lineStart, parts, burpAt, burps, avgNote });
+}
+
+// drum + bass patterns for the new songs: 16 steps per bar. k kick, s snare, c clap, h hat, o open hat, t tom, g laser zap,
+// j jingle, r shaker, p chord "pah". bass: R root, O octave up, 5 fifth, - keep holding. arp: chord note 0-3 (3 = root up high).
+const STY2 = {
+  // 💗 the Robo Jump 9 LASERHEART beat (STYLES.laser), copied step for step: the heartbeat kick goes ba BUM
+  laser: {
+    I: { k: 'x..x............', g: '........x.......', bass: 'R..R....R..R....' },
+    V: { k: 'x..x....x..x....', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', g: '..............x.', t: '..............xx', bass: 'R.RR.R.RR.RR.R.O', arp: '0.1.2.1.0.1.2.1.' },
+    C: { k: 'x..x..x.x..x..x.', s: '....x.......x...', h: 'xxxxxxxxxxxxxxxx', o: '..x...x...x...x.', g: '......x.......x.', bass: 'R.RO.RR.R.RO.R5O', arp: '0121312101213121' },
+    B: { k: 'x..x............', t: 'x...x...x...xxxx', g: 'x.......x.......', h: '..x...x...x...x.', bass: 'R-------5-------', arp: '0...1...2...3...' },
+    H: { k: 'x..x....x..x....', bass: 'R-------R-------', arp: '0.......2.......' },
+    E: { bass: 'R---------------' } },
+  // 💨 oom-pah polka for King Gloop
+  oompah: {
+    I: { k: 'x.......x.......', p: '....x.......x...', bass: 'R.......5.......' },
+    V: { k: 'x.......x.......', p: '....x.......x...', h: '..x...x...x...x.', bass: 'R.......5.......' },
+    C: { k: 'x.......x.......', s: '....x.......x...', p: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', bass: 'R...O...5...O...' },
+    B: { h: '..x...x...x...x.', bass: 'R---------------', arp: '0...1...2...1...' },
+    Z: { },
+    E: { bass: 'R---------------' } },
+  // 🦘 remix: a bouncy dance beat
+  remix: {
+    I: { k: 'x...x...x...x...', h: '..x...x...x...x.', bass: 'R.R.R.R.R.R.R.R.' },
+    V: { k: 'x...x...x...x...', s: '....x.......x...', h: '..x...x...x...x.', o: '..............x.', bass: 'R..R..R.R..R..O.', arp: '0.1.2.1.0.1.2.1.' },
+    C: { k: 'x...x...x...x...', s: '....x.......x...', h: 'xxxxxxxxxxxxxxxx', c: '....x.......x...', bass: 'R.RO.RR.R.RO.R5O', arp: '0121312101213121' },
+    E: { bass: 'R---------------' } },
+};
+
+// 💗 LASERHEART DELUXE: Laserheart's real boss song from Robo Jump 9 (SONG_DEFS.laserheart: B minor, 168 bpm, notes and chords
+// copied exactly), made longer and fancier: two intros, two verses, choruses, the bridge, a heartbeat breakdown,
+// TWO key-change choruses (up 2, like the game's "K" chorus) and an outro.
+const LH_I = "1' . 1' . 5' . 1' . | 6' - 5' - 3' - 1' - | 4' . 4' . 1'' . 4' . | #7' - - - . . . .";
+const LH_V = "1' . 1' 2' 3' . 1' . | 5' - 3' - 1' - 5 . | 6 . 6 7 1' . 3' . | 6' - 5' - 3' - . . | 3' . 3' 4' 5' . 3' . | 7' - 5' - 3' - 7 . | #7 . #7 1' 2' . 5' . | #7' - - - 5' - 2' -";
+const LH_C = "5' - - 3' 1'' - 7' - | 6' - - 5' 3' - 1' - | 5' - - 3' 7' - 5' - | 2'' - - - 7' - 4' - | 5' - - 3' 1'' - 7' - | 6' - - 1'' 3'' - 1'' - | 6' - 4' - 1'' - 6' - | #7' - - - 2'' - - -";
+const LH_B = "1' - 3' - 6' - 1'' - | 3'' - - - 1'' - 6' - | 2' - 4' - 7' - 2'' - | 4'' - - - 2'' - 7' - | 1'' - 7' - 5' - 3' - | 1' - 3' - 5' - 1'' - | #7' - - - 5' - - - | 2'' - - - #7' - - -";
+const LH_CW = 'Heart, heart of light, / shin-ing so bright, / pink la-ser beams / light the night! / Ba BUM, ba BUM, / feel the heart-beat, / La-ser-heart is / so sweet!';
+J['Laserheart Deluxe'] = song2({ icon: '💗', name: 'Laserheart Deluxe', bpm: 168, base: 59, scale: 'minor', wave: 'square', vol: 0.031, style: STY2.laser, pad: true, dv: 0.8,
+  endChord: [61, 64, 68, 73],
+  parts: [
+    { n: 'Intro', s: 'I', e: 0.6, ch: '1 6 4 5M', m: LH_I },
+    { n: 'Intro', s: 'V', e: 0.75, ch: '1 6 4 5M', m: LH_I },
+    { n: 'Verse 1', s: 'V', e: 0.8, ch: '1 1 6 6 3 3 5M 5M', m: LH_V,
+      w: 'Way up in the sky, / a pink heart glows, / La-ser-heart is near, / friend-ship grows. / Once she was a boss, / now she\'s our friend, / shar-ing all her light / to the end!' },
+    { n: 'Chorus', s: 'C', e: 1, ch: '1 6 3 7 1 6 4 5M', m: LH_C, w: LH_CW, chorus: 1 },
+    { n: 'Laser Show', s: 'C', e: 0.9, ch: '1 6 4 5M', m: LH_I },
+    { n: 'Verse 2', s: 'V', e: 0.85, ch: '1 1 6 6 3 3 5M 5M', m: LH_V,
+      w: 'Ro-bo zooms a-round, / she waves hel-lo, / pink and pur-ple lights / start the show! / Spin a-round with me, / the dance floor shines, / ev-\'ry-bo-dy sing / one more time!' },
+    { n: 'Chorus', s: 'C', e: 1, ch: '1 6 3 7 1 6 4 5M', m: LH_C, w: LH_CW, chorus: 2 },
+    { n: 'Bridge', s: 'B', e: 0.7, ch: '6 6 7 7 1 1 5M 5M', m: LH_B,
+      w: 'We used to fight, / now we dance! / Hold out your hand, / here\'s your chance! / An-y heart can / turn to light, so / ba BUM, / ba BUM!' },
+    { n: 'Heartbeat', s: 'H', e: 0.5, ch: '1 6 4 5M', m: "1' 1'' . . 1' 1'' . . | 3' 3'' . . 3' 3'' . . | 4' 4'' . . 4' 4'' . . | #7 #7' . . #7 #7' . .",
+      w: 'Ba BUM, ba BUM, / ba BUM, ba BUM, / get rea-dy, now! / Sing it out loud!' },
+    { n: 'KEY CHANGE!', s: 'C', e: 1, tr: 2, ch: '1 6 3 7 1 6 4 5M', m: LH_C, w: LH_CW, chorus: 3, keyUp: 1 },
+    { n: 'Super Chorus', s: 'C', e: 1, tr: 2, ch: '1 6 3 7 1 6 4 5M', m: LH_C, w: LH_CW, chorus: 4, keyUp: 1, dbl: 1 },
+    { n: 'Outro', s: 'V', e: 0.8, tr: 2, ch: '1 6 4 5M', m: LH_I, keyUp: 1 },
+    { n: 'Outro', s: 'E', e: 0.6, tr: 2, ch: '1 1', m: "1' . 5' . 1'' - - - | - - - - . . . .", w: 'Heart of light!', keyUp: 1 },
+  ] });
+
+// 💨 THE BURP SONG: King Gloop sings about "the burp that shakes the world" (C major oom-pah, 120 bpm).
+// A part with burp: [n] lets out a SOFT rumbly burp n steps into the part (and the screen shakes).
+const BURP_V = "5 5 3 1 5 - 3 - | 1 - - - . . . . | 1' . 6 . 1' 1' 6 - | 5 - 4 - 2 - . . | 5 5 3 1 5 - 3 - | 6 - - - . . . . | 6 6 4 . 5 5 2 . | 1 - - - . . . .";
+const BURP_C = "5 5 1' . 1' 1' 7 - | 5 - - - . . . . | 6 6 1' 6 4 . 6 - | 5 - 3 - . . . . | 3' 3' 1' 1' 6 - - - | 4 . 6 - . . . . | 5 - - - 7 - - - | 2' - - - . . . .";
+const BURP_CW = 'It\'s the burp that shakes the world, / ev-\'ry cat and dog and squir-rel! / Bub-ble, rum-ble, here / it comes... / One, two, three...';
+J['The Burp Song'] = song2({ icon: '💨', name: 'The Burp Song', bpm: 120, base: 60, scale: 'major', wave: 'square', vol: 0.032, style: STY2.oompah,
+  parts: [
+    { n: 'Intro', s: 'I', e: 0.6, ch: 'C G7 C G', m: "5 . 3 . 5 . 3 . | 4 . 2 . 4 . 2 . | 5 . 3 . 5 . 1' . | 2' - 7 - 5 - . ." },
+    { n: 'Verse 1', s: 'V', e: 0.75, ch: 'C C F G C Am F/G C', m: BURP_V,
+      w: 'King Gloop ate a big goo pie, / then a cake as tall as the sky, / then he drank a fiz-zy pop, / now his tum-my will not stop!' },
+    { n: 'Chorus', s: 'C', e: 1, ch: 'C G F C Am F G G', m: BURP_C, w: BURP_CW, burp: [60] },
+    { n: 'Verse 2', s: 'V', e: 0.8, ch: 'C C F G C Am F/G C', m: BURP_V,
+      w: 'Ev-\'ry-bo-dy, hold on tight, / now King Gloop wob-bles left and right! / Some-thing\'s ris-ing from be-low, / here it comes, oh no, oh no!' },
+    { n: 'Chorus', s: 'C', e: 1, ch: 'C G F C Am F G G', m: BURP_C, w: BURP_CW, burp: [60] },
+    { n: 'Shhh...', s: 'B', e: 0.4, ch: 'Am Am F G', m: "3 - - - 1 1 3 - | . . 1 1 3 - . . | 4 . 4 6 1' . 1' 6 | 2' . 7 - 5 - . .",
+      w: 'Shh, it\'s com-ing, it\'s com-ing, / the big-gest burp in the u-ni-verse!' },
+    { n: 'THE BIG ONE', s: 'Z', e: 1, ch: 'C C', m: ". . . . . . . . | 5 5 1' - . . . .", w: 'Ex-cuse me!', burp: [0], big: 1 },
+    { n: 'Chorus', s: 'C', e: 1, ch: 'C G F C Am F G G', m: BURP_C, w: BURP_CW, burp: [60] },
+    { n: 'Outro', s: 'V', e: 0.8, ch: 'C G7 C G', m: "5 . 3 . 5 . 3 . | 4 . 2 . 4 . 2 . | 5 . 3 . 5 . 1' . | 2' - 7 - 5 - . .",
+      w: 'Ex-cuse me, ex-cuse me, / I\'m a po-lite king! / Ex-cuse me, / burp!' },
+    { n: 'The End', s: 'E', e: 0.6, ch: 'C C', m: "1' - - - - - - - | . . . . . . . ." },
+  ] });
+
+// 🦘 ROBO JUMP REMIX: the main theme of every Robo Jump game, 2 bars each (notes copied from each game's title song)
+const RJ_HOOKS = [
+  ['RJ1', 'Robo Jump', 'A5 - - - G5 - E5 - | F5 - - - E5 - C5 - ', 'Am/G F/C', 'Ro-bo Jump num-ber one!'],
+  ['RJ2', 'Robo Jump 2', 'E5 - G5 - B5 - A5 G5 | E5 - - D5 E5 - - -', 'Em C', 'Glitch-y pix-el Ro-bo Jump Two!'],
+  ['RJ3', 'Robo Jump 3', 'C5 - E5 - G5 - - E5 | F5 - E5 - D5 - - -', 'C Dm', 'Jun-gle jump-ing, Ro-bo Three!'],
+  ['RJ4', 'Robo Jump 4', 'A5 - G#5 A5 - E5 - . | B5 - A5 B5 - G#5 - .', 'A E', 'Mor-phing Ro-bo, Jump num-ber Four!'],
+  ['RJ5', 'Robo Jump 5', 'G5 - - F#5 G5 - B5 - | A5 - - G5 F#5 - D5 -', 'G D', 'Fix-ing bro-ken moons in Jump Five!'],
+  ['RJ6', 'Robo Jump 6', 'C#5 - E5 - A5 - G#5 F#5 | F#5 - E5 - D#5 - B4 -', 'A B', 'Pix-el Plan-et Pan-ic, Ro-bo Six!'],
+  ['RJ7', 'Robo Jump 7', 'F5 - F5 - E5 - C5 - | D5 - D5 - B4 - G4 -', 'F/C G', 'Back in time with di-nos, Sev-en!'],
+  ['RJ8', 'Robo Jump 8', 'B5 - A5 - G5 - D5 - | C#6 - B5 - A5 - E5 -', 'G A', 'Un-lock the vault in Ro-bo Eight!'],
+  ['RJ9', 'Robo Jump 9', 'D5 - F5 - Bb5 - A5 - | G5 - E5 - C5 - E5 -', 'Bb C', 'Zip-ping a-lone in Ro-bo Nine!'],
+  ['RJ10', 'Robo Jump 10', 'G5 - F#5 G5 - D5 - . | A5 - G5 A5 - F#5 - .', 'G D', 'Fire, wa-ter, wind and ice in Ten!'],
+  ['RJ11', 'Robo Jump 11', 'G5 - G5 A5 B5 - G5 - | A5 - A5 B5 C6 - A5 -', 'Em Am', 'Sing a-long with Ro-bo Jump E-lev-en!'],
+  ['RJ12', 'Robo Jump 12', 'A5 - F#5 A5 - B5 A5 . | C#5 - E5 C#5 - A4 . .', 'D A', 'Gears and scrap and cir-cuits, Ro-bo Twelve!'],
+  ['RJ13', 'Robo Jump 13', 'A5 - A5 G5 F5 - D5 . | E5 - E5 D5 C5 - G4 .', 'Dm C', 'Cop-y Fac-to-ry in Ro-bo Thir-teen!'],
+  ['RJ14', 'Robo Jump 14', 'G5 - G5 E5 C5 - E5 G5 | A5 - A5 F#5 D5 - F#5 A5', 'C D', 'Ev-\'ry sin-gle lev-el\'s glitch-y in Jump Four-teen!'],
+  ['RJ15', 'Robo Jump 15', 'F5 - F5 D5 Bb5 - F5 . | G5 - G5 E5 C6 - G5 .', 'Bb C', 'Up-side down and back a-round in Fif-teen!'],
+  ['RJ16', 'Robo Jump 16', 'A5 - A5 G5 F5 - C5 . | G5 - G5 F5 E5 - C5 .', 'F C', 'Tin-y trou-ble, tin-y Ro-bo, Six-teen!'],
+  ['GG', 'Gloop Galaxy', 'F5 - D5 - Bb5 - F5 . | G5 - E5 - C6 - G5 .', 'Bb C', 'Gloop Ga-lax-y, last but not least!'],
+];
+J['Robo Jump Remix'] = song2({ icon: '🦘', name: 'Robo Jump Remix', bpm: 140, base: 60, scale: 'major', wave: 'square', vol: 0.034, style: STY2.remix,
+  endChord: [57, 60, 64, 69],
+  parts: [
+    { n: 'Get ready!', s: 'I', e: 0.6, ch: 'Am F', m: '. . . . . . . . | . . . . . . . .' },
+    ...RJ_HOOKS.map((h, i) => ({ n: h[1], s: i % 4 === 3 ? 'C' : 'V', e: 0.8 + 0.2 * (i / 16), ch: h[3], m: h[2], w: h[4], game: i })),
+    { n: 'Everybody!', s: 'C', e: 1, ch: 'Am/G F/C', m: RJ_HOOKS[0][2], w: 'Jump, jump, ev-\'ry-bo-dy!', game: 17 },
+    { n: 'The End', s: 'E', e: 0.7, ch: 'Am Am', m: 'A5 - - - - - - - | . . . . . . . .', w: 'Yeah!', game: 17 },
+  ] });
+
+// 👑 BOSS BATTLE BOOGIE: a funky E minor groove (the Robo Jump 9 "funk" beat). The boss solo quotes two real boss songs:
+// the Book Boss's "Turn the Page!" (bookboss.html) and Laserheart's chorus (robojump9.html).
+STY2.funk = {
+  I: { k: 'x.....x...x.....', h: 'x.x.x.x.x.x.x.x.', bass: 'R..R.O..R.R..5O.' },
+  V: { k: 'x.....x...x..x..', s: '....x.......x...', c: '....x.......x...', h: 'xxxxxxxxxxxxxxxx', bass: 'R..R.O.RR..5.O.R', arp: '..0...1...0...2.' },
+  C: { k: 'x.....x...x..x..', s: '....x..x.x..x...', c: '....x.......x...', h: 'x.xxx.xxx.xxx.xx', o: '......x.......x.', bass: 'R.RO..R.R..O5.R.', arp: '0.0.1.1.2.2.1.1.' },
+  B: { k: 'x.........x.....', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', g: '..............x.', bass: 'R-..R-..5-..O-..', arp: '0...........1...' },
+  E: { bass: 'R---------------' } };
+const BB_RIFF = 'E4 . E4 G4 . A4 A#4 B4 | . G4 . E4 C#4 . E4 .';
+const BB_V = "1' . 1' 7 . 5 . 7 | . 6 . 5 3 - . . | 3' . 3' 2' . 1' . 2' | . 1' . 7 6 - . . | 1' . 1' 7 . 5 . 7 | . 6 . 5 3 - . . | 1' . 1' 7 . 5 . 7 | . F#5 . D#5 B4 - . .";
+const BB_C = 'G5 G5 G5 E5 C5 . E5 . | F#5 F#5 E5 D5 - . . . | E5 E5 G5 . B5 . A5 G5 | E5 - D5 E5 - . . . | G5 G5 G5 E5 C5 . E5 . | D5 . A5 - . . . . | B4 B4 D#5 F#5 A5 . F#5 . | D#5 D#5 B4 - . . . .';
+const BB_CW = 'Boss Bat-tle Boo-gie, bos-ses on the floor! / We used to fight, but not an-y-more! / Boss Bat-tle Boo-gie, stomp, stomp, clap! / Ev-\'ry-bo-dy do the bos-sy snap!';
+const BB_SOLO = 'E5 . G5 B5 . B5 A5 G5 | E5 . C5 E5 G5 . . . | F#5 - - D5 B5 - A5 - | G5 - - F#5 D5 - B4 - | E5 . G5 B5 . B5 A5 G5 | E5 . C5 E5 G5 . . . | F#5 - - D5 B5 - A5 - | G5 - - F#5 D5 - B4 -';
+J['Boss Battle Boogie'] = song2({ icon: '👑', name: 'Boss Battle Boogie', bpm: 116, base: 64, scale: 'dorian', wave: 'square', vol: 0.033, style: STY2.funk,
+  endChord: [52, 59, 64, 67, 71],
+  parts: [
+    { n: 'Intro', s: 'I', e: 0.6, ch: 'Em7 A7 Em7 A7', m: BB_RIFF + ' | ' + BB_RIFF },
+    { n: 'Verse 1', s: 'V', e: 0.8, ch: 'Em7 A7 Em7 A7 Em7 A7 C B7', m: BB_V,
+      w: 'King Gloop wig-gles with his gold crown, / La-ser-heart spins a-round and round, / Mir-ror Ro-bo does what you do, / and Glint shines pink and a-qua too!' },
+    { n: 'Chorus', s: 'C', e: 1, ch: 'C D Em Em C D B7 B7', m: BB_C, w: BB_CW },
+    { n: 'Verse 2', s: 'V', e: 0.85, ch: 'Em7 A7 Em7 A7 Em7 A7 C B7', m: BB_V,
+      w: 'King E-le-ment has six bright gems, / Ne-ga Ho-lo-gram made new friends, / Me-cha Gloop\'s made of ev-\'ry Gloop, / and Cha-os No-va jumps through hoops!' },
+    { n: 'Chorus', s: 'C', e: 1, ch: 'C D Em Em C D B7 B7', m: BB_C, w: BB_CW },
+    { n: 'Boss Solo!', s: 'B', e: 0.9, ch: 'Em C Bm G Em C Bm G', m: BB_SOLO,
+      w: 'Turn the page, the Book Boss is dan-cing too! / La-ser-heart is spin-ning a-round! / Cha-os No-va winks its big shi-ny eye, / Me-cha Gloop goes stomp, stomp, stomp, stomp!' },
+    { n: 'Chorus', s: 'C', e: 1, ch: 'C D Em Em C D B7 B7', m: BB_C, w: BB_CW, dbl: 1 },
+    { n: 'The End', s: 'E', e: 0.7, ch: 'Em Em', m: 'E5 - - - B4 - E5 - | . . . . . . . .', w: 'Boss Boo-gie!' },
+  ] });
+
+// 🐱 CAT PARTY: a bouncy disco song in F major. Every cat gets a meow!
+STY2.disco = {
+  I: { k: 'x...x...x...x...', o: '..x...x...x...x.', bass: 'R.O.R.O.R.O.R.O.' },
+  V: { k: 'x...x...x...x...', c: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', o: '..x...x...x...x.', bass: 'R.O.R.O.R.O.R.O.', arp: '0.1.2.1.0.1.2.1.' },
+  C: { k: 'x...x...x...x...', c: '....x.......x...', h: 'xxxxxxxxxxxxxxxx', o: '..x...x...x...x.', j: 'x.......x.......', bass: 'R.O.R.O.R.O.5.O.', arp: '0121312101213121' },
+  B: { k: 'x...x...x...x...', c: '....x.......x...', r: 'x.x.x.x.x.x.x.x.', bass: 'R.......R.......', arp: '0...1...2...3...' },
+  E: { bass: 'R---------------' } };
+const CAT_V = "5 5 6 5 1' . 6 . | 6 - 5 4 . . . . | 4 4 6 . 1' . 6 . | 5 - 7 - 2' - . . | 5 5 6 5 1' . 6 . | 6 - 5 4 . . . . | 4 4 6 . 5 5 7 . | 1' - - - . . . .";
+const CAT_C = "1' . 1' . 4' - - . | 7 7 5 . 2' . 2' . | 1' . 1' . 5' - - . | 3' - 1' - 6 - - . | 1' . 1' . 4' - - . | 7 7 5 . 2' . 2' . | 1' . 1' . 5' - - . | 3' - 2' - 1' - - -";
+const CAT_CW = 'Meow, meow, MEOW! It\'s a cat par-ty! / Meow, meow, MEOW! Dance with me! / Meow, meow, MEOW! Wig-gle your whis-kers! / Meow, meow, MEOW! Cat par-ty!';
+J['Cat Party'] = song2({ icon: '🐱', name: 'Cat Party', bpm: 126, base: 65, scale: 'major', wave: 'square', vol: 0.032, style: STY2.disco,
+  endChord: [53, 60, 65, 69], voice: { pitch: 1.7 },
+  parts: [
+    { n: 'Intro', s: 'I', e: 0.6, ch: 'Bb C F Dm', m: "1' . 1' . 4' - - . | 7 7 5 . 2' . 2' . | 1' . 1' . 5' - - . | 3' - 1' - 6 - - ." },
+    { n: 'Verse 1', s: 'V', e: 0.8, ch: 'F Dm Bb C F Dm Bb/C F', m: CAT_V,
+      w: 'Sam-my climbs up Mount Sweet Free-dom high, / Jim-my purrs so loud-ly, oh my! / Ro-cky plays out-side and spots the birds, / Mi-mo watch-es, purr, purr, purr!' },
+    { n: 'Chorus', s: 'C', e: 1, ch: 'Bb C F Dm Bb C F F', m: CAT_C, w: CAT_CW },
+    { n: 'Verse 2', s: 'V', e: 0.85, ch: 'F Dm Bb C F Dm Bb/C F', m: CAT_V,
+      w: 'Char-lie\'s yarn ball lands in the bas-ket, / Au-gust\'s big tail goes swish, swish, swish, / tick-ling ev-\'ry-bo-dy\'s nose, ah-CHOO! / Pa-ges reads a sto-ry too!' },
+    { n: 'Chorus', s: 'C', e: 1, ch: 'Bb C F Dm Bb C F F', m: CAT_C, w: CAT_CW },
+    { n: 'Meow Solo!', s: 'B', e: 0.9, ch: 'F Bb C F F Bb C F', m: "5 . 5 . 1' - . . | 4 . 4 . 1' - . . | 5 . 5 . 2' - . . | 1' . 1' . 5' - . . | 5 . 5 . 1' - . . | 4 . 4 . 1' - . . | 5 . 5 . 2' - . . | 1' 1' 1' 1' 5' - - -",
+      w: 'Sam-my, MEOW! / Jim-my, MEOW! / Ro-cky, MEOW! / Mi-mo, MEOW! / Char-lie, MEOW! / Au-gust, MEOW! / Pa-ges, MEOW! / Ev-\'ry-bo-dy MEOW!', solo: 1 },
+    { n: 'Chorus', s: 'C', e: 1, ch: 'Bb C F Dm Bb C F F', m: CAT_C, w: CAT_CW, dbl: 1 },
+    { n: 'The End', s: 'E', e: 0.7, ch: 'F F', m: "1' - - - - - - - | . . . . . . . .", w: 'MEOW!' },
+  ] });
+
+// 👻 SPOOKY SHUFFLE: a QUIET, tip-toe dance in D minor. Soft music box, soft snaps, no loud drums at all.
+STY2.spooky = {
+  I: { r: '....x.......x...', bass: 'R-------R-------', arp: '0.2.1.2.0.2.1.2.' },
+  V: { k: 'x.......x.......', r: '....x.......x...', h: '..x...x...x...x.', bass: 'R---5---R---5---', arp: '0.2.1.2.0.2.1.2.' },
+  C: { k: 'x.......x.......', r: '....x.......x...', h: '..x...x...x...x.', j: '......x.......x.', bass: 'R...5...R...5...', arp: '0213021302130213' },
+  B: { r: '....x.......x...', bass: 'R---------------', arp: '3...2...1...0...' },
+  E: { bass: 'R---------------' } };
+const SPK_V = "5 . 5 6 5 . 3 . | 6 - . 4 3 - . . | 4 . 4 6 1' . 6 . | 5 - #7 - 2' - . . | 5 . 5 6 5 . 3 . | 6 - . 4 3 - . . | 4 . 4 6 1' . 6 . | 5 - #7 - 2' - . .";
+J['Spooky Shuffle'] = song2({ icon: '👻', name: 'Spooky Shuffle', bpm: 100, base: 62, scale: 'minor', wave: 'triangle', vol: 0.05, style: STY2.spooky,
+  quiet: 1, dv: 0.4, bassVol: 0.05, arpVol: 0.016, arpWave: 'sine', endChord: [50, 57, 62, 65], voice: { pitch: 1.1, rate: 0.85, vol: 0.5 },
+  parts: [
+    { n: 'Tip-toe...', s: 'I', e: 0.4, ch: 'Dm Bb Gm A7', m: '. . . . . . . . | . . . . . . . . | ' + "4 . 4 6 1' . 6 . | 5 - #7 - 2' - . ." },
+    { n: 'Verse 1', s: 'V', e: 0.6, ch: 'Dm Bb Gm A7 Dm Bb Gm A7', m: SPK_V,
+      w: 'Shh, tip-toe in the spoo-ky house, / Plink plays pi-a-no at mid-night, / Mi-ra peeks out from the mir-ror, / Top-sy floats up-side down, all right!' },
+    { n: 'Chorus', s: 'C', e: 0.75, ch: 'Dm Bb Gm A7 Dm Bb Gm A7', m: SPK_V,
+      w: 'Spoo-ky Shuf-fle, slide to the left, / Spoo-ky Shuf-fle, slide to the right, / lit-tle ghosts go boo, not too loud, / Spoo-ky Shuf-fle all through the night!' },
+    { n: 'Verse 2', s: 'V', e: 0.65, ch: 'Dm Bb Gm A7 Dm Bb Gm A7', m: SPK_V,
+      w: 'Whis-ker-wisp chas-es the moon-beams, / Pro-fes-sor Boo reads a joke book, / Bub-bles splash-es in the bath-tub, / Sir Quack-ers gives a lit-tle look!' },
+    { n: 'Whisper', s: 'B', e: 0.45, ch: 'Bb C Dm Dm Bb C A7 A7', m: "6 . 6 . 1' - - . | 7 . 7 . 2' - - . | 1' . 1' . 3' . . . | 3' - 1' - 5 - - . | 6 . 6 . 1' - - . | 7 . 7 . 2' - - . | #7 . #7 . 2' . 2' . | 5 . #7 . 5 - - .",
+      w: 'Tee-ny says boo-boo-ba! / Big Gus brings a night-light, / Wis-py found sev-en keys, / now there\'s a par-ty to-night!' },
+    { n: 'Chorus', s: 'C', e: 0.8, ch: 'Dm Bb Gm A7 Dm Bb Gm A7', m: SPK_V,
+      w: 'Spoo-ky Shuf-fle, slide to the left, / Spoo-ky Shuf-fle, slide to the right, / lit-tle ghosts go boo, not too loud, / Spoo-ky Shuf-fle all through the night!' },
+    { n: 'The End', s: 'E', e: 0.4, ch: 'Dm Dm', m: "1' - - - - - - - | . . . . . . . .", w: 'Boo.' },
+  ] });
+
+// 🌍 ROBO CITY ROCK: G major rock about Robo City (robocity3d.html): the car, the jobs, sleepovers, Mount Sweet Freedom and Star Station
+STY2.rock = {
+  I: { k: 'x.......x.......', h: 'x.x.x.x.x.x.x.x.', bass: 'R.R.R.R.R.R.R.R.' },
+  V: { k: 'x.....x.x.......', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', bass: 'R.R.R.R.R.R.R.R.', arp: '0.1.2.1.0.1.2.1.' },
+  C: { k: 'x...x...x...x...', s: '....x.......x...', h: 'x.xxx.xxx.xxx.xx', o: '..............x.', bass: 'R.RO.RR.R.RO.R5.', arp: '0121312101213121' },
+  B: { k: 'x.......x.......', r: '..x...x...x...x.', bass: 'R-------5-------', arp: '0...1...2...3...' },
+  L: { t: 'x...x...x.x.xxxx', bass: 'R.R.R.R.R.R.R.R.' },
+  E: { bass: 'R---------------' } };
+const CITY_V = 'D5 D5 D5 B4 D5 . E5 . | B4 - G4 - . . . . | E5 E5 E5 C5 E5 . G5 . | F#5 - D5 - . . . . | D5 D5 D5 B4 D5 . E5 . | B4 - G4 - . . . . | E5 E5 E5 C5 D5 D5 F#5 . | G5 - - - . . . .';
+const CITY_C = 'D5 D5 B4 G4 D5 D5 B4 G4 | A4 - - - . . . . | B4 B4 B4 G4 E5 . B4 . | C5 - - - . . . . | D5 D5 B4 G4 D5 D5 B4 G4 | A4 - - - . . . . | E5 E5 E5 C5 D5 D5 F#5 . | G5 - - - . . . .';
+const CITY_CW = 'Ro-bo Ci-ty, Ro-bo Ci-ty rock! / Ev-\'ry street and ev-\'ry block! / Ro-bo Ci-ty, come and roll with me! / Mount Sweet Free-dom, Star Sta-tion, wheee!';
+J['Robo City Rock'] = song2({ icon: '🌍', name: 'Robo City Rock', bpm: 138, base: 55, scale: 'major', wave: 'square', vol: 0.033, style: STY2.rock,
+  endChord: [55, 59, 62, 67],
+  parts: [
+    { n: 'Intro', s: 'I', e: 0.6, ch: 'G D Em C', m: 'D5 D5 B4 G4 D5 D5 B4 G4 | A4 - - - . . . . | B4 B4 B4 G4 E5 . B4 . | C5 - - - . . . .' },
+    { n: 'Drive!', s: 'V', e: 0.8, ch: 'G Em C D G Em C/D G', m: CITY_V, scene: 'drive',
+      w: 'Hop in my car, it\'s cher-ry red, / beep beep, quack quack, ta-da, la la! / Gold rims spin-ning, hit the tur-bo, / zoom-ing through Ro-bo Ci-ty, go!' },
+    { n: 'Chorus', s: 'C', e: 1, ch: 'G D Em C G D C/D G', m: CITY_C, w: CITY_CW, scene: 'city' },
+    { n: 'Jobs!', s: 'V', e: 0.85, ch: 'G Em C D G Em C/D G', m: CITY_V, scene: 'jobs',
+      w: 'Pick a job at the Ci-ty Hall, / de-liv-er piz-za, mail and all, / fire-fight-er, ice cream, gar-den-er, / Ma-yor Gears-worth pays Ro-bo Bucks!' },
+    { n: 'Chorus', s: 'C', e: 1, ch: 'G D Em C G D C/D G', m: CITY_C, w: CITY_CW, scene: 'mountain' },
+    { n: 'Sleepover', s: 'B', e: 0.6, ch: 'Em C G D Em C G D', m: 'B4 . B4 . E5 - - . | E5 . C5 . G4 - - . | D5 . D5 . B4 - - . | A4 . D5 . F#4 - - . | B4 . B4 . E5 - - . | E5 . C5 . G4 - - . | D5 . D5 . B4 - - . | A4 . D5 . F#4 - - .', scene: 'sleepover',
+      w: 'Ring the sleep-o-ver phone, / in-vite Sparks and Sam-my! / Pil-low fort and pop-corn, / pan-cakes in the morn-ing!' },
+    { n: 'BLAST OFF!', s: 'L', e: 0.9, ch: 'D D G G', m: 'A4 - - - D5 - - - | F#5 - - - . . . . | D5 - G5 - - - - - | . . . . . . . .', scene: 'launch',
+      w: 'Three, two, one, BLAST OFF!' },
+    { n: 'Star Station', s: 'C', e: 1, ch: 'G D Em C G D C/D G', m: CITY_C, scene: 'space', dbl: 1,
+      w: 'Star Sta-tion, jump-ing re-al-ly high! / Lit-tle a-liens wave hi, hi! / Ro-bo Ci-ty, come and roll with me! / Mount Sweet Free-dom, Star Sta-tion, wheee!' },
+    { n: 'The End', s: 'E', e: 0.7, ch: 'G G', m: 'G5 - - - - - - - | . . . . . . . .', w: 'Rock!', scene: 'space' },
+  ] });
 
 // ---------- Ben's characters (drawn like in their games). Each one stands with its feet at (0, 0), about 130 tall ----------
 let ARM = 0;   // how high the dancers wave their arms right now (-1 down ... 1 up)
@@ -451,6 +760,1018 @@ const CHAR = {
   'kart:blip': m => drawKart('blip', m), 'kart:dino': m => drawKart('dino', m), 'kart:zeke': m => drawKart('zeke', m), 'kart:robo': m => drawKart('robo', m),
 };
 const EVIL_IDS = ['evilrobo', 'evilsparks', 'evilgloop', 'evilegg', 'bigglitch'];
+// ---------- 🎤 more dancers for the new videos (copied from their games) ----------
+// ===== Robo's FRIENDS from the Robo Jump games (file tag R). Feet at (0,0), about 130 tall, y negative is up. =====
+// The Robo-twins are built on musicvideos.html's own drawRobo body (so they match Robo when they dance together),
+// with each friend's exact game colors + accessories. The others are ported from their game draw functions and scaled.
+
+function R_rect(x, y, w, h, r, fill, stroke, lw = 2) {   // roundRect that also takes [tl,tr,br,bl] corners (like the games)
+  ctx.beginPath(); ctx.roundRect(x, y, w, h, Array.isArray(r) ? r : Math.max(0, Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2)));
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw; ctx.stroke(); }
+}
+// Robo's body (same as drawRobo) with a palette. o.visor, o.noDot, o.noAntenna, o.noEyes, o.noPods, o.eyeGap
+function R_base(mood, P, o = {}) {
+  rr(-14, -12, 10, 12, 3, P.legs); rr(4, -12, 10, 12, 3, P.legs);
+  if (!o.noArms) arms(22, -36, 22, P.body, 7);
+  rr(-24, -52, 48, 42, 12, P.body, P.edge, 2);
+  if (!o.noDot) dot(0, -32, 5, P.dot || P.pod);
+  if (!o.noPods) { rr(-41, -96, 9, 18, 4, P.pod); rr(32, -96, 9, 18, 4, P.pod); }
+  rr(-34, -116, 68, 58, 20, P.head, P.edge, 2);
+  rr(-27, -108, 54, 40, 14, P.visor || '#111827');
+  if (!o.noEyes) R_eyes(mood, P.eye, o.eyeGap || 11);
+  if (!o.noAntenna) { rr(-3, -128, 6, 12, 2, P.edge); dot(0, -130, 5, frame % 40 < 20 ? '#ff5252' : '#ffeb3b'); }
+}
+function R_eyes(mood, c, g = 11, smile = true) {         // Robo's glowing visor eyes (drawRobo's moods)
+  ctx.strokeStyle = c; ctx.lineWidth = 4; ctx.lineCap = 'round';
+  if (mood === 'happy') { for (const sx of [-g, g]) { ctx.beginPath(); ctx.arc(sx, -86, 6, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); } if (smile) { ctx.beginPath(); ctx.arc(0, -82, 9, 0.3, Math.PI - 0.3); ctx.stroke(); } }
+  else if (mood === 'grr') { poly([-g - 7, -94, -g + 6, -88, -g - 7, -84], c); poly([g + 7, -94, g - 6, -88, g + 7, -84], c); line(-8, -76, 8, -76, c, 3); }
+  else { const b = frame % 180 < 6 ? 1 : 7; ell(-g, -88, 4.5, b, c); ell(g, -88, 4.5, b, c); }
+}
+
+// 🖤 NEGA-ROBO (Robo Jump 4 + 13): from drawRoboBase/PAL_NEGA (rjgloopgalaxy.html): dark twin, red visor, purple eyes + glow, little purple horns
+function drawR_Nega(mood) {
+  const P = { legs: '#4a148c', body: '#263238', pod: '#7b1fa2', head: '#37474f', edge: '#1a1a1a', eye: '#e040fb', visor: '#b71c1c', dot: '#e040fb' };
+  poly([-30, -110, -36, -136, -14, -114], '#7b1fa2'); poly([30, -110, 36, -136, 14, -114], '#7b1fa2');   // horns
+  R_base(mood, P, { noAntenna: true, noEyes: true });
+  dot(-11, -88, 13, 'rgba(224,64,251,.35)'); dot(11, -88, 13, 'rgba(224,64,251,.35)');
+  R_eyes(mood, P.eye);
+}
+// 💚 ROBO 2.0 (Robo Jump 6): from drawRoboBase/PAL_R2: no antenna, no chest dot, pixel freckles, a smile and "2.0" on his tummy
+function drawR_Robo2(mood) {
+  const P = { head: '#fdf4ff', body: '#effff4', visor: '#1a0033', eye: '#00e676', legs: '#d500f9', pod: '#00e676', edge: '#ce93d8' };
+  R_base(mood, P, { noAntenna: true, noDot: true });
+  if (mood === 'wait') { ctx.strokeStyle = P.eye; ctx.lineWidth = 3.5; ctx.beginPath(); ctx.arc(0, -80, 8, 0.2, Math.PI - 0.2); ctx.stroke(); }
+  ctx.fillStyle = '#ff00e5'; ctx.fillRect(-30, -112, 9, 9); ctx.fillStyle = '#00e676'; ctx.fillRect(21, -108, 9, 9);   // pixel freckles
+  text('2.0', 0, -30, 18, '#7b1fa2', 'center', null);
+}
+// ⏰ TIME ROBO, nice version (Robo Jump 7): from timeRoboShape(o.nice): bronze Robo, hourglass cape, gear ear pods, clock in his visor, clock antenna
+function drawR_TimeRobo(mood) {
+  const P = { head: '#ffe0a8', body: '#fff1d6', visor: '#2a1a40', eye: '#ffd740', legs: '#c49a6c', pod: '#ffd180', edge: '#c49a6c' };
+  ctx.fillStyle = '#b39ddb'; ctx.beginPath();                                          // ⏳ hourglass cape behind him
+  ctx.moveTo(-40, -56); ctx.lineTo(40, -56); ctx.lineTo(10, -32); ctx.lineTo(38, -4); ctx.lineTo(-38, -4); ctx.lineTo(-10, -32); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#ffb300'; ctx.lineWidth = 3; ctx.stroke();
+  poly([-24, -52, 24, -52, 0, -36], 'rgba(255,213,79,.8)'); poly([-26, -6, 26, -6, 0, -20], 'rgba(255,213,79,.8)');
+  R_base(mood, P, { noAntenna: true, noEyes: true, noPods: true, eyeGap: 15 });
+  for (const sx of [-1, 1]) {                                                           // ⚙️ gear ear pods
+    const gx = sx * 37, gy = -87, a = frame * 0.05 * sx;
+    ctx.fillStyle = '#ffb300'; ctx.beginPath();
+    for (let i = 0; i < 16; i++) { const r = i % 2 ? 7 : 11, an = a + i * Math.PI / 8; ctx.lineTo(gx + Math.cos(an) * r, gy + Math.sin(an) * r); }
+    ctx.fill(); dot(gx, gy, 3.5, '#8d5a2b');
+  }
+  line(0, -116, 0, -130, P.legs, 4);                                                   // antenna with a little clock
+  dot(0, -138, 9, '#ffb300'); dot(0, -138, 6.5, '#fff8e1');
+  const ta = frame * 0.12; line(0, -138, Math.cos(ta) * 5, -138 + Math.sin(ta) * 5, '#5d4037', 2);
+  const vy = -88, vr = 9;                                                               // 🕐 ticking clock between his eyes
+  dot(0, vy, vr, 'rgba(255,224,130,.25)');
+  ctx.strokeStyle = 'rgba(255,215,64,.6)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0, vy, vr, 0, 7); ctx.stroke();
+  const tick = Math.floor(frame / 30), ma = tick * Math.PI / 6 - Math.PI / 2, ha = tick * Math.PI / 72 - Math.PI / 2;
+  line(0, vy, Math.cos(ma) * 7.5, vy + Math.sin(ma) * 7.5, '#ffd740', 2); line(0, vy, Math.cos(ha) * 4.5, vy + Math.sin(ha) * 4.5, '#ffd740', 3);
+  R_eyes(mood, P.eye, 18, true);
+}
+// 🔒 LOCK ROBO, nice version (Robo Jump 8): from lockRoboShape(o.nice): silver Robo, gold padlock shackle on his head,
+// gold chains, a padlock chest plate, a keyhole glowing in his visor and a jingly ring of keys
+function drawR_LockRobo(mood) {
+  const P = { head: '#cfd8dc', body: '#eceff1', visor: '#1a237e', eye: '#ffd740', legs: '#90a4ae', pod: '#ffd740', edge: '#90a4ae' };
+  ctx.strokeStyle = '#ffd740'; ctx.lineWidth = 8; ctx.beginPath(); ctx.arc(0, -112, 20, Math.PI, 0); ctx.stroke();   // shackle
+  R_base(mood, P, { noAntenna: true, noEyes: true, noDot: true, noArms: true });
+  const sway = Math.sin(frame * 0.12) * 4;
+  arms(22, -36, 22, '#eceff1', 7);
+  for (const d of [-1, 1]) for (let i = 0; i < 4; i++) {                                // ⛓️ gold chains down his shoulders
+    const u = i / 3, cx = d * (22 + u * 8) + sway * d * u, cy = -50 + u * 34;
+    ctx.strokeStyle = '#ffd740'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.ellipse(cx, cy, 3, 6, 0, 0, 7); ctx.stroke();
+  }
+  rr(-16, -48, 32, 28, 6, '#ffd740', '#fff8e1', 2.5);                                    // padlock chest plate
+  dot(0, -38, 4.5, '#1a1a1a'); poly([-2.5, -36, 2.5, -36, 1.8, -26, -1.8, -26], '#1a1a1a');
+  const kx = -20, ky = -14, jig = Math.sin(frame * 0.35) * 0.35;                        // 🔑 ring of keys
+  ctx.strokeStyle = '#ffd740'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(kx, ky, 5, 0, 7); ctx.stroke();
+  for (let i = -1; i <= 1; i++) {
+    ctx.save(); ctx.translate(kx + i * 3, ky + 9); ctx.rotate(Math.PI / 2 + i * 0.5 + jig); ctx.scale(0.55, 0.55);
+    ctx.strokeStyle = '#ffd740'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(-8, 0, 6, 0, 7); ctx.stroke();
+    ctx.fillStyle = '#ffd740'; ctx.fillRect(-2, -2, 16, 4); ctx.fillRect(9, 2, 3, 5); ctx.fillRect(4, 2, 3, 4); ctx.restore();
+  }
+  dot(0, -88, 11, 'rgba(255,215,64,.25)');                                              // 🗝️ keyhole in his visor
+  dot(0, -90, 4, '#ffd740'); poly([-2, -88, 2, -88, 4, -79, -4, -79], '#ffd740');
+  R_eyes(mood, P.eye, 18, true);
+}
+// ✨ GLINT (Robo Jump 9): Mirror Robo after he picked his own name: drawGlint/PAL_GLINT, sunrise-pink + aqua, with his sparkle ring
+function drawR_Glint(mood) {
+  const P = { head: '#ffe3ef', body: '#fff0e0', visor: '#1a2540', eye: '#64ffda', legs: '#ff9e80', pod: '#64ffda', edge: '#ff9e80' };
+  R_base(mood, P, { noAntenna: true });
+  ctx.save(); ctx.beginPath(); ctx.roundRect(-34, -116, 68, 58, 20); ctx.clip();        // chrome sheen sliding over his head
+  const sh = ((frame * 0.8) % 60) / 60 * 110 - 55;
+  ctx.globalAlpha = 0.5; poly([sh, -116, sh + 14, -116, sh - 8, -58, sh - 22, -58], '#fff'); ctx.restore(); ctx.globalAlpha = 1;
+  for (let k = 0; k < 5; k++) {                                                          // the sparkle ring
+    const a = frame * 0.05 + k * 1.26;
+    star(Math.cos(a) * 58, -62 + Math.sin(a) * 62, 7, k % 2 ? '#ff9e80' : '#64ffda', a);
+  }
+}
+// 👻 PHANTOM ROBO, friendly (Robo Jump 5): from drawPhantom(opts.good), see-through teal/purple ghost Robo with a wavy tail,
+// a dashed flickering outline and hollow glowing eyes (scaled 3x from his 30x40 game box)
+function drawR_Phantom(mood) {
+  const t = frame, good = mood !== 'grr';
+  const flick = 0.75 + Math.sin(t * 0.3) * 0.1 + (t % 47 < 3 ? -0.3 : 0);
+  const x = -15, y = -40, w = 30, h = 40, cx = 0, SX = 2.3, SY = 3;   // his 30x40 game box, stretched to Robo's dance size
+  ctx.save(); ctx.scale(SX, SY);
+  for (let k = 3; k >= 1; k--) ell(cx, y + h * 0.5, w * 0.5 + k * 3, h * 0.55 + k * 3, k % 2 ? 'rgba(29,233,182,.08)' : 'rgba(224,64,251,.08)');
+  ctx.restore();
+  ctx.save(); ctx.globalAlpha = 0.45 + 0.4 * ((ARM + 1) / 2);                            // see-through waving arms
+  arms(30, -44, 22, 'rgba(100,255,218,.8)', 8); ctx.restore();
+  ctx.save(); ctx.scale(SX, SY);
+  ctx.globalAlpha = 0.55 * flick + 0.2;
+  ctx.fillStyle = 'rgba(124,77,255,.55)'; ctx.beginPath(); ctx.moveTo(x + 2, y + h * 0.55);   // wavy ghost tail
+  for (let i = 0; i <= 6; i++) ctx.lineTo(x + 2 + i * (w - 4) / 6, y + h + Math.sin(t * 0.2 + i * 1.3) * 1.3 + (i % 2 ? -1.7 : 0));
+  ctx.lineTo(x + w - 2, y + h * 0.55); ctx.fill();
+  R_rect(x + 2, y + h * 0.48, w - 4, h * 0.38, 6, 'rgba(29,233,182,.55)');
+  R_rect(x - 5, y + h * 0.3 - 3, 6, 9, 3, 'rgba(224,64,251,.6)'); R_rect(x + w - 1, y + h * 0.3 - 3, 6, 9, 3, 'rgba(224,64,251,.6)');
+  R_rect(x - 2, y, w + 4, h * 0.55, 12, 'rgba(100,255,218,.55)');
+  R_rect(x + 2, y + 4, w - 4, h * 0.55 - 9, 9, 'rgba(20,0,40,.7)');
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = t % 8 < 4 ? 'rgba(29,233,182,.9)' : 'rgba(234,128,252,.9)'; ctx.lineWidth = 0.8;   // flickering dashed outline
+  ctx.setLineDash([2, 1.4]); ctx.lineDashOffset = -t * 0.2;
+  ctx.beginPath(); ctx.roundRect(x - 2, y, w + 4, h * 0.55, 12); ctx.stroke(); ctx.setLineDash([]);
+  const ey = y + h * 0.27;                                                                // hollow glowing eyes
+  for (const d of [-6, 6]) {
+    dot(d, ey, 6, 'rgba(29,233,182,.35)');
+    ctx.strokeStyle = good ? '#a7ffeb' : '#e040fb'; ctx.lineWidth = 2;
+    ctx.beginPath(); if (mood === 'happy') ctx.arc(d, ey + 1.5, 3.4, Math.PI + 0.3, -0.3); else ctx.arc(d, ey, 3.4, 0, 7); ctx.stroke();
+  }
+  ctx.lineWidth = 1.6;
+  if (good) { ctx.strokeStyle = '#a7ffeb'; ctx.beginPath(); ctx.arc(0, ey + 6, mood === 'happy' ? 4 : 3, 0.2, Math.PI - 0.2); ctx.stroke(); }
+  else { ctx.strokeStyle = '#e040fb'; ctx.beginPath(); ctx.moveTo(-5, ey + 8); for (let i = 1; i <= 4; i++) ctx.lineTo(-5 + i * 2.5, ey + 8 + (i % 2 ? -2 : 0)); ctx.stroke(); }
+  dot(-9, y + h * 0.42, 2.5, 'rgba(255,128,171,.7)'); dot(9, y + h * 0.42, 2.5, 'rgba(255,128,171,.7)');
+  ctx.restore(); ctx.globalAlpha = 1;
+}
+// 🎩 MUSICAL ROBO / THE MAESTRO (Robo Jump 11): from drawMaestro (robojump11.html): tuxedo, speaker chest that thumps,
+// drum ear pods, a baton with a star, and a top hat with a ticking metronome. Scaled 0.7 (he is 188 tall in his game)
+function drawR_Maestro(mood) {
+  const nice = mood !== 'grr', face = 1;
+  ctx.save(); ctx.scale(0.7, 0.7);
+  const bob = Math.sin(frame * 0.1) * 2, wave = Math.sin(frame * 0.18) * 0.5 + ARM * 0.6;
+  ctx.fillStyle = '#1a1a2e'; ctx.beginPath(); ctx.moveTo(-26, -66 + bob); ctx.lineTo(-34 + wave * 2, -10); ctx.lineTo(-14, -24); ctx.lineTo(0, -40); ctx.lineTo(14, -24); ctx.lineTo(34 - wave * 2, -10); ctx.lineTo(26, -66 + bob); ctx.fill();   // tailcoat
+  R_rect(-20, -30, 13, 26, 5, '#b0bec5'); R_rect(7, -30, 13, 26, 5, '#b0bec5');
+  ell(-14 + 3, -4, 13, 6, '#111'); ell(14 + 3, -4, 13, 6, '#111'); ell(-17, -7, 4, 2, 'rgba(255,255,255,.6)');
+  R_rect(-28, -86 + bob, 56, 60, 16, '#cfd8dc');
+  ctx.fillStyle = '#212133'; ctx.beginPath(); ctx.moveTo(-28, -80 + bob); ctx.lineTo(-8, -84 + bob); ctx.lineTo(-14, -30); ctx.lineTo(-28, -30); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(28, -80 + bob); ctx.lineTo(8, -84 + bob); ctx.lineTo(14, -30); ctx.lineTo(28, -30); ctx.fill();
+  poly([-9, -84 + bob, 9, -84 + bob, 0, -70 + bob], '#fff');
+  ctx.fillStyle = nice ? '#ffd740' : '#e91e63'; ctx.beginPath(); ctx.moveTo(0, -82 + bob); ctx.lineTo(-10, -88 + bob); ctx.lineTo(-10, -76 + bob); ctx.closePath(); ctx.moveTo(0, -82 + bob); ctx.lineTo(10, -88 + bob); ctx.lineTo(10, -76 + bob); ctx.closePath(); ctx.fill(); dot(0, -82 + bob, 3, '#880e4f');   // bow tie
+  const pump = 1 + (frame % 30 < 6 ? 0.12 : 0);                                           // 🔊 speaker chest thumps
+  dot(0, -54 + bob, 15, '#263238'); dot(0, -54 + bob, 12 * pump, '#546e7a'); dot(0, -54 + bob, 6 * pump, '#90a4ae'); dot(-2, -56 + bob, 2, '#eceff1');
+  const bx = face * 22, by = -74 + bob, ang = -1.2 + wave * 0.6;
+  line(bx, by, bx + face * 16, by + 10 - wave * 14, '#b0bec5', 7);                      // baton arm
+  line(-bx, by, -bx - face * 16, by + 18 - ARM * 30, '#b0bec5', 7);                     // other arm waves too
+  dot(-bx - face * 16, by + 18 - ARM * 30, 5, '#eceff1');
+  const hx = bx + face * 16, hy = by + 10 - wave * 14, tx = hx + face * Math.cos(ang) * 30, ty = hy + Math.sin(ang) * 30;
+  dot(hx, hy, 5, '#eceff1'); line(hx, hy, tx, ty, '#fff', 3);
+  star(tx, ty, 7, '#ffd740', frame * 0.1);
+  R_rect(-24, -128 + bob, 48, 42, 16, '#eceff1');                                        // head + visor
+  R_rect(-19, -122 + bob, 38, 26, 11, '#1a1033');
+  const ey = -110 + bob;
+  if (mood === 'happy') { ctx.strokeStyle = '#ffd740'; ctx.lineWidth = 2.5; for (const d of [-1, 1]) { ctx.beginPath(); ctx.arc(d * 8, ey + 2, 4, Math.PI + 0.3, -0.3); ctx.stroke(); } }
+  else if (mood === 'wait') { const b = frame % 180 < 6 ? 0.6 : 4.5; for (const d of [-1, 1]) ell(d * 8, ey, 3.5, b, '#ffd740'); }
+  else { for (const d of [-1, 1]) { dot(d * 8, ey, 6, 'rgba(255,64,129,.3)'); ell(d * 8, ey, 3.5, 4.5, '#ff4081'); } for (const d of [-1, 1]) line(d * 13, ey - 8, d * 4, ey - 4, '#ff80ab', 2); }
+  for (const d of [-1, 1]) {                                                              // 🥁 drum ear pods
+    const dx = d * 27; R_rect(dx - 7, -116 + bob, 14, 16, 3, '#c62828'); ell(dx, -116 + bob, 7, 3, '#fff8e1');
+    ctx.strokeStyle = '#ffd740'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(dx - 7, -112 + bob); ctx.lineTo(dx - 2, -104 + bob); ctx.lineTo(dx + 2, -112 + bob); ctx.lineTo(dx + 7, -104 + bob); ctx.stroke();
+  }
+  ctx.fillStyle = '#111'; ctx.fillRect(-26, -132 + bob, 52, 6); R_rect(-17, -164 + bob, 34, 34, 3, '#111');   // 🎩 top hat
+  ctx.fillStyle = nice ? '#ffd740' : '#e91e63'; ctx.fillRect(-17, -140 + bob, 34, 6);
+  poly([-9, -164 + bob, 9, -164 + bob, 3, -188 + bob, -3, -188 + bob], '#8d6e63');       // metronome
+  const pa = Math.sin(frame * 0.12) * 0.5; line(0, -166 + bob, Math.sin(pa) * 20, -166 + bob - Math.cos(pa) * 20, '#ffd740', 2);
+  dot(Math.sin(pa) * 14, -166 + bob - Math.cos(pa) * 14, 3, '#ffd740');
+  ctx.restore();
+}
+// 🧹 DUSTY (Robo Jump 12, 13, 16 + Gloop Galaxy): from drawDusty (rjgloopgalaxy.html, copied from robomovie.html):
+// teal dome, orange stripe, one big green eye on a little screen, a springy pink duster, a twirly brush skirt, two wheels. Scaled 3x
+function drawR_Dusty(mood) {
+  const t = frame;
+  ctx.save(); ctx.scale(3, 3); ctx.translate(0, Math.sin(t * 0.07) * 0.5); ctx.lineCap = 'round';
+  dot(-8, -3, 3.2, '#37474f'); dot(8, -3, 3.2, '#37474f'); dot(-8, -3, 1.2, '#90a4ae'); dot(8, -3, 1.2, '#90a4ae');
+  ell(0, -5, 15, 3.5, '#ffcc80');                                                          // twirly brush skirt
+  ctx.strokeStyle = '#ffb74d'; ctx.lineWidth = 0.8; ctx.beginPath();
+  for (let i = 0; i < 10; i++) { const a = i * 0.63 + t * 0.1, bx = Math.cos(a) * 14; ctx.moveTo(bx, -5); ctx.lineTo(bx * 1.12, -2.5); } ctx.stroke();
+  R_rect(-13, -26, 26, 22, 11, '#4dd0e1');
+  ell(-6, -22, 4, 2, 'rgba(255,255,255,.55)', -0.4);
+  R_rect(-13, -11, 26, 4, 2, '#ff8a65');
+  R_rect(-8, -22, 16, 9, 4, '#102027');
+  if (mood === 'happy') heart(1, -17.5, 3, '#ff80ab');                                    // her happy screen is a heart
+  else {
+    const blink = (t % 170) < 6 ? 0.5 : 3;
+    ell(1.5, -17.5, 3, Math.max(0.4, blink), '#b2ff59'); if (blink > 1) dot(2.5, -18.8, 0.9, '#fff');
+    if (mood === 'grr') line(-3, -21.5, 5, -20, '#b2ff59', 1);
+  }
+  dot(-9, -12.8, 1.5, 'rgba(255,128,171,.8)'); dot(11, -12.8, 1.5, 'rgba(255,128,171,.8)');
+  const sw = Math.sin(t * 0.1) * 0.12 + ARM * 0.45;                                       // the springy duster swings
+  ctx.save(); ctx.translate(0, -26); ctx.rotate(sw);
+  ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(0, 0);
+  for (let i = 1; i <= 6; i++) ctx.lineTo(i % 2 ? -1.5 : 1.5, -i * 1.3); ctx.stroke();
+  for (const [dx, dy, r] of [[0, -11, 3.4], [-3, -9, 2.6], [3, -9, 2.6], [-2, -13, 2.4], [2, -13, 2.4], [0, -14.5, 2]]) dot(dx, dy, r, '#f48fb1');
+  dot(-1, -12, 1.2, '#fce4ec');
+  ctx.restore(); ctx.restore();
+}
+// ⚙️ ROBO ZERO, polished (Robo Jump 12): from drawZero(o.nice): the very first robot: X visor with ONE eye, a wind-up key
+// in his back, mismatched ear pods (one round, one square) and a "0" on his chest. On Robo's dance body.
+function drawR_Zero(mood) {
+  const turn = Math.abs(Math.cos(frame * 0.12));
+  ctx.fillStyle = '#ffd740'; ctx.fillRect(-44, -36, 20, 7);                               // 🔑 wind-up key (it turns)
+  ell(-50, -45, 9 * turn + 1, 12, '#ffd740'); ell(-50, -20, 9 * turn + 1, 12, '#ffd740'); dot(-50, -32.5, 5, '#ffab00');
+  const P = { legs: '#90a4ae', body: '#f5f5f5', pod: '#4fc3f7', head: '#eceff1', edge: '#90a4ae', eye: '#40c4ff', visor: '#14171c' };
+  R_base(mood, P, { noAntenna: true, noEyes: true, noDot: true, noPods: true });
+  dot(-8, -6, 2.5, '#cfd8dc'); dot(8, -6, 2.5, '#cfd8dc');                                  // leg bolts
+  rr(-18, -48, 6, 18, 3, 'rgba(255,255,255,.8)');
+  for (const [bx, by] of [[-18, -16], [18, -16], [0, -48]]) dot(bx, by, 2.5, '#b0bec5');
+  ctx.strokeStyle = '#ffd740'; ctx.lineWidth = 3; ctx.beginPath(); ctx.ellipse(0, -31, 7, 8, 0, 0, 7); ctx.stroke();   // the "0"
+  dot(-38, -87, 9, '#4fc3f7'); rr(32, -96, 15, 18, 2, '#ffab40');                          // mismatched ear pods
+  ell(-22, -108, 9, 3.5, 'rgba(255,255,255,.9)', -0.3);
+  ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 6; ctx.lineCap = 'round';                   // the X visor
+  ctx.beginPath(); ctx.moveTo(-20, -102); ctx.lineTo(20, -74); ctx.moveTo(20, -102); ctx.lineTo(-20, -74); ctx.stroke();
+  const ey = -88;                                                                           // ONE big eye in the middle
+  dot(0, ey, 13, 'rgba(255,214,0,.35)');
+  if (mood === 'happy') { dot(0, ey, 8, '#14171c'); ctx.strokeStyle = '#40c4ff'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(0, ey + 3, 7, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+  else { dot(0, ey, 8, '#40c4ff'); dot(2, ey - 2, 2.5, '#fff'); if (mood === 'grr') line(-12, ey - 15, 10, ey - 10, '#40c4ff', 3.5); }
+  for (let i = 0; i < 3; i++) star(Math.cos(frame * 0.05 + i * 2.1) * 52, -70 + Math.sin(frame * 0.05 + i * 2.1) * 50, 7, '#fff59d', frame * 0.1);   // shiny sparkles
+}
+// ⚡ MINI MAX, a friend now (Robo Jump 16): from drawMiniMax(o.nice): tiny tangerine robot with a big round head, a zig-zag
+// lightning visor, a blue cape with a lightning hem, a spring-coil antenna and his purple SHRINK RAY arm. Scaled 2.1
+function drawR_MiniMax(mood) {
+  const f = 1, t = frame, bob = Math.sin(t * 0.12) * 1.2, nice = mood !== 'grr';
+  ctx.save(); ctx.translate(-14, 0); ctx.scale(2.1, 2.1); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  const wv = Math.sin(t * 0.15) * 2;
+  ctx.fillStyle = '#2962ff'; ctx.beginPath(); ctx.moveTo(-11, -27 + bob); ctx.lineTo(11, -27 + bob); ctx.lineTo(15 - f * 6 + wv, -4); ctx.lineTo(-15 - f * 6 + wv, -4); ctx.closePath(); ctx.fill();   // cape
+  ctx.strokeStyle = '#ffea00'; ctx.lineWidth = 1.6; ctx.beginPath();
+  for (let i = 0; i <= 6; i++) ctx.lineTo(-15 - f * 6 + wv + i * 5, -4 - (i % 2 ? 3 : 0)); ctx.stroke();
+  ell(-6, -3, 5.5, 3.5, '#4a148c'); ell(6, -3, 5.5, 3.5, '#4a148c'); ell(-7, -4.5, 2, 1, 'rgba(255,255,255,.5)');   // boots
+  R_rect(-10, -22 + bob, 20, 18, 7, '#ff9100');
+  ctx.fillStyle = '#4a148c'; ctx.fillRect(-10, -12 + bob, 20, 4);
+  poly([-1, -13.5 + bob, 3, -13.5 + bob, 0.5, -10 + bob, 2.5, -10 + bob, -2, -5.5 + bob, -0.5, -9.5 + bob, -2.5, -9.5 + bob], '#ffea00');
+  line(-f * 9, -18 + bob, -f * 15, -12 + bob - ARM * 10, '#ff9100', 4);                    // little back arm waves
+  ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 1.5; ctx.beginPath();                       // spring-coil antenna
+  for (let i = 0; i <= 8; i++) ctx.lineTo((i % 2 ? -2.5 : 2.5), -44 + bob - i * 1.3 - Math.abs(Math.sin(t * 0.2)) * i * 0.2); ctx.stroke();
+  dot(0, -56 + bob - Math.abs(Math.sin(t * 0.2)) * 1.6, 3, '#ff4081');
+  R_rect(-15, -45 + bob, 30, 25, 12, '#ffab40');                                           // big round head
+  ell(-8, -41 + bob, 5, 2.4, 'rgba(255,255,255,.5)', -0.3);
+  const vy = -38 + bob;                                                                    // ⚡ zig-zag lightning visor
+  poly([-12, vy + 2, -6, vy - 2, 0, vy + 2, 6, vy - 2, 12, vy + 2, 12, vy + 11, -12, vy + 11], '#1a1033');
+  ctx.strokeStyle = '#ffea00'; ctx.lineWidth = 1.6; ctx.beginPath(); for (const [px, py] of [[-12, 2], [-6, -2], [0, 2], [6, -2], [12, 2], [12, 11], [-12, 11]]) ctx.lineTo(px, vy + py); ctx.closePath(); ctx.stroke();
+  const ex = 0;
+  if (mood === 'happy') { ctx.strokeStyle = '#18ffff'; ctx.lineWidth = 1.8; for (const d of [-5, 5]) { ctx.beginPath(); ctx.arc(ex + d, vy + 8, 3, Math.PI + 0.35, -0.35); ctx.stroke(); } }
+  else { const bl = t % 160 < 5 ? 0.6 : 3; for (const d of [-5, 5]) ell(ex + d, vy + 6.5, 2.4, bl, '#18ffff'); }
+  if (!nice) { ctx.strokeStyle = '#ffea00'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(ex - 8.5, vy + 2.5); ctx.lineTo(ex - 2.5, vy + 4); ctx.moveTo(ex + 8.5, vy + 2.5); ctx.lineTo(ex + 2.5, vy + 4); ctx.stroke(); }
+  else { dot(-12, -24 + bob, 2.2, 'rgba(255,128,171,.8)'); dot(12, -24 + bob, 2.2, 'rgba(255,128,171,.8)'); }
+  ctx.save(); ctx.translate(f * 9, -18 + bob); ctx.rotate(-0.12 - ARM * 0.5);              // 🔫 the shrink ray arm (with a size dial)
+  R_rect(-2, -5, 24, 10, 4, '#7c4dff'); ctx.fillStyle = '#ffea00'; ctx.fillRect(6, -5, 3, 10); ctx.fillRect(14, -5, 3, 10);
+  poly([22, -3, 22, 3, 30, 8, 30, -8], '#ff4081'); ell(30, 0, 2.2, 8, '#f8bbd0');
+  const zg = 0.35 + Math.sin(t * 0.15) * 0.15; dot(33, 0, 5 + zg * 4, `rgba(255,64,129,${0.25 + zg * 0.3})`);
+  dot(10, -8, 4.6, '#fff'); ctx.strokeStyle = '#4a148c'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(10, -8, 4.6, 0, 7); ctx.stroke();
+  const na = Math.sin(t * 0.08) * 1.1; line(10, -8, 10 + Math.sin(na) * 3.8, -8 - Math.cos(na) * 3.8, '#e53935', 1.2);
+  ctx.restore(); ctx.restore();
+}
+// 💜 BABY GLOOP (Robo Jump: Gloop Galaxy): from drawBaby (rjgloopgalaxy.html): a little light-purple gloop with a pink bow,
+// tiny goo drips and rosy cheeks. Scaled 2.3
+function drawR_Baby(mood) {
+  ctx.save(); ctx.scale(2.3, 2.3); ctx.translate(-25, -44);
+  const wob = Math.sin(frame * 0.2) * 2 + ARM * 1.5;
+  R_rect(-wob / 2, wob, 50 + wob, 44 - wob, 16, '#b39ddb');
+  ell(13, 12 + wob, 6, 4, 'rgba(255,255,255,.45)', -0.5);
+  for (let k = 0; k < 3; k++) dot(9 + k * 16, 43, 3.5, '#a58fd0');                        // tiny goo drips
+  poly([25, 4 + wob, 13, -4 + wob, 13, 10 + wob], '#ff80ab'); poly([25, 4 + wob, 37, -4 + wob, 37, 10 + wob], '#ff80ab'); dot(25, 4 + wob, 4, '#f06292');   // pink bow
+  if (mood === 'happy') {                                                                  // giggle ^ ^ eyes + open mouth
+    ctx.strokeStyle = '#4a148c'; ctx.lineWidth = 2.2; ctx.lineCap = 'round';
+    for (const ex of [17, 33]) { ctx.beginPath(); ctx.arc(ex, 23 + wob, 5, Math.PI + 0.3, -0.3); ctx.stroke(); }
+    ell(25, 31 + wob, 6, 5, '#4a148c'); ell(25, 33 + wob, 3.5, 2, '#ff8a80');
+  } else {
+    const blink = frame % 200 < 6;
+    for (const ex of [17, 33]) { dot(ex, 20 + wob, 7, '#fff'); if (blink) { ctx.fillStyle = '#000'; ctx.fillRect(ex - 6, 19 + wob, 12, 2); } else { dot(ex + 1, 21 + wob, 3.5, '#000'); dot(ex + 2, 19 + wob, 1.3, '#fff'); } }
+    if (mood === 'grr') { line(10, 11 + wob, 21, 14 + wob, '#4a148c', 2.2); line(40, 11 + wob, 29, 14 + wob, '#4a148c', 2.2); ell(25, 31 + wob, 4, 1.5, '#4a148c'); }
+    else { ctx.fillStyle = '#4a148c'; ctx.beginPath(); ctx.arc(25, 30 + wob, 6, 0.1, Math.PI - 0.1); ctx.fill(); }
+  }
+  dot(10, 30 + wob, 3.5, 'rgba(255,128,171,.6)'); dot(40, 30 + wob, 3.5, 'rgba(255,128,171,.6)');
+  ctx.restore();
+}
+
+const CHARS_R = {
+  nega: m => drawR_Nega(m),
+  phantom: m => drawR_Phantom(m),
+  robo2: m => drawR_Robo2(m),
+  timerobo: m => drawR_TimeRobo(m),
+  lockrobo: m => drawR_LockRobo(m),
+  glint: m => drawR_Glint(m),
+  maestro: m => drawR_Maestro(m),
+  dusty: m => drawR_Dusty(m),
+  robozero: m => drawR_Zero(m),
+  minimax: m => drawR_MiniMax(m),
+  babygloop: m => drawR_Baby(m),
+};
+// ===== chars_K: the Cozy Corner cats, the Ghost Hunt ghosts + Wispy, and Robo City friends (car + rocket) =====
+// Every dancer stands with feet/bottom at (0, 0), y negative is up, about 120-140 tall.
+
+function K_glow(x, y, r, col, a = 1) {   // soft round light (copied from ghosthunt.html glow)
+  r = Math.max(1, r);
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.save(); ctx.globalAlpha = clamp(a, 0, 1); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); ctx.restore();
+  ctx.globalAlpha = 1;
+}
+function K_armEnds(x, y, len) {   // same math as the shared arms() helper, so the paws wave with ARM
+  return [-1, 1].map(s => { const a = -0.4 - ARM * 0.9 * (s > 0 ? 1 : 0.8); return [x * s, y, x * s + s * Math.cos(a) * len, y + Math.sin(a) * len]; });
+}
+
+// ---------- 🐱 THE CATS (palettes copied exactly from catcozycorner.html CATS / drawPages / AUG) ----------
+const K_CATS = {
+  sammy: { fur: '#8d6e63', dark: '#4e342e', belly: '#e2c8a4', ear: '#ffb3c6', eye: '#a8641f', line: '#3e2a22', stripes: true, eyeRim: '#fff4dc' },
+  jimmy: { fur: '#f59a3c', dark: '#c25e12', belly: '#fff3e0', ear: '#ffb3c6', eye: '#3fbf48', line: '#8a4a12', stripes: true, paws: '#ffffff', eyeRim: '#fffbe8' },
+  rocky: { fur: '#a3a9b2', dark: '#646b75', belly: '#eceff3', ear: '#ffb3c6', eye: '#ffc93c', line: '#4a5059', stripes: true, paws: '#eceff3' },
+  mimo:  { fur: '#1f1f28', dark: '#121218', belly: '#2c2c38', ear: '#ff9fbf', eye: '#8dff4a', line: '#5a5a70', shine: true, muzzle: '#34343f', blink: '#c9ffb0', whisk: 'rgba(255,255,255,.75)', collar: true },
+  charlie: { fur: '#fbfbfd', dark: '#dfe3ea', belly: '#ffffff', ear: '#ffb3c6', eye: '#5cbf4a', line: '#8790a3', cap: '#3f7fe0', eyeRim: '#ffffff' },
+  pages: { fur: '#ff9800', dark: '#e65100', belly: '#ffb74d', ear: '#ffb3c6', eye: '#1b1b2f', line: '#e65100', bars: true, scarf: '#e53935', plainEyes: true, nose: '#ff80ab', whiskCol: '#5d4037' },
+};
+// One standing, dancing cat (front view of drawCat / drawHead from catcozycorner.html: same colors, tabby M, cheek stripes,
+// rimmed eyes, pink nose, whiskers, Mimo's shine + pink collar + gold bell, Charlie's blue cap/ears/back/tail)
+function drawK_StandCat(c, mood) {
+  const sw = Math.sin(frame * 0.08) * 12;
+  const ol = (w) => { ctx.strokeStyle = c.line; ctx.lineWidth = w; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; };
+  // tail (outline, fur/cap, dashed stripes)
+  ctx.beginPath(); ctx.moveTo(14, -26); ctx.bezierCurveTo(40, -26, 44 + sw * 0.3, -56, 34 + sw, -80);
+  ol(13); ctx.stroke(); ctx.strokeStyle = c.cap || c.fur; ctx.lineWidth = 9; ctx.stroke();
+  if (c.stripes || c.bars) { ctx.strokeStyle = c.dark; ctx.setLineDash([5, 7]); ctx.stroke(); ctx.setLineDash([]); }
+  // legs + feet
+  for (const s of [-1, 1]) {
+    ctx.beginPath(); ctx.moveTo(s * 11, -22); ctx.lineTo(s * 13, -6); ol(14); ctx.stroke(); ctx.strokeStyle = c.fur; ctx.lineWidth = 10; ctx.stroke();
+    ell(s * 14, -5, 10, 6, c.line); ell(s * 14, -5, 8.5, 4.8, c.paws || c.fur);
+  }
+  // body
+  ctx.fillStyle = c.fur; ctx.beginPath(); ctx.ellipse(0, -42, 25, 28, 0, 0, 7); ctx.fill(); ol(2.5); ctx.stroke();
+  if (c.cap) { ctx.save(); ctx.beginPath(); ctx.ellipse(0, -42, 25, 28, 0, 0, 7); ctx.clip(); ell(0, -70, 26, 10, c.cap); ctx.restore(); ctx.beginPath(); ctx.ellipse(0, -42, 25, 28, 0, 0, 7); ol(2.5); ctx.stroke(); }
+  ell(0, -34, 14, 18, c.belly);
+  if (c.stripes) { ctx.strokeStyle = c.dark; ctx.lineWidth = 3.5; ctx.lineCap = 'round'; ctx.beginPath();
+    for (const s of [-1, 1]) for (const y of [-56, -46, -36]) { ctx.moveTo(s * 24, y); ctx.quadraticCurveTo(s * 18, y + 3, s * 15, y + 9); } ctx.stroke(); }
+  if (c.bars) { ctx.fillStyle = c.dark; for (const s of [-1, 1]) for (const y of [-56, -44]) ctx.fillRect(s > 0 ? 15 : -22, y, 7, 4); }
+  if (c.shine) ell(-8, -56, 10, 4, 'rgba(255,255,255,.2)', -0.3);
+  // arms (outline, fur, paws) wave with the music
+  for (const [x1, y1, x2, y2] of K_armEnds(20, -54, 24)) {
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ol(12); ctx.stroke(); ctx.strokeStyle = c.fur; ctx.lineWidth = 8.5; ctx.stroke();
+    dot(x2, y2, 6.5, c.line); dot(x2, y2, 5.2, c.paws || c.fur);
+  }
+  if (c.collar) { line(-17, -66, 17, -66, '#ff5ca8', 5); dot(0, -61, 5, '#ffd54f'); dot(0, -59.5, 1.6, '#a0761a'); }   // Mimo
+  if (c.scarf) { rr(-20, -70, 40, 8, 3, c.scarf); rr(8, -66, 7, 16, 2, c.scarf); }                                   // Pages's red bookmark scarf
+  // head
+  const hy = -92;
+  for (const s of [-1, 1]) {
+    ctx.fillStyle = c.cap || c.fur; ctx.beginPath(); ctx.moveTo(s * 7, hy - 22); ctx.lineTo(s * 22, hy - 44); ctx.lineTo(s * 29, hy - 12); ctx.closePath(); ctx.fill(); ol(2.5); ctx.stroke();
+    ctx.fillStyle = c.ear; ctx.beginPath(); ctx.moveTo(s * 12, hy - 22); ctx.lineTo(s * 21, hy - 37); ctx.lineTo(s * 25, hy - 16); ctx.closePath(); ctx.fill();
+  }
+  ctx.fillStyle = c.fur; ctx.beginPath(); ctx.ellipse(0, hy, 31, 27, 0, 0, 7); ctx.fill();
+  if (c.cap) { ctx.save(); ctx.beginPath(); ctx.ellipse(0, hy, 31, 27, 0, 0, 7); ctx.clip(); ctx.fillStyle = c.cap; ctx.beginPath();
+    ctx.moveTo(-34, hy - 1); ctx.quadraticCurveTo(0, hy - 7, 34, hy - 1); ctx.lineTo(34, hy - 30); ctx.lineTo(-34, hy - 30); ctx.fill(); ctx.restore(); }
+  ctx.beginPath(); ctx.ellipse(0, hy, 31, 27, 0, 0, 7); ol(2.5); ctx.stroke();
+  if (c.stripes) {   // tabby "M" on the forehead + cheek stripes
+    ctx.strokeStyle = c.dark; ctx.lineWidth = 3.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(-11, hy - 12); ctx.lineTo(-5.5, hy - 21); ctx.lineTo(0, hy - 14); ctx.lineTo(5.5, hy - 21); ctx.lineTo(11, hy - 12); ctx.stroke();
+    ctx.beginPath(); for (const s of [-1, 1]) { ctx.moveTo(s * 30, hy + 2); ctx.lineTo(s * 21, hy + 2); ctx.moveTo(s * 29, hy + 9); ctx.lineTo(s * 21, hy + 7); } ctx.stroke();
+  }
+  if (c.bars) { ctx.fillStyle = c.dark; ctx.fillRect(-3, hy - 26, 6, 11); }
+  if (c.shine) ell(-10, hy - 15, 11, 4.5, 'rgba(255,255,255,.22)', -0.3);
+  // muzzle
+  for (const s of [-1, 1]) ell(s * 6.5, hy + 12, 9, 7, c.muzzle || c.belly);
+  // eyes
+  const blink = frame % 190 < 6;
+  for (const s of [-1, 1]) {
+    const ex = s * 12, ey = hy - 3;
+    if (mood === 'happy' || (blink && mood !== 'grr')) { ctx.strokeStyle = c.blink || '#333'; ctx.lineWidth = 3.2; ctx.lineCap = 'round'; ctx.beginPath(); ctx.arc(ex, ey + 2, 6, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); continue; }
+    if (c.plainEyes) { dot(ex, ey, 4.6, c.eye); dot(ex + 1.3, ey - 1.4, 1.5, '#fff'); }
+    else {
+      if (c.eyeRim) ell(ex, ey, 8.4, 10, c.eyeRim);
+      ell(ex, ey, 7, 8.6, c.eye); ell(ex + 1, ey + 1, 3, 6.2, '#111'); dot(ex - 1.5, ey - 3.5, 2.6, '#fff');
+    }
+    if (mood === 'grr') {   // droopy grumpy eyelids + cross eyebrows (from drawHead's grumpy look)
+      ctx.fillStyle = c.cap || c.fur; ctx.beginPath(); ctx.ellipse(ex, ey, 9.5, 10.5, 0, Math.PI, 2 * Math.PI); ctx.fill();
+      line(ex - s * 8, ey - 15, ex + s * 7, ey - 9, c.cap ? '#1d4fa0' : c.dark === c.fur ? '#000' : c.dark, 3.5);
+    }
+  }
+  // nose, mouth, whiskers
+  poly([-5, hy + 5, 5, hy + 5, 0, hy + 10], c.nose || '#ff8fab');
+  ctx.strokeStyle = c.whisk ? '#aaa' : '#555'; ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.beginPath();
+  if (mood === 'grr') { ctx.moveTo(-6, hy + 18); ctx.quadraticCurveTo(0, hy + 12, 6, hy + 18); ctx.stroke(); }
+  else { ctx.moveTo(0, hy + 10); ctx.quadraticCurveTo(-2, hy + 15, -6, hy + 14); ctx.moveTo(0, hy + 10); ctx.quadraticCurveTo(2, hy + 15, 6, hy + 14); ctx.stroke(); }
+  if (mood === 'happy') ell(0, hy + 17, 5, 4.4, '#d94f70');   // singing!
+  ctx.strokeStyle = c.whisk || c.whiskCol || 'rgba(60,60,60,.7)'; ctx.lineWidth = 1.4; ctx.beginPath();
+  for (const s of [-1, 1]) for (const d of [-2, 1, 4]) { ctx.moveTo(s * 13, hy + 10); ctx.lineTo(s * 40, hy + 7 + d * 2.4); }
+  ctx.stroke();
+}
+function drawK_Sammy(m) { drawK_StandCat(K_CATS.sammy, m); }       // catcozycorner.html CATS.sammy (brown tabby, brown eyes)
+function drawK_Jimmy(m) { drawK_StandCat(K_CATS.jimmy, m); }       // catcozycorner.html CATS.jimmy (orange tabby, white paws, green eyes)
+function drawK_Rocky(m) { drawK_StandCat(K_CATS.rocky, m); }       // catcozycorner.html CATS.rocky (gray tabby, golden eyes)
+function drawK_Mimo(m) { drawK_StandCat(K_CATS.mimo, m); }         // catcozycorner.html CATS.mimo (shiny black, green eyes, pink collar + bell)
+function drawK_Charlie(m) { drawK_StandCat(K_CATS.charlie, m); }   // catcozycorner.html CATS.charlie (white cat, blue cap/ears/back/tail)
+function drawK_PagesCat(m) { drawK_StandCat(K_CATS.pages, m); }    // catcozycorner.html drawPages (orange, dark stripes, red bookmark scarf)
+
+// 💙 August: catcozycorner.html drawAugust / augustHead / bushyTail / fluff (navy Maine Coon, fluffy mane, ear tufts, bushy striped tail)
+const K_AUG = { fur: '#1c2a66', dark: '#121b47', fluff: '#3c58ad', mane: '#2b3f8a', belly: '#33499a', ear: '#7f9be0', eye: '#ffcd45', line: '#0a1030',
+  muzzle: '#3b55a6', whisk: 'rgba(255,255,255,.85)', blink: '#c9d6ff', eyeRim: '#2a3a80' };
+function K_fluff(cx, cy, rx, ry, col, ln, n, b, rot = 0) {
+  const pts = []; for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2 + rot; pts.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); }
+  if (ln) { for (const [px, py] of pts) dot(px, py, b + 2.5, ln); ell(cx, cy, rx + 2.5, ry + 2.5, ln); }
+  ell(cx, cy, rx, ry, col); for (const [px, py] of pts) dot(px, py, b, col);
+}
+function drawK_August(mood) {
+  const A = K_AUG, sw = Math.sin(frame * 0.06) * 14;
+  // the BIG bushy tail
+  const a = [14, -20], b = [52, -24], c2 = [44 + sw, -88], N = 13, P = [];
+  for (let i = 0; i <= N; i++) { const u = i / N; P.push([(1 - u) * (1 - u) * a[0] + 2 * (1 - u) * u * b[0] + u * u * c2[0], (1 - u) * (1 - u) * a[1] + 2 * (1 - u) * u * b[1] + u * u * c2[1], 6 + Math.sin(u * Math.PI) * 6 + u * 4]); }
+  for (const [px, py, r] of P) dot(px, py, r + 2.5, A.line);
+  P.forEach(([px, py, r], i) => dot(px, py, r, i % 4 === 2 ? A.dark : A.fur));
+  for (const [px, py, r] of P) dot(px - r * 0.3, py - r * 0.35, r * 0.4, 'rgba(90,120,210,.45)');
+  // legs + fluffy paws
+  for (const s of [-1, 1]) { line(s * 11, -22, s * 13, -7, A.line, 15); line(s * 11, -22, s * 13, -7, A.fur, 11); K_fluff(s * 14, -5, 7, 4.5, A.fluff, A.line, 6, 2.8); }
+  K_fluff(0, -42, 24, 27, A.fur, A.line, 18, 6);   // fluffy body
+  K_fluff(0, -40, 12, 17, A.belly, null, 10, 4.5); // light fluffy chest
+  for (const [x1, y1, x2, y2] of K_armEnds(19, -54, 23)) { line(x1, y1, x2, y2, A.line, 13); line(x1, y1, x2, y2, A.fur, 9); K_fluff(x2, y2, 5, 5, A.fluff, A.line, 6, 2.5); }
+  const hy = -92;
+  K_fluff(0, hy + 6, 35, 30, A.mane, A.line, 18, 8, 0.2);                                       // the big fluffy mane
+  for (const dx of [-21, -8, 8, 21]) dot(dx, hy + 28 - Math.abs(dx) * 0.25, 7, A.fluff);            // chin ruff
+  const c = { fur: A.fur, dark: A.dark, ear: A.ear, eye: A.eye, line: A.line, muzzle: A.muzzle, whisk: A.whisk, blink: A.blink, eyeRim: A.eyeRim, belly: A.belly };
+  for (const s of [-1, 1]) {   // ears + lynx tufts + fluffy fur inside
+    ctx.fillStyle = A.fur; ctx.beginPath(); ctx.moveTo(s * 7, hy - 20); ctx.lineTo(s * 22, hy - 44); ctx.lineTo(s * 29, hy - 12); ctx.closePath(); ctx.fill(); ctx.strokeStyle = A.line; ctx.lineWidth = 2.5; ctx.stroke();
+    ctx.fillStyle = A.ear; ctx.beginPath(); ctx.moveTo(s * 12, hy - 22); ctx.lineTo(s * 21, hy - 37); ctx.lineTo(s * 25, hy - 16); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = A.fur; ctx.beginPath(); ctx.moveTo(s * 19, hy - 40); ctx.quadraticCurveTo(s * 22, hy - 52, s * 26, hy - 57); ctx.quadraticCurveTo(s * 25, hy - 48, s * 25, hy - 40); ctx.closePath(); ctx.fill(); ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.strokeStyle = '#5d78c8'; ctx.lineWidth = 1.5; ctx.beginPath(); for (const d of [-3, 0, 3]) { ctx.moveTo(s * (19 + d), hy - 17); ctx.lineTo(s * (20 + d * 0.5), hy - 29); } ctx.stroke();
+  }
+  ctx.fillStyle = A.fur; ctx.beginPath(); ctx.ellipse(0, hy, 30, 26, 0, 0, 7); ctx.fill(); ctx.strokeStyle = A.line; ctx.lineWidth = 2.5; ctx.stroke();
+  ell(-10, hy - 14, 10, 4, 'rgba(90,120,210,.35)', -0.3);
+  for (const s of [-1, 1]) ell(s * 6.5, hy + 12, 9, 7, A.muzzle);
+  const blink = frame % 190 < 6;
+  for (const s of [-1, 1]) {
+    const ex = s * 12, ey = hy - 3;
+    if (mood === 'happy' || (blink && mood !== 'grr')) { ctx.strokeStyle = A.blink; ctx.lineWidth = 3.2; ctx.lineCap = 'round'; ctx.beginPath(); ctx.arc(ex, ey + 2, 6, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); continue; }
+    ell(ex, ey, 8.4, 10, A.eyeRim); ell(ex, ey, 7, 8.6, A.eye); ell(ex + 1, ey + 1, 3, 6.2, '#111'); dot(ex - 1.5, ey - 3.5, 2.6, '#fff');
+    if (mood === 'grr') { ctx.fillStyle = A.fur; ctx.beginPath(); ctx.ellipse(ex, ey, 9.5, 10.5, 0, Math.PI, 2 * Math.PI); ctx.fill(); line(ex - s * 8, ey - 15, ex + s * 7, ey - 9, A.ear, 3.5); }
+  }
+  poly([-5, hy + 5, 5, hy + 5, 0, hy + 10], '#ff8fab');
+  ctx.strokeStyle = '#aaa'; ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.beginPath();
+  if (mood === 'grr') { ctx.moveTo(-6, hy + 18); ctx.quadraticCurveTo(0, hy + 12, 6, hy + 18); }
+  else { ctx.moveTo(0, hy + 10); ctx.quadraticCurveTo(-2, hy + 15, -6, hy + 14); ctx.moveTo(0, hy + 10); ctx.quadraticCurveTo(2, hy + 15, 6, hy + 14); }
+  ctx.stroke();
+  if (mood === 'happy') ell(0, hy + 17, 5, 4.4, '#d94f70');
+  ctx.strokeStyle = A.whisk; ctx.lineWidth = 1.4; ctx.beginPath();
+  for (const s of [-1, 1]) for (const d of [-2, 1, 4]) { ctx.moveTo(s * 13, hy + 10); ctx.lineTo(s * 42, hy + 7 + d * 2.4); }
+  ctx.stroke();
+  for (const [dx, dy] of [[-30, 4], [-31, -6], [30, 8], [31, -3]]) line(dx, hy + dy, dx + Math.sign(dx) * 7, hy + dy + 2, A.fluff, 2.5);   // fur wisps
+}
+
+// ---------- 👻 THE GHOSTS (ghosthunt.html drawGhost / ghostBody / ghostFace / drawCatGhost) ----------
+const K_GH = {
+  plink: { id: 'plink', col: '#e3f2fd', tint: '#90caf9' }, mira: { id: 'mira', col: '#fce4ec', tint: '#f48fb1', mirror: true },
+  topsy: { id: 'topsy', col: '#fff8e1', tint: '#ffcc80', upside: true }, whisker: { id: 'whisker', col: '#e0f7fa', tint: '#80deea', cat: true },
+  prof: { id: 'prof', col: '#f3e5f5', tint: '#ce93d8' }, bubbles: { id: 'bubbles', col: '#e8f5e9', tint: '#a5d6a7' },
+  teeny: { id: 'teeny', col: '#fffde7', tint: '#fff59d', baby: true }, gus: { id: 'gus', col: '#ede7f6', tint: '#b39ddb', big: true },
+};
+function K_ghostBody() {   // ghostBody: the floaty sheet with a wavy bottom
+  const s = frame;
+  ctx.beginPath(); ctx.moveTo(-28, -40); ctx.arc(0, -42, 28, Math.PI, 0); ctx.lineTo(28, -6);
+  for (let i = 0; i < 4; i++) { const x0 = 28 - i * 14; ctx.quadraticCurveTo(x0 - 7, 6 + Math.sin(s * 0.12 + i * 1.7) * 4, x0 - 14, -4 + Math.sin(s * 0.12 + i) * 2); }
+  ctx.closePath();
+}
+function K_ghostFace(g, mood, cx = 0, cy = -42) {   // ghostFace (happy = closed ^ ^ eyes; grr = little cross eyebrows, still cute)
+  const happy = mood === 'happy', shy = g.mirror && !happy, look = shy ? 3 : 0, blink = frame % 200 < 7;
+  for (const ex of [-10, 10]) {
+    if (happy) { ctx.strokeStyle = '#263238'; ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.beginPath(); ctx.arc(cx + ex, cy + 2, 5, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+    else { ell(cx + ex, cy + look, 5.5, blink ? 1 : 7.5, '#263238'); if (!blink) { dot(cx + ex + 2, cy - 3 + look, 2.2, '#fff'); dot(cx + ex - 1.5, cy + 2.5 + look, 1, '#fff'); } }
+  }
+  ell(cx - 17, cy + 10, 5, 3, 'rgba(255,128,171,.7)'); ell(cx + 17, cy + 10, 5, 3, 'rgba(255,128,171,.7)');
+  ctx.strokeStyle = '#263238'; ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.beginPath();
+  if ((g.big && !happy) || mood === 'grr') ctx.arc(cx, cy + 16, 5, Math.PI * 1.15, Math.PI * 1.85);   // Gus looks a bit worried
+  else ctx.arc(cx, cy + 9, 6, 0.2, Math.PI - 0.2);
+  ctx.stroke();
+  if (happy) { ctx.fillStyle = '#c62828'; ctx.beginPath(); ctx.arc(cx, cy + 9, 5, 0.1, Math.PI - 0.1); ctx.closePath(); ctx.fill(); }
+  if ((g.big && !happy) || mood === 'grr') { ctx.lineWidth = 2; ctx.beginPath(); const k = mood === 'grr' ? -1 : 1;
+    ctx.moveTo(cx - 16, cy - 13 - (k < 0 ? 4 : 0)); ctx.lineTo(cx - 5, cy - 16 + (k < 0 ? 4 : 0)); ctx.moveTo(cx + 16, cy - 13 - (k < 0 ? 4 : 0)); ctx.lineTo(cx + 5, cy - 16 + (k < 0 ? 4 : 0)); ctx.stroke(); }
+}
+function K_catGhost(g, mood) {   // drawCatGhost: Whiskerwisp, silvery-blue ghost cat with a curly tail and blue eyes
+  const t = frame;
+  ctx.strokeStyle = g.col; ctx.lineWidth = 7; ctx.lineCap = 'round'; ctx.beginPath();
+  ctx.moveTo(22, -14); ctx.bezierCurveTo(48, -20 + Math.sin(t * 0.08) * 4, 44, -54, 30, -50); ctx.bezierCurveTo(22, -48, 26, -38, 32, -40); ctx.stroke();
+  ell(4, -16, 28, 17, g.col);
+  for (const lx of [-14, -4, 10, 20]) ell(lx, -2 + Math.sin(t * 0.1 + lx) * 1.5, 4, 5, g.col);
+  dot(-20, -36, 19, g.col);
+  ctx.fillStyle = g.col; ctx.beginPath(); ctx.moveTo(-36, -44); ctx.lineTo(-34, -64); ctx.lineTo(-22, -52); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-18, -54); ctx.lineTo(-6, -62); ctx.lineTo(-6, -44); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#f8bbd0'; ctx.beginPath(); ctx.moveTo(-33, -48); ctx.lineTo(-32, -58); ctx.lineTo(-26, -51); ctx.closePath(); ctx.fill();
+  const blink = t % 220 < 7;
+  for (const ex of [-27, -13]) {
+    if (mood === 'happy' || blink) { ctx.strokeStyle = '#263238'; ctx.lineWidth = 2.2; ctx.beginPath(); ctx.arc(ex, -36, 3.5, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+    else { ell(ex, -37, 3.5, 5, '#4fc3f7'); ell(ex, -37, 1.4, 4, '#01579b'); dot(ex + 1.2, -39, 1.1, '#fff'); if (mood === 'grr') line(ex - 4, -45 + (ex < -20 ? 0 : 2), ex + 4, -45 + (ex < -20 ? 2 : 0), '#263238', 1.6); }
+  }
+  heart(-20, -29, 3, '#f48fb1');
+  ctx.strokeStyle = 'rgba(38,50,56,.6)'; ctx.lineWidth = 1; ctx.beginPath();
+  for (const d of [-1, 1]) for (const k of [-2, 2]) { ctx.moveTo(-20 + d * 6, -28 + k * 0.6); ctx.lineTo(-20 + d * 18, -30 + k * 2); }
+  ctx.stroke();
+  for (const sx of [-30, 0]) { const ey = -40 - Math.max(0, ARM) * 14; dot(sx, ey + 30, 4, g.col); }   // little paws bop up with the beat
+}
+function drawK_Ghost(g, mood, sc, lift = 10) {
+  ctx.save();
+  K_glow(0, -40 * sc - lift, 72 * sc, g.tint, 0.45);
+  ctx.translate(0, -lift); ctx.scale(sc, sc);
+  if (g.upside) { ctx.translate(0, -42); ctx.rotate(Math.PI); ctx.translate(0, 42); }
+  if (g.cat) K_catGhost(g, mood);
+  else {
+    ctx.fillStyle = g.col; K_ghostBody(); ctx.fill();
+    ctx.save(); K_ghostBody(); ctx.clip(); ell(-14, -56, 9, 13, 'rgba(255,255,255,.55)', -0.5); ctx.restore();
+    const wave = Math.sin(frame * 0.09) * 0.4, up = ARM * 0.9;   // little arms wave with the music
+    const mira = g.id === 'mira' && mood !== 'happy';
+    if (!mira) { ell(-30, -22 - up * 10, 9, 5, g.col, -0.6 + wave - up); ell(30, -22 - up * 10, 9, 5, g.col, 0.6 + up); }
+    if (g.upside) { ctx.save(); ctx.translate(0, -42); ctx.rotate(Math.PI); ctx.translate(0, 42); K_ghostFace(g, mood); ctx.restore(); }   // Topsy's face stays the right way up so happy looks happy
+    else K_ghostFace(g, mood);
+    if (g.id === 'plink') {   // a bow tie and music notes
+      ctx.fillStyle = g.tint; ctx.beginPath(); ctx.moveTo(0, -24); ctx.lineTo(-10, -30); ctx.lineTo(-10, -18); ctx.closePath(); ctx.moveTo(0, -24); ctx.lineTo(10, -30); ctx.lineTo(10, -18); ctx.closePath(); ctx.fill();
+      dot(0, -24, 3, '#1e88e5');
+      for (let i = 0; i < 2; i++) { const nx = 36 + i * 14, ny = -70 - i * 12 + Math.sin(frame * 0.08 + i) * 4; ell(nx, ny, 4, 3, '#90caf9', -0.4); ctx.fillStyle = '#90caf9'; ctx.fillRect(nx + 3, ny - 14, 1.6, 14); }
+    }
+    if (g.id === 'mira') {    // a pink hair bow, and hands up by her cheeks when shy
+      ctx.fillStyle = g.tint; ctx.beginPath(); ctx.moveTo(14, -66); ctx.lineTo(4, -76); ctx.lineTo(4, -60); ctx.closePath(); ctx.moveTo(14, -66); ctx.lineTo(26, -76); ctx.lineTo(26, -58); ctx.closePath(); ctx.fill(); dot(14, -66, 3.5, '#ec407a');
+      if (mira) { ell(-22, -32, 7, 9, g.col); ell(22, -32, 7, 9, g.col); }
+    }
+    if (g.id === 'topsy') { rr(-16, -76, 32, 10, 3, '#fff'); dot(-10, -82, 9, '#fff'); dot(2, -86, 10, '#fff'); dot(12, -80, 8, '#fff'); }   // chef hat
+    if (g.id === 'prof') {    // round glasses, a fluffy mustache and a book
+      ctx.strokeStyle = '#6d4c41'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(-10, -42, 9, 0, 7); ctx.moveTo(19, -42); ctx.arc(10, -42, 9, 0, 7); ctx.moveTo(-1, -43); ctx.lineTo(1, -43); ctx.stroke();
+      ell(-6, -30, 7, 3.5, '#fff', 0.3); ell(6, -30, 7, 3.5, '#fff', -0.3);
+      rr(18, -30, 20, 26, 3, '#7b1fa2'); rr(20, -28, 3, 22, 1, '#ffd54f');
+    }
+    if (g.id === 'bubbles') { // shower cap, bubbles and Sir Quackers the rubber duck
+      ctx.fillStyle = g.tint; ctx.beginPath(); ctx.arc(0, -52, 27, Math.PI * 1.05, Math.PI * 1.95); ctx.closePath(); ctx.fill();
+      for (let i = 0; i < 5; i++) dot(-24 + i * 12, -56 - Math.sin(i * 2) * 4, 4, '#c8e6c9');
+      for (let i = 0; i < 4; i++) { const bx = -40 + i * 26, by = -80 - ((frame * 0.6 + i * 30) % 60); ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(bx, by, 5 + i, 0, 7); ctx.stroke(); }
+      ell(34, -14, 10, 7, '#ffeb3b'); dot(40, -24, 6, '#ffeb3b'); ell(46, -23, 4, 2, '#ff9800'); dot(41, -26, 1.2, '#263238');
+    }
+    if (g.id === 'teeny') {   // baby bonnet and a rattle
+      ctx.fillStyle = g.tint; ctx.beginPath(); ctx.arc(0, -46, 31, Math.PI * 0.95, Math.PI * 2.05); ctx.closePath(); ctx.fill();
+      dot(0, -42, 26, g.col);
+      K_ghostFace(g, mood);
+      ctx.save(); ctx.translate(34, -26); ctx.rotate(Math.sin(frame * 0.3) * 0.5); rr(-2, 0, 4, 16, 2, '#ff8a65'); dot(0, -2, 7, '#ff80ab'); dot(-2, -4, 2, '#fff'); ctx.restore();
+    }
+    if (g.id === 'gus') {     // a little night-light with a cosy glow
+      K_glow(37, -21, 34, 'rgba(255,224,130,.8)', 0.7 + 0.1 * Math.sin(frame * 0.1));
+      rr(30, -30, 14, 18, 4, '#ffe082'); rr(32, -12, 10, 5, 2, '#8d6e63');
+    }
+  }
+  ctx.restore(); ctx.globalAlpha = 1;
+}
+function drawK_Plink(m) { drawK_Ghost(K_GH.plink, m, 1.65); }        // ghosthunt.html drawGhost 'plink'
+function drawK_Mira(m) { drawK_Ghost(K_GH.mira, m, 1.65); }          // ghosthunt.html drawGhost 'mira'
+function drawK_Topsy(m) { drawK_Ghost(K_GH.topsy, m, 1.45, 18); }    // ghosthunt.html drawGhost 'topsy' (upside down!)
+function drawK_Whiskerwisp(m) { { ctx.save(); ctx.translate(-6, 0); drawK_Ghost(K_GH.whisker, m, 1.5, 6); ctx.restore(); } }   // ghosthunt.html drawCatGhost
+function drawK_ProfBoo(m) { drawK_Ghost(K_GH.prof, m, 1.65); }      // ghosthunt.html drawGhost 'prof'
+function drawK_Bubbles(m) { drawK_Ghost(K_GH.bubbles, m, 1.55); }   // ghosthunt.html drawGhost 'bubbles'
+function drawK_Teeny(m) { drawK_Ghost(K_GH.teeny, m, 1.0, 6); }     // ghosthunt.html drawGhost 'teeny' (baby: 0.62x size)
+function drawK_BigGus(m) { drawK_Ghost(K_GH.gus, m, 2.0, 13); }    // ghosthunt.html drawGhost 'gus' (big: 1.45x size)
+
+// 👻 Wispy: hauntedmansion3d.html makeWispy (lathe body #f1ecff glowing #a898ff, 8 bumps round the hem, big black eyes, pink cheeks, smile, stubby arms)
+function drawK_Wispy(mood) {
+  const U = 80, L = (v) => -v * U;   // 1 unit = 80 px, y up
+  K_glow(0, L(0.9), 140, 'rgba(168,152,255,.55)', 0.6 + 0.15 * Math.sin(frame * 0.05));
+  ctx.save(); ctx.globalAlpha = 0.92;
+  const col = '#f1ecff';
+  const pts = [[0.8, 0.05], [0.74, 0.25], [0.67, 0.62], [0.63, 0.93]];
+  for (let i = 1; i <= 12; i++) { const a = i / 12 * Math.PI / 2; pts.push([Math.cos(a) * 0.63, 0.93 + Math.sin(a) * 0.66]); }
+  ctx.fillStyle = col; ctx.beginPath();
+  pts.forEach(([x, y], i) => ctx[i ? 'lineTo' : 'moveTo'](x * U, L(y)));
+  for (let i = pts.length - 1; i >= 0; i--) ctx.lineTo(-pts[i][0] * U, L(pts[i][1]));
+  ctx.closePath(); ctx.fill();
+  for (let i = 0; i < 8; i++) { const a = i / 8 * 6.283 + 0.39; if (Math.cos(a) > -0.2) ell(Math.sin(a) * 0.72 * U, L(0.07) + Math.sin(frame * 0.1 + i) * 1.5, 0.17 * U, 0.13 * U, col); }   // hem bumps
+  ell(-0.25 * U, L(1.3), 0.14 * U, 0.2 * U, 'rgba(255,255,255,.55)', -0.4);
+  const up = ARM * 0.4;   // stubby arms
+  ell(-0.66 * U, L(0.72 + up * 0.3), 0.17 * U, 0.1 * U, col, -0.3 - up); ell(0.66 * U, L(0.72 + up * 0.3), 0.17 * U, 0.1 * U, col, 0.3 + up);
+  ctx.restore(); ctx.globalAlpha = 1;
+  const ey = L(1.18), blink = frame % 210 < 7;
+  for (const s of [-1, 1]) {
+    const ex = s * 0.2 * U;
+    if (mood === 'happy' || blink) { ctx.strokeStyle = '#111'; ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.beginPath(); ctx.arc(ex, ey + 3, 7, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+    else { ell(ex, ey, 0.09 * U, 0.13 * U, '#111'); dot(ex - 0.03 * U, ey - 0.05 * U, 0.035 * U, '#fff'); if (mood === 'grr') line(ex - s * 9, ey - 16, ex + s * 7, ey - 11, '#111', 3); }
+    ell(s * 0.34 * U, ey + 0.17 * U, 0.08 * U, 0.05 * U, 'rgba(255,128,171,.8)');
+  }
+  ctx.fillStyle = '#111'; ctx.beginPath();
+  if (mood === 'grr') { ctx.arc(0, ey + 0.27 * U, 0.06 * U, Math.PI, 0); ctx.fill(); }
+  else { ctx.arc(0, ey + 0.2 * U, (mood === 'happy' ? 0.09 : 0.07) * U, 0, Math.PI); ctx.fill(); if (mood === 'happy') ell(0, ey + 0.25 * U, 3, 2, '#ff8a80'); }
+}
+
+// ---------- 🏙️ ROBO CITY (robocity3d.html) ----------
+// 🧹 Dusty: robocity3d.html makeDusty (cyan body, coral stripe, dark visor with ONE lime eye, pink cheeks, peach brush skirt, springy pink duster)
+function drawK_Dusty(mood) {
+  const U = 90, L = v => -v * U, bob = Math.sin(frame * 0.2) * 2;
+  for (const s of [-1, 1]) { ell(s * 0.36 * U, L(0.2), 0.08 * U, 0.17 * U, '#37474f'); }   // wheels peek out the sides
+  ell(0, L(0.2), 0.58 * U, 0.12 * U, '#ffcc80');                                               // peach brush skirt
+  for (let i = 0; i < 11; i++) { const x = (-0.5 + i * 0.1) * U; rr(x - 3, L(0.15), 6, 0.13 * U, 2, '#ffb74d'); }
+  for (const s of [-1, 1]) { dot(s * 0.44 * U, L(0.18), 0.12 * U, '#37474f'); dot(s * 0.44 * U, L(0.18), 0.05 * U, '#90a4ae'); }
+  arms(0.38 * U, L(0.6), 24, '#4dd0e1', 7);
+  ell(0, L(0.6) + bob, 0.47 * U, 0.42 * U, '#4dd0e1');                                        // round cyan body
+  ctx.save(); ctx.beginPath(); ctx.ellipse(0, L(0.6) + bob, 0.47 * U, 0.42 * U, 0, 0, 7); ctx.clip(); ctx.fillStyle = '#ff8a65'; ctx.fillRect(-U, L(0.4) + bob, 2 * U, 0.08 * U); ctx.restore();   // coral stripe
+  ell(-0.2 * U, L(0.83) + bob, 0.1 * U, 0.05 * U, 'rgba(255,255,255,.5)');
+  ell(0, L(0.68) + bob, 0.3 * U, 0.18 * U, '#102027');                                        // dark visor
+  const ex = 0.05 * U, ey = L(0.69) + bob;
+  if (mood === 'happy') { ctx.strokeStyle = '#b2ff59'; ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.beginPath(); ctx.arc(ex, ey + 3, 7, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+  else { const b = frame % 170 < 6 ? 0.15 : 1; ell(ex, ey, 0.1 * U, 0.1 * U * b, '#b2ff59'); if (b === 1) dot(ex + 3, ey - 3, 2.2, '#fff');
+    if (mood === 'grr') { ctx.fillStyle = '#102027'; ctx.fillRect(ex - 10, ey - 11, 20, 6); } }
+  for (const s of [-1, 1]) ell(s * 0.33 * U, L(0.52) + bob, 0.06 * U, 0.05 * U, 'rgba(255,128,171,.85)');
+  if (mood === 'happy') { ctx.fillStyle = '#c62828'; ctx.beginPath(); ctx.arc(0, L(0.47) + bob, 6, 0.1, Math.PI - 0.1); ctx.closePath(); ctx.fill(); }
+  // springy duster
+  const sx = Math.sin(frame * 0.15) * 4 + ARM * 4, top = L(1.0) + bob;
+  ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(0, top + 4);
+  for (let i = 0; i < 6; i++) ctx.lineTo((i % 2 ? -4 : 4) + sx * i / 6, top - i * 0.06 * U); ctx.stroke();
+  const dx = sx, dy = top - 0.36 * U;
+  for (const [ox, oy, r] of [[0, -0.14, 0.15], [-0.13, -0.07, 0.12], [0.13, -0.07, 0.12], [-0.09, -0.21, 0.11], [0.09, -0.21, 0.11], [0, -0.27, 0.1], [0, -0.09, 0.12]]) dot(dx + ox * U, dy + oy * U, r * U, '#f48fb1');
+  dot(dx - 0.04 * U, dy - 0.19 * U, 0.05 * U, '#fce4ec');
+}
+// 👽 Little Alien: robocity3d.html makeAlien (green #64dd17 body, ONE big eye, wiggly antenna with a pink ball, dark green feet)
+function drawK_Alien(mood) {
+  const U = 120, L = v => -v * U;
+  for (const s of [-1, 1]) rr(s * 0.15 * U - 0.08 * U, L(0.1), 0.16 * U, 0.1 * U, 6, '#33691e');
+  arms(0.32 * U, L(0.42), 20, '#64dd17', 7);
+  ell(0, L(0.45), 0.36 * U, 0.42 * U, '#64dd17');
+  ell(-0.12 * U, L(0.68), 0.08 * U, 0.05 * U, 'rgba(255,255,255,.35)', -0.4);
+  const wig = Math.sin(frame * 0.15) * 0.25 + ARM * 0.15;   // wiggly antenna
+  ctx.save(); ctx.translate(0, L(0.85)); ctx.rotate(wig); line(0, 0, 0, -0.3 * U, '#33691e', 4); dot(0, -0.33 * U, 0.07 * U, '#ff4081'); K_glow(0, -0.33 * U, 18, 'rgba(255,64,129,.6)', 0.7); ctx.restore();
+  const ex = 0, ey = L(0.58);
+  if (mood === 'happy') { ctx.strokeStyle = '#111'; ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.beginPath(); ctx.arc(ex, ey + 4, 13, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke(); }
+  else { const b = frame % 160 < 6 ? 0.12 : 1; ell(ex, ey, 0.17 * U, 0.17 * U * b, '#fff'); if (b === 1) { dot(ex, ey + 1, 0.08 * U, '#111'); dot(ex + 3, ey - 3, 3, '#fff'); }
+    if (mood === 'grr') { ctx.fillStyle = '#64dd17'; ctx.fillRect(ex - 22, ey - 22, 44, 12); line(ex - 18, ey - 14, ex + 18, ey - 9, '#33691e', 3); } }
+  ctx.strokeStyle = '#1b5e20'; ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.beginPath();
+  if (mood === 'happy') { ctx.fillStyle = '#c62828'; ctx.arc(0, L(0.33), 9, 0.1, Math.PI - 0.1); ctx.closePath(); ctx.fill(); }
+  else if (mood === 'grr') { ctx.arc(0, L(0.28), 7, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke(); }
+  else { ctx.arc(0, L(0.35), 7, 0.3, Math.PI - 0.3); ctx.stroke(); }
+}
+// 🛸 Mega Saucer: robocity3d.html makeSaucer (gray hull, darker belly, see-through cyan dome, green pilot with two big black eyes, 6 rim lights yellow/pink)
+function drawK_MegaSaucer(mood) {
+  const U = 31, hov = 10 + Math.sin(frame * 0.08) * 4, L = v => -(v - 0.8) * U - hov;
+  K_glow(0, -4, 60, 'rgba(125,255,154,.45)', 0.6);   // a soft green hover glow under it
+  ell(0, L(1.15), 2.0 * U, 0.35 * U, '#546e7a');
+  ell(0, L(1.4), 2.6 * U, 0.55 * U, '#90a4ae');
+  ell(-0.8 * U, L(1.55), 1.2 * U, 0.15 * U, 'rgba(255,255,255,.35)');
+  // the pilot
+  dot(0, L(1.95), 0.62 * U, '#76ff03');
+  for (const s of [-1, 1]) {
+    if (mood === 'happy') { ctx.strokeStyle = '#111'; ctx.lineWidth = 3.5; ctx.lineCap = 'round'; ctx.beginPath(); ctx.arc(s * 0.24 * U, L(2.0) + 3, 4.5, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+    else { ell(s * 0.24 * U, L(2.0), 0.15 * U, 0.24 * U, '#111', s * 0.3); dot(s * 0.24 * U - 1, L(2.0) - 3, 1.5, '#fff'); if (mood === 'grr') line(s * 0.4 * U, L(2.3), s * 0.1 * U, L(2.2), '#33691e', 2.5); }
+  }
+  if (mood === 'happy') { ctx.fillStyle = '#c62828'; ctx.beginPath(); ctx.arc(0, L(1.72), 4, 0.1, Math.PI - 0.1); ctx.closePath(); ctx.fill(); }
+  ctx.save(); ctx.beginPath(); ctx.ellipse(0, L(1.6), 1.25 * U, 1.1 * U, 0, Math.PI, 0); ctx.fillStyle = 'rgba(125,249,255,.4)'; ctx.fill(); ctx.restore();   // glass dome
+  ell(-0.55 * U, L(2.3), 0.2 * U, 0.35 * U, 'rgba(255,255,255,.45)', -0.5);
+  for (let i = 0; i < 6; i++) { const a = (i + 0.5) / 6 * Math.PI, on = (Math.floor(frame / 12) + i) % 2; dot(-Math.cos(a) * 2.45 * U, L(1.4) + Math.sin(a) * 0.3 * U, 0.22 * U, on ? '#ffea00' : '#ff80ab'); }
+}
+
+// 🚗 Robo's car, side view: robocity3d.html makeCar (default Cherry Red #e53935 paint, dark #263238 glass, black tires, silver hubs,
+// cream headlights, red taillights). ~200 wide, wheels touching y = 0, centered on x = 0, front faces right. t = seconds.
+function drawK_RoboCar(t = 0, robo = true, paint = '#e53935') {
+  const U = 56, X = z => z * U, Y = y => -y * U;
+  rr(X(-1.75), Y(0.7), X(0.4), 0.4 * U, 6, paint); rr(X(1.35), Y(0.7), X(0.4), 0.4 * U, 6, paint);      // bumpers
+  rr(X(-1.65), Y(0.9), X(3.3), 0.55 * U, 10, paint);                                                       // body
+  rr(X(-1.1), Y(1.42), X(1.7), 0.6 * U, 12, paint);                                                        // cabin
+  ell(X(-0.6), Y(0.82), 0.9 * U, 0.05 * U, 'rgba(255,255,255,.3)');
+  // windows (side glass + slanted windshield)
+  poly([X(-1.0), Y(1.35), X(0.35), Y(1.35), X(0.62), Y(0.98), X(-1.0), Y(0.98)], '#263238');
+  line(X(-0.25), Y(1.36), X(-0.25), Y(0.97), paint, 5);
+  if (robo) {   // Robo behind the wheel (white head, dark visor, blue eye, blue ear pod)
+    ctx.save(); ctx.beginPath(); ctx.rect(X(-0.24), Y(1.35), X(0.85), 0.37 * U); ctx.clip();
+    const hx = X(0.05), hy = Y(1.0); dot(hx, hy, 19, '#ffffff'); rr(hx - 3, hy - 13, 22, 19, 8, '#111827'); ell(hx + 12, hy - 4, 3.5, 5, '#40c4ff');
+    rr(hx - 14, hy - 7, 7, 13, 3, '#2979ff'); rr(hx - 1, hy - 26, 3, 8, 1, '#90a4ae'); dot(hx, hy - 27, 3, '#ff5252'); ctx.restore();
+  }
+  ell(X(0.15), Y(1.28), 0.25 * U, 0.04 * U, 'rgba(255,255,255,.25)', -0.1);
+  ell(X(1.73), Y(0.66), 0.06 * U, 0.12 * U, '#fff9c4'); ell(X(-1.73), Y(0.66), 0.05 * U, 0.09 * U, '#ff1744');   // lights
+  line(X(-0.3), Y(0.62), X(0.0), Y(0.62), 'rgba(0,0,0,.35)', 3);                                              // door handle
+  for (const z of [-1.05, 1.05]) {   // wheels that spin
+    const wx = X(z), wy = Y(0.38), r = 0.38 * U;
+    dot(wx, wy, r + 3, 'rgba(0,0,0,.35)'); dot(wx, wy, r, '#212121'); dot(wx, wy, 0.2 * U, '#bdbdbd');
+    const ang = t * 9;
+    for (let k = 0; k < 3; k++) { const a = ang + k * 2.094; line(wx, wy, wx + Math.cos(a) * 0.19 * U, wy + Math.sin(a) * 0.19 * U, '#757575', 3); }
+    dot(wx, wy, 3.5, '#9e9e9e');
+  }
+}
+// 🚀 The ROBO-1 rocket to Star Station: robocity3d.html makeRocket (white body, red nose cone, red band + 3 red fins, dark nozzle,
+// round light-blue window, blue "ROBO-1" label). ~180 tall, bottom at y = 0, centered on x = 0. t = seconds (flame flickers if fire).
+function drawK_Rocket(t = 0, fire = false) {
+  const U = 19.1, Y = y => -y * U, R = 1.3 * U;
+  if (fire) {   // layered exhaust: white-hot core, yellow + orange flames
+    const f = 1 + Math.sin(t * 40) * 0.12;
+    ell(0, 26 * f, 22, 34 * f, 'rgba(255,152,0,.85)'); ell(0, 18 * f, 14, 24 * f, '#ffd54f'); ell(0, 10, 7, 12, '#fffde7');
+  }
+  rr(-0.9 * U, Y(1.2), 1.8 * U, 1.2 * U, 4, '#455a64');                                 // nozzle
+  for (const s of [-1, 1]) poly([s * R * 0.85, Y(2.7), s * 2.05 * U, Y(0.6), s * 2.05 * U, Y(0.0), s * R * 0.85, Y(0.9)], '#e53935');   // side fins
+  const g = ctx.createLinearGradient(-R, 0, R, 0); g.addColorStop(0, '#d5d8dc'); g.addColorStop(0.35, '#ffffff'); g.addColorStop(1, '#c9cdd2');
+  ctx.fillStyle = g; ctx.fillRect(-R, Y(7), 2 * R, 6 * U);                                // white body (y 1 -> 7)
+  rr(-1.35 * U, Y(1.65), 2.7 * U, 0.5 * U, 3, '#e53935');                                // red band
+  ctx.fillStyle = '#e53935'; ctx.beginPath(); ctx.moveTo(-R, Y(7)); ctx.quadraticCurveTo(-R * 0.75, Y(8.6), 0, Y(9.4)); ctx.quadraticCurveTo(R * 0.75, Y(8.6), R, Y(7)); ctx.closePath(); ctx.fill();   // nose cone
+  rr(-0.12 * U, Y(2.7), 0.24 * U, 2.0 * U, 2, '#c62828');                               // front fin (edge-on)
+  dot(0, Y(5.5), 0.55 * U, '#37474f'); dot(0, Y(5.5), 0.45 * U, '#81d4fa'); ell(-3, Y(5.5) - 3, 3, 2, 'rgba(255,255,255,.8)', -0.5);   // round window
+  text('ROBO-1', 0, Y(3.6), 10, '#1565c0', 'center', null);
+}
+
+const CHARS_K = {
+  sammy: m => drawK_Sammy(m), jimmy: m => drawK_Jimmy(m), rocky: m => drawK_Rocky(m), mimo: m => drawK_Mimo(m),
+  charlie: m => drawK_Charlie(m), august: m => drawK_August(m), pagescat: m => drawK_PagesCat(m),
+  plink: m => drawK_Plink(m), mira: m => drawK_Mira(m), topsy: m => drawK_Topsy(m), whiskerwisp: m => drawK_Whiskerwisp(m),
+  profboo: m => drawK_ProfBoo(m), bubbles: m => drawK_Bubbles(m), teeny: m => drawK_Teeny(m), biggus: m => drawK_BigGus(m),
+  wispy: m => drawK_Wispy(m),
+  dusty: m => drawK_Dusty(m), alien: m => drawK_Alien(m), megasaucer: m => drawK_MegaSaucer(m),
+};
+// ===================== CHARS_B: Ben's famous BOSSES (friends now!) for the "Boss Battle Boogie" =====================
+// Each dancer: feet/bottom at (0,0), y up is negative, about 130 tall. Uses the musicvideos.html helpers.
+function drawB_rra(x, y, w, h, r, fill, c = ctx) {   // roundRect with a number OR an array of radii, on any context
+  c.beginPath(); c.roundRect(x, y, w, h, r); c.fillStyle = fill; c.fill();
+}
+function drawB_polyS(pts, fill, stroke, lw) {
+  poly(pts, fill); if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw; ctx.lineJoin = 'round'; ctx.stroke(); }
+}
+function drawB_heartPath(x, y, s) {                     // (musicvideos2.html heartPath, from Robo Jump 9)
+  s = Math.max(0, s); ctx.beginPath(); ctx.moveTo(x, y + s * 0.9);
+  ctx.bezierCurveTo(x - s * 1.25, y + s * 0.05, x - s * 0.95, y - s * 0.95, x, y - s * 0.4);
+  ctx.bezierCurveTo(x + s * 0.95, y - s * 0.95, x + s * 1.25, y + s * 0.05, x, y + s * 0.9); ctx.closePath();
+}
+
+// 💗 LASERHEART (Robo Jump 9 drawLaserheart, nice + crown look): a crystal heart in a chrome frame, chrome beam arms, gold crown
+function drawB_Laserheart(mood) {
+  const grr = mood === 'grr', nice = !grr, bob = Math.sin(frame * 0.07) * 4;
+  ell(0, -3, 34, 6, nice ? 'rgba(255,128,171,.35)' : 'rgba(255,23,68,.35)');        // she floats: a pink glow on the floor
+  const cx = 0, cy = -64 + bob, pulse = 1 + Math.sin(frame * (nice ? 0.08 : 0.25)) * 0.05, s = 42 * pulse;
+  for (let k = 3; k >= 1; k--) dot(cx, cy, s * (1 + k * 0.18), nice ? `rgba(255,182,193,${0.07 * k})` : `rgba(255,23,68,${0.06 * k})`);
+  for (const d of [-1, 1]) {                             // 🦾 chrome beam arms with glowing emitters (they wave with ARM)
+    const wob = Math.sin(frame * 0.07 + d) * 6, up = ARM * s * 0.9;
+    const ax = cx + d * s * 0.95, ay = cy - s * 0.1, ex = cx + d * s * 1.55, ey = cy + s * 0.35 + wob - up;
+    ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 10; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(cx + d * s * 1.3, cy - s * 0.4 + wob * 0.5 - up * 0.5); ctx.lineTo(ex, ey); ctx.stroke();
+    ctx.strokeStyle = '#eceff1'; ctx.lineWidth = 4; ctx.stroke();
+    dot(ex, ey, 11, '#546e7a'); dot(ex, ey, 7, nice ? '#ff80ab' : (frame % 20 < 10 ? '#ff1744' : '#ff8a80'));
+  }
+  ctx.fillStyle = '#b0bec5'; drawB_heartPath(cx, cy, s * 1.1); ctx.fill();          // chrome frame
+  ctx.fillStyle = '#eceff1'; drawB_heartPath(cx - s * 0.03, cy - s * 0.04, s * 1.02); ctx.fill();
+  const gr = ctx.createLinearGradient(cx - s, cy - s, cx + s, cy + s);
+  gr.addColorStop(0, nice ? '#ffc1e3' : '#ff4f81'); gr.addColorStop(0.5, nice ? '#ff80ab' : '#e0003c'); gr.addColorStop(1, nice ? '#f06292' : '#8b0030');
+  ctx.fillStyle = gr; drawB_heartPath(cx, cy, s * 0.9); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 2; ctx.beginPath();   // crystal facets
+  for (const [fx, fy] of [[-0.6, -0.45], [0.6, -0.45], [-0.75, 0.15], [0.75, 0.15], [0, 0.75], [0, -0.35]]) { ctx.moveTo(cx, cy + s * 0.1); ctx.lineTo(cx + fx * s, cy + fy * s); }
+  ctx.stroke();
+  ell(cx - s * 0.4, cy - s * 0.38, s * 0.18, s * 0.09, 'rgba(255,255,255,.7)', -0.6);
+  const ey = cy - s * 0.05;
+  if (mood === 'happy') {                                // the game's "nice" face: ^ ^ eyes + a smile
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    for (const d of [-1, 1]) { ctx.beginPath(); ctx.arc(cx + d * s * 0.3, ey, s * 0.1, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+    ctx.beginPath(); ctx.arc(cx, cy + s * 0.25, s * 0.16, 0.2, Math.PI - 0.2); ctx.stroke();
+    dot(cx - s * 0.52, cy + s * 0.18, s * 0.08, 'rgba(255,255,255,.45)'); dot(cx + s * 0.52, cy + s * 0.18, s * 0.08, 'rgba(255,255,255,.45)');
+  } else {                                               // 👀 the laser eyes (pink + calm when waiting, hot red when grr)
+    const hot = grr ? 0.8 + Math.sin(frame * 0.3) * 0.2 : 0.6;
+    const blink = !grr && frame % 200 < 6;
+    for (const d of [-1, 1]) {
+      ctx.fillStyle = '#1a0010'; ctx.beginPath();
+      if (grr) { ctx.moveTo(cx + d * s * 0.12, ey - s * 0.02); ctx.lineTo(cx + d * s * 0.5, ey - s * 0.14); ctx.lineTo(cx + d * s * 0.46, ey + s * 0.1); ctx.lineTo(cx + d * s * 0.14, ey + s * 0.08); }
+      else { ctx.moveTo(cx + d * s * 0.12, ey - s * 0.1); ctx.lineTo(cx + d * s * 0.48, ey - s * 0.1); ctx.lineTo(cx + d * s * 0.46, ey + s * 0.1); ctx.lineTo(cx + d * s * 0.14, ey + s * 0.1); }
+      ctx.closePath(); ctx.fill();
+      if (!blink) ell(cx + d * s * 0.3, ey + s * 0.01, s * 0.12, s * (grr ? 0.05 : 0.07), grr ? `rgba(255,${Math.round(80 + 150 * hot)},${Math.round(120 * hot)},1)` : '#ff80ab');
+    }
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.beginPath();
+    if (grr) { ctx.moveTo(cx - s * 0.14, cy + s * 0.34); ctx.lineTo(cx + s * 0.14, cy + s * 0.34); }
+    else ctx.arc(cx, cy + s * 0.22, s * 0.11, 0.3, Math.PI - 0.3);
+    ctx.stroke();
+  }
+  const ty = cy - s * 0.95; ctx.fillStyle = '#ffd740';  // 👑 only the REAL Laserheart wears the gold crown
+  ctx.beginPath(); ctx.moveTo(cx - s * 0.32, ty + 6); ctx.lineTo(cx - s * 0.36, ty - 14); ctx.lineTo(cx - s * 0.16, ty - 4); ctx.lineTo(cx, ty - 20); ctx.lineTo(cx + s * 0.16, ty - 4); ctx.lineTo(cx + s * 0.36, ty - 14); ctx.lineTo(cx + s * 0.32, ty + 6); ctx.closePath(); ctx.fill();
+  dot(cx, ty - 2, 3.5, '#ff1744'); if (frame % 30 < 15) star(cx + s * 0.4, ty - 14, 6, '#fff', frame * 0.1);
+  if (grr && frame % 40 < 10) { ctx.strokeStyle = 'rgba(255,82,82,.8)'; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(cx - s * 0.3, ey); ctx.lineTo(cx - s * 1.2, -2); ctx.moveTo(cx + s * 0.3, ey); ctx.lineTo(cx + s * 1.2, -2); ctx.stroke(); }
+}
+
+// 🤖 Robo's body shape (Robo Jump 9 drawRoboBase), in a 30 x 40 box at (0,0), on ANY context c (raw canvas calls)
+function drawB_roboShape(c, pal, mood, o = {}) {
+  c.fillStyle = pal.legs; c.fillRect(4, 33, 8, 7); c.fillRect(18, 33, 8, 7);
+  drawB_rra(2, 20, 26, 16, 6, pal.body, c);
+  c.fillStyle = o.chestDot || pal.pod; c.beginPath(); c.arc(15, 28, 3, 0, 7); c.fill();
+  if (!o.noPods) { drawB_rra(-5, 9, 6, 9, 3, pal.pod, c); drawB_rra(29, 9, 6, 9, 3, pal.pod, c); }
+  drawB_rra(-2, 0, 34, 22, 12, pal.head, c);
+  drawB_rra(2, 4, 26, 13, 9, pal.visor, c);
+  const ey = 10.8;
+  if (o.eyeGlow) { c.fillStyle = o.eyeGlow; for (const ex of [9, 21]) { c.beginPath(); c.arc(ex, ey, 6, 0, 7); c.fill(); } }
+  c.fillStyle = pal.eye; c.strokeStyle = pal.eye; c.lineCap = 'round';
+  if (mood === 'happy') { c.lineWidth = 1.7; for (const ex of [9, 21]) { c.beginPath(); c.arc(ex, ey + 1.5, 3.3, Math.PI * 1.1, Math.PI * 1.9); c.stroke(); } }
+  else if (mood === 'grr') { for (const d of [-1, 1]) { const ex = 15 + d * 6; c.beginPath(); c.moveTo(ex - d * 4, ey - 3.5); c.lineTo(ex + d * 3.8, ey - 0.5); c.lineTo(ex + d * 3.5, ey + 3); c.lineTo(ex - d * 3.8, ey + 2.5); c.closePath(); c.fill(); } }
+  else { const b = frame % 180 < 6 ? 1 : 5; c.beginPath(); c.ellipse(9, ey, 3.5, b, 0, 0, 7); c.ellipse(21, ey, 3.5, b, 0, 0, 7); c.fill(); }
+}
+function drawB_mirrorPods(rim, face, glint) {            // round MIRROR ear pods (Mirror Robo / Glint)
+  for (const d of [-1, 1]) {
+    const px = d < 0 ? -3 : 33, py = 14 + ARM * -1.5 * d;
+    dot(px, py, 6.5, rim); dot(px, py, 5, face); dot(px - 1.6, py - 1.6, 1.8, '#fff');
+    ctx.strokeStyle = glint; ctx.lineWidth = 0.6; ctx.beginPath(); ctx.moveTo(px - 3, py + 2); ctx.lineTo(px + 2, py - 3); ctx.stroke();
+  }
+}
+function drawB_sheen() {                                 // the shine sliding across the chrome head
+  ctx.save(); ctx.beginPath(); ctx.rect(-2, 0, 34, 22); ctx.clip();
+  const sh = ((frame * 0.8) % 60) / 60 * 60 - 15;
+  ctx.fillStyle = 'rgba(255,255,255,.6)'; ctx.beginPath(); ctx.moveTo(sh, 0); ctx.lineTo(sh + 7, 0); ctx.lineTo(sh - 5, 22); ctx.lineTo(sh - 12, 22); ctx.fill();
+  ctx.restore();
+}
+const B_RS = 2.75;                                       // robot-box scale: 40 * 2.75 = 110 tall (+ glow outline)
+
+// 🪞 MIRROR ROBO (Robo Jump 9 secret boss; musicvideos2 drawMirrorRobo + PAL_MIRROR): chrome Robo, rainbow-ice outline, cracked visor
+function drawB_Mirror(mood) {
+  const pal = { head: '#dfe7ee', body: '#c9d4dc', visor: '#1c2a3a', eye: '#b3ecff', legs: '#8fa3b0', pod: '#eef3f7' };
+  ctx.save(); ctx.translate(-15 * B_RS, -40 * B_RS); ctx.scale(B_RS, B_RS);
+  ctx.strokeStyle = `hsla(${(frame * 4) % 360},90%,85%,.9)`; ctx.lineWidth = 1.1;   // ✨ a shimmering rainbow-ice outline
+  ctx.beginPath(); ctx.rect(-4, -2, 38, 26.8); ctx.rect(0, 20, 30, 16.8); ctx.stroke();
+  drawB_roboShape(ctx, pal, mood, { noPods: true });
+  drawB_sheen();
+  ctx.strokeStyle = 'rgba(220,245,255,.8)'; ctx.lineWidth = 0.45;                   // cracked-glass visor lines
+  const vx = 9, vy = 5.6; ctx.beginPath(); ctx.moveTo(vx, vy); ctx.lineTo(vx + 4, vy + 4); ctx.lineTo(vx + 3, vy + 9); ctx.moveTo(vx + 4, vy + 4); ctx.lineTo(vx + 10, vy + 5); ctx.moveTo(vx, vy); ctx.lineTo(vx - 3, vy + 5); ctx.stroke();
+  dot(15, 10.8, 11, 'rgba(179,236,255,.25)');                                        // icy glow around the eyes
+  drawB_mirrorPods('#90a4ae', '#f5fbff', 'rgba(128,216,255,.9)');
+  ctx.restore();
+}
+// ✨ GLINT (glintmovie.html drawBot 'glint' + PAL_GLINT + glintExtras): Mirror Robo's shape in its OWN sunrise-pink + aqua colors
+function drawB_Glint(mood) {
+  const pal = { head: '#ffe3ef', body: '#fff0e0', visor: '#1a2540', eye: '#64ffda', legs: '#ff9e80', pod: '#64ffda' };
+  ctx.save(); ctx.translate(-15 * B_RS, -40 * B_RS); ctx.scale(B_RS, B_RS);
+  ctx.strokeStyle = `hsla(${330 + Math.sin(frame * 0.05) * 25 + (Math.sin(frame * 0.03) > 0 ? 0 : 150)},90%,80%,.55)`; ctx.lineWidth = 1.1;   // soft sunrise glow
+  ctx.beginPath(); ctx.roundRect(-1.9, -1.2, 33.8, 24.3, 4.6); ctx.stroke();
+  drawB_roboShape(ctx, pal, mood, { noPods: true });
+  drawB_sheen();
+  drawB_mirrorPods('#ff9e80', '#e0fff8', 'rgba(255,128,171,.9)');
+  if (mood === 'happy') { star(15, 28, 5, '#ffd54f', frame * 0.02); star(15, 28, 2.6, '#ff80ab', frame * 0.02); }   // its star badge
+  for (let k = 0; k < 3; k++) {                          // little sparkles that float around Glint
+    const a = frame * 0.04 + k * 2.1, r = 3.5 * (0.6 + 0.4 * Math.sin(frame * 0.12 + k));
+    ctx.globalAlpha = 0.85; starPath(15 + Math.cos(a) * 25, 16 + Math.sin(a * 1.3) * 20, r, r * 0.3, 4, 0); ctx.fillStyle = k % 2 ? '#ffd0e4' : '#b9fff0'; ctx.fill();
+  }
+  ctx.globalAlpha = 1; ctx.restore();
+}
+
+// 👑 KING ELEMENT ROBO (Robo Jump 10 drawKing): towering robot, crown of six element gems, color-shifting armor, purple cape
+const B_EL = [['#ff6d00', '#ffd740'], ['#2196f3', '#80d8ff'], ['#26c6da', '#e0f7fa'], ['#8d6e63', '#ffcc80'], ['#81d4fa', '#ffffff'], ['#ffea00', '#fff59d']];   // fire water wind earth ice bolt
+function drawB_King(mood) {
+  const S = 0.64, nice = mood === 'happy', el = B_EL[(frame >> 5) % 6], armor = nice ? '#ffd740' : el[0];
+  ctx.save(); ctx.translate(-75 * S, -190 * S); ctx.scale(S, S);
+  const cx = 75;
+  rr(30, 156, 30, 34, 8, '#37474f'); rr(90, 156, 30, 34, 8, '#37474f');                  // legs + armor boots
+  rr(22, 178, 44, 12, 6, armor); rr(84, 178, 44, 12, 6, armor);
+  const cw = Math.sin(frame * 0.05) * 4;
+  poly([20, 70, -6 + cw, 180, 156 - cw, 180, 130, 70], nice ? '#7e57c2' : '#4a148c');   // the cape
+  for (const d of [-1, 1]) {                             // 💪 arms (wave with ARM) + armored fists
+    const sx = d < 0 ? 7 : 143, r = (0.15 + (ARM + 1) / 2 * 2.1) * -d;
+    ctx.save(); ctx.translate(sx, 80); ctx.rotate(r);
+    rr(-13, -6, 26, 64, 12, '#cfd8dc'); dot(0, 62, 11, armor); ctx.restore();
+  }
+  rr(18, 66, 114, 94, 22, '#eceff1'); rr(30, 80, 90, 66, 16, armor);                     // body + armor plate
+  dot(cx, 104, 13, '#fff'); dot(cx, 104, 8, nice ? '#ffd740' : el[1]);
+  ell(10, 72, 22, 13, armor); ell(140, 72, 22, 13, armor);                              // shoulder pads
+  rr(24, 8, 102, 62, 26, '#ffffff'); rr(32, 18, 86, 40, 18, '#111827');                 // head + visor
+  const ey = 38;
+  if (nice) { ctx.strokeStyle = '#ffd740'; ctx.lineWidth = 4; ctx.lineCap = 'round'; for (const d of [-1, 1]) { ctx.beginPath(); ctx.arc(cx + d * 20, ey + 3, 8, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); } ctx.beginPath(); ctx.arc(cx, ey + 6, 7, 0.3, Math.PI - 0.3); ctx.stroke(); }
+  else if (mood === 'grr') { ctx.fillStyle = '#ff1744'; for (const d of [-1, 1]) { ctx.beginPath(); ctx.moveTo(cx + d * 10, ey - 6); ctx.lineTo(cx + d * 32, ey - 2); ctx.lineTo(cx + d * 30, ey + 6); ctx.lineTo(cx + d * 10, ey + 5); ctx.closePath(); ctx.fill(); } }
+  else { const b = frame % 180 < 6 ? 1 : 7; ell(cx - 20, ey, 7, b, '#ffd740'); ell(cx + 20, ey, 7, b, '#ffd740'); }
+  ell(20, 38, 8, 14, armor); ell(130, 38, 8, 14, armor);                                // ear pods
+  const crY = 12, crw = 94;                              // 👑 the CROWN of six element gems
+  ctx.fillStyle = '#ffc400'; ctx.beginPath(); ctx.moveTo(cx - crw / 2, crY);
+  for (let k = 0; k <= 6; k++) { const px = cx - crw / 2 + k * crw / 6; ctx.lineTo(px, crY - (k % 2 ? 14 : 30)); if (k < 6) ctx.lineTo(px + crw / 12, crY - 10); }
+  ctx.lineTo(cx + crw / 2, crY); ctx.closePath(); ctx.fill();
+  for (let k = 0; k < 6; k++) { const gx = cx - crw / 2 + crw / 12 + k * crw / 6; dot(gx, crY - 9, 6, B_EL[k][0]); if (nice || k === (frame >> 5) % 6 || frame % 60 < 30) dot(gx, crY - 9, 3, '#fff'); }
+  ctx.restore();
+}
+
+// 🦾 MECHA GLOOP (Robo Jump: Gloop Galaxy drawMecha): a robot suit made of EVERY Gloop
+function drawB_Mecha(mood) {
+  const S = 0.7, nice = mood === 'happy', stomp = Math.sin(frame * 0.1) * 2, look = Math.sin(frame * 0.03) * 3, SUN = '#ffc400';
+  ctx.save(); ctx.translate(-85 * S, -180 * S); ctx.scale(S, S); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  ell(52, 152, 18, 26, '#aa00ff'); ctx.fillStyle = '#6a1b9a'; ctx.fillRect(34, 146, 36, 5); ell(46, 140, 5, 8, '#ea80fc', -0.3); rr(30, 168, 44, 12, 6, '#4a148c');   // Bowling Gloop pin leg
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 3; c++) { ctx.fillStyle = (r + c) % 2 ? '#00e676' : '#00a152'; ctx.fillRect(100 + c * 12, 128 + r * 10 + stomp, 12, 10); }   // Glitch Gloop pixel leg
+  rr(96, 168, 44, 12, 6, '#004d26'); ctx.fillStyle = frame % 20 < 10 ? '#ff00ff' : '#00e5ff'; ctx.fillRect(142, 140, 6, 6);
+  const sw = Math.sin(frame * 0.08) * 0.15, up = (ARM + 1) / 2 * 2.3;
+  ctx.save(); ctx.translate(22, 70); ctx.rotate(0.2 + sw + up); ctx.globalAlpha = 0.85; rr(-12, 0, 24, 58, 12, '#b388ff'); dot(0, 64, 15, '#6200ea'); ctx.globalAlpha = 1; ctx.restore();   // Echo King Gloop arm
+  ctx.save(); ctx.translate(148, 70); ctx.rotate(-0.2 - sw - up); drawB_rra(-12, 0, 12, 58, [12, 0, 0, 12], SUN); drawB_rra(0, 0, 12, 58, [0, 12, 12, 0], '#b8b4e8');   // Eclipse sun/moon arm
+  dot(0, 64, 15, SUN); ctx.beginPath(); ctx.arc(0, 64, 15, -Math.PI / 2, Math.PI / 2); ctx.closePath(); ctx.fillStyle = '#b8b4e8'; ctx.fill(); ctx.restore();
+  for (const sx of [26, 144]) { dot(sx, 66, 18, 'rgba(79,195,247,.85)'); ell(sx - 6, 60, 6, 4, 'rgba(255,255,255,.7)', -0.5); }   // Bubble Gloop shoulders
+  rr(32, 58, 106, 84, 22, '#ffb300'); rr(36, 62, 98, 76, 18, '#ffd740');                // Golden Gloop plating
+  for (const [rx, ry] of [[44, 70], [126, 70], [44, 130], [126, 130]]) { dot(rx, ry, 4, '#ff8f00'); dot(rx - 1, ry - 1, 1.5, '#fff8e1'); }
+  if (frame % 60 < 30) { ctx.fillStyle = '#fff'; ctx.fillRect(118, 92, 10, 2); ctx.fillRect(122, 88, 2, 10); }
+  rr(58, 74, 54, 48, 10, '#b3e5fc'); rr(62, 78, 46, 40, 8, '#7c4dff');                  // Mirror Gloop chest (King Gloop goo bubbling)
+  for (let k = 0; k < 4; k++) dot(70 + k * 10, 112 - ((frame * 0.6 + k * 9) % 30), 3, 'rgba(255,255,255,.5)');
+  ctx.strokeStyle = 'rgba(255,255,255,.8)'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(70, 112); ctx.lineTo(82, 84); ctx.moveTo(84, 114); ctx.lineTo(96, 86); ctx.stroke();
+  drawB_rra(46, 6, 78, 58, [34, 34, 12, 12], '#7c4dff');                                  // purple King Gloop goo helmet
+  ell(64, 20, 9, 5, 'rgba(255,255,255,.35)', -0.5);
+  for (let k = 0; k < 4; k++) ell(56 + k * 19, 64 + (k % 2) * 3, 4, 5, '#7c4dff');      // goo drips
+  ctx.fillStyle = '#4a0072'; ctx.beginPath(); ctx.moveTo(52, 10);                        // Evil King Gloop's spiky shadow crown
+  for (let k = 0; k <= 6; k++) ctx.lineTo(52 + k * 11, 10 - (k % 2 ? 4 : 22)); ctx.lineTo(118, 10); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#ffd740'; ctx.beginPath(); ctx.moveTo(60, 12);                        // King Gloop's gold crown
+  for (let i = 0; i <= 4; i++) ctx.lineTo(60 + i * 12.5, 12 - (i % 2 ? 4 : 22)); ctx.lineTo(110, 12); ctx.closePath(); ctx.fill();
+  dot(85, 4, 3, '#e91e63'); dot(72.5, 8, 2.2, '#40c4ff'); dot(97.5, 8, 2.2, '#40c4ff');
+  rr(54, 26, 62, 24, 10, '#1a1033');                                                     // the visor
+  if (nice) { ctx.strokeStyle = '#69f0ae'; ctx.lineWidth = 3; for (const ex of [70, 100]) { ctx.beginPath(); ctx.arc(ex, 42, 6, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke(); } }
+  else {                                                 // a round goo eye + a glitchy PIXEL eye
+    dot(70, 38, 8, '#fff'); dot(70 + look, 39, 4, '#000'); ctx.fillStyle = '#fff'; ctx.fillRect(92, 30, 16, 16); ctx.fillStyle = '#ff1744'; ctx.fillRect(97 + look, 35, 7, 7);
+    if (mood === 'grr') { line(60, 26, 80, 32, '#ff1744', 4); line(110, 26, 90, 32, '#ff1744', 4); }
+  }
+  ctx.fillStyle = '#9e9e9e'; for (let k = 0; k < 5; k++) ctx.fillRect(66 + k * 8, 54, 5, 6);   // robot mouth grill
+  ctx.restore();
+}
+
+// 🖤 NEGA HOLOGRAM (Robo Jump: Second Morph drawHolo): a flickery cyan hologram of Nega-Robo, scanlines, on a projector beam
+let B_HOLO = null;
+function drawB_Holo(mood) {
+  const nice = mood === 'happy', R = 2, S = 2.7, pad = 8;
+  if (!B_HOLO) { B_HOLO = document.createElement('canvas'); B_HOLO.width = (30 + pad * 2) * S * R; B_HOLO.height = (40 + pad * 2) * S * R; }
+  const c = B_HOLO.getContext('2d');
+  c.setTransform(1, 0, 0, 1, 0, 0); c.globalAlpha = 1; c.globalCompositeOperation = 'source-over'; c.clearRect(0, 0, B_HOLO.width, B_HOLO.height);
+  c.setTransform(S * R, 0, 0, S * R, pad * S * R, pad * S * R);
+  const pal = { head: '#37474f', body: '#263238', visor: '#b71c1c', eye: nice ? '#18ffff' : '#e040fb', legs: '#4a148c', pod: '#7b1fa2' };
+  drawB_roboShape(c, pal, mood, { chestDot: '#e040fb', eyeGlow: 'rgba(224,64,251,.35)' });
+  c.globalCompositeOperation = 'source-atop';            // tint it hologram-cyan, with scanlines
+  c.globalAlpha = 0.35; c.fillStyle = '#18ffff'; c.fillRect(-pad, -pad, 30 + pad * 2, 40 + pad * 2);
+  c.globalAlpha = 0.3; c.fillStyle = "#000"; for (let yy = -pad + (frame % 6) / 3; yy < 40 + pad; yy += 2) c.fillRect(-pad, yy, 30 + pad * 2, 0.7);
+  c.globalAlpha = 1; c.globalCompositeOperation = 'source-over';
+  const top = -20 - 40 * S, fl = nice ? 0 : (frame % 53 < 3 ? 6 : 0) * (frame % 2 ? 1 : -1);
+  const alpha = nice ? 0.97 : 0.82 + Math.sin(frame * 0.3) * 0.1 - (frame % 71 < 4 ? 0.3 : 0);
+  ctx.save(); ctx.globalAlpha = 0.25; ctx.fillStyle = '#18ffff';                          // the projector beam
+  ctx.beginPath(); ctx.moveTo(-12, 0); ctx.lineTo(12, 0); ctx.lineTo(40, -20); ctx.lineTo(-40, -20); ctx.closePath(); ctx.fill();
+  ctx.globalAlpha = 0.12; dot(0, top + 40 * S * 0.6, 30 * S * 0.6, '#18ffff');
+  ctx.globalAlpha = clamp(alpha, 0.15, 1);
+  ctx.drawImage(B_HOLO, -15 * S - pad * S + fl, top - pad * S, B_HOLO.width / R, B_HOLO.height / R);
+  if (!nice) { ctx.globalAlpha = 0.5; ctx.fillStyle = '#18ffff'; for (let i = 0; i < 3; i++) if ((frame + i * 17) % 40 < 4) ctx.fillRect(-45 + ((frame * 37 + i * 50) % 90), top + ((frame * 13 + i * 70) % 110), 24 + i * 6, 3); }
+  ctx.restore();
+  rr(-16, -6, 32, 8, 4, '#263238'); dot(0, -6, 4, '#18ffff');                              // the little projector
+}
+
+// 📖 THE BOOK BOSS (bookboss.html drawBookBoss/drawCover): the Game Factory book, alive! Cover face, book-stack arms, bookmark legs
+function drawB_Book(mood) {
+  const s = 0.4, x = 0, y = -98, happy = mood === 'happy', angry = mood === 'grr', raise = clamp((ARM + 1) / 2, 0, 1);
+  const hipY = y + 78 * s;
+  for (const side of [-1, 1]) {                          // legs: two BOOKMARKS
+    const lx = x + side * 55 * s + Math.sin(frame * 0.08 + side) * 6 * s, lw = 36 * s, bot = 0;
+    drawB_polyS([lx - lw / 2, hipY, lx + lw / 2, hipY, lx + lw / 2 + side * 5 * s, bot, lx, bot - 16 * s, lx - lw / 2 + side * 5 * s, bot], side < 0 ? '#e53935' : '#1e88e5', '#1b1b2f', 2);
+    ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.fillRect(lx - 4 * s, hipY, 8 * s, Math.max(0, bot - hipY - 24 * s));
+    dot(lx + side * lw / 2, bot - 6 * s, 8 * s, '#ffd740');
+  }
+  for (const side of [-1, 1]) {                          // arms: stacks of books, hands made of pages
+    const a = 0.95 - raise * 1.5 + Math.sin(frame * 0.06 + side) * 0.12;
+    const q = s * 0.72, dx = Math.cos(a) * side, dy = Math.sin(a), rot = Math.atan2(dy, dx);
+    let px = x + side * 112 * s, py = y - 6 * s;
+    const books = side < 0 ? ['#8e24aa', '#ff7043', '#26a69a'] : ['#3949ab', '#fdd835', '#ec407a'];
+    for (let i = 0; i < 3; i++) {
+      ctx.save(); ctx.translate(px + dx * 24 * q, py + dy * 24 * q); ctx.rotate(rot);
+      rr(-26 * q, -15 * q, 52 * q, 30 * q, 5 * q, books[i], '#1b1b2f', 2);
+      ctx.fillStyle = '#fff8e1'; ctx.fillRect(-22 * q, 7 * q, 44 * q, 4 * q);
+      ctx.fillStyle = 'rgba(255,255,255,.45)'; ctx.fillRect(-18 * q, -15 * q, 4 * q, 30 * q);
+      ctx.restore(); px += dx * 48 * q; py += dy * 48 * q;
+    }
+    ctx.save(); ctx.translate(px, py); ctx.rotate(rot);
+    for (let k = -1; k <= 1; k++) { ctx.save(); ctx.rotate(k * 0.35 + Math.sin(frame * 0.2 + k) * 0.06); rr(0, -9 * q, 34 * q, 18 * q, 3 * q, '#fff8e1', '#8d6e63', 1.5); ctx.restore(); }
+    ctx.restore();
+    if (side === 1 && angry) {                           // 🔖 the GIANT BOOKMARK SWORD
+      ctx.save(); ctx.translate(px, py); ctx.rotate(-Math.PI / 2 + 0.35 - raise * 0.5);
+      drawB_polyS([0, -15 * s, 190 * s, -15 * s, 228 * s, 0, 190 * s, 15 * s, 0, 15 * s], '#d32f2f', '#ffd740', 3 * s);
+      ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.fillRect(10 * s, -4 * s, 175 * s, 4 * s);
+      rr(-6 * s, -28 * s, 12 * s, 56 * s, 5 * s, '#ffd740', '#1b1b2f', 1.5);
+      ctx.restore();
+    }
+  }
+  if (angry) { ctx.globalAlpha = 0.3 + 0.15 * Math.sin(frame * 0.2); rr(x - 132 * s, y - 102 * s, 264 * s, 204 * s, 24 * s, '#ff1744'); ctx.globalAlpha = 1; }
+  const fx = x - 120 * s, fy = y - 90 * s, fw = 240 * s, fh = 180 * s;   // the COVER is the face
+  rr(fx + 10 * s, fy + 8 * s, fw, fh, 12 * s, '#fff8e1', '#8d6e63', 1.5);               // the pages behind (the book is THICK)
+  ctx.fillStyle = '#d7ccc8'; for (let i = 1; i < 4; i++) ctx.fillRect(fx + fw + 1 * s, fy + 8 * s + i * fh / 4, 8 * s, 1.5);
+  const g = ctx.createLinearGradient(fx, fy, fx + fw, fy + fh); g.addColorStop(0, '#66bb6a'); g.addColorStop(1, '#1b5e20');
+  rr(fx, fy, fw, fh, 14 * s, g, '#1b1b2f', 2); rr(fx, fy, 22 * s, fh, 10 * s, '#0b3d14');
+  text('THE GAME', x + 10 * s, fy + 38 * s, 28 * s, '#ffe34d', 'center', '#0b3d14');
+  text('FACTORY', x + 10 * s, fy + 68 * s, 30 * s, '#ffe34d', 'center', '#0b3d14');
+  const ey = y + 12 * s;                                 // eyes: two glowing GAME ICONS
+  [[-48, '🤖'], [64, '🐶']].forEach(([ox, icon], i) => {
+    const ex = x + ox * s;
+    ctx.globalAlpha = 0.3 + 0.2 * Math.sin(frame * 0.15 + i); dot(ex, ey, 36 * s, angry ? '#ff5252' : '#ffea00'); ctx.globalAlpha = 1;
+    dot(ex, ey, 27 * s, '#fff59d');
+    ctx.strokeStyle = '#1b1b2f'; ctx.lineWidth = 3 * s; ctx.beginPath(); ctx.arc(ex, ey, 27 * s, 0, 7); ctx.stroke();
+    if (happy) { ctx.lineWidth = 5 * s; ctx.beginPath(); ctx.arc(ex, ey + 8 * s, 13 * s, Math.PI + 0.4, -0.4); ctx.stroke(); }
+    else if (frame % 200 < 6) line(ex - 18 * s, ey, ex + 18 * s, ey, '#1b1b2f', 4 * s);
+    else emoji(icon, ex, ey + 2 * s, 32 * s);
+    if (angry) line(ex - 26 * s, ey - 34 * s + (i ? 10 : -2) * s, ex + 26 * s, ey - 34 * s + (i ? -2 : 10) * s, '#1b1b2f', 7 * s);
+  });
+  const mw = 124 * s, mx = x + 10 * s - mw / 2, my = y + 52 * s;   // mouth: the PAGE EDGES
+  if (happy) { ctx.strokeStyle = '#1b1b2f'; ctx.lineWidth = 5 * s; ctx.beginPath(); ctx.arc(x + 10 * s, my - 6 * s, 30 * s, 0.3, Math.PI - 0.3); ctx.stroke(); dot(x - 70 * s, my - 4 * s, 10 * s, 'rgba(255,128,171,.7)'); dot(x + 92 * s, my - 4 * s, 10 * s, 'rgba(255,128,171,.7)'); }
+  else {
+    const open = angry ? 0.75 + Math.sin(frame * 0.3) * 0.25 : 0.12, mh = (9 + 26 * open) * s;
+    rr(mx, my, mw, mh, 6 * s, '#3e2723', '#1b1b2f', 1.5);
+    for (let i = 0; i < 3; i++) { ctx.fillStyle = i % 2 ? '#efebe9' : '#fff8e1'; ctx.fillRect(mx + 4 * s, my + 1 + i * 3 * s, mw - 8 * s, 2.4 * s); ctx.fillRect(mx + 4 * s, my + mh - 1 - (i + 1) * 3 * s, mw - 8 * s, 2.4 * s); }
+  }
+}
+
+// 🌟 CHAOS NOVA (musicvideos.html drawNova): rainbow star, crystal wings, ONE big eye. Wrapped as a feet-at-0 dancer
+function drawB_Nova(mood) {
+  const R = 40, y = -72 + Math.sin(frame * 0.06) * 4;
+  ell(0, -3, 30, 6, 'rgba(255,255,255,.18)');
+  drawNova(0, y, R, frame / 60, mood === 'happy' ? 0.35 : mood === 'grr' ? 0.6 : (frame % 200 < 6 ? 0.1 : 1));
+  if (mood === 'happy') { ctx.strokeStyle = '#311b92'; ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.beginPath(); ctx.arc(0, y + R * 0.38, R * 0.15, 0.2, Math.PI - 0.2); ctx.stroke(); }
+  if (mood === 'grr') line(-R * 0.34, y - R * 0.42, R * 0.34, y - R * 0.3, '#311b92', 4);
+}
+
+const CHARS_B = {
+  laserheart: m => drawB_Laserheart(m),
+  mirror: m => drawB_Mirror(m),
+  glint: m => drawB_Glint(m),
+  kingelement: m => drawB_King(m),
+  mechagloop: m => drawB_Mecha(m),
+  negaholo: m => drawB_Holo(m),
+  bookboss: m => drawB_Book(m),
+  nova: m => drawB_Nova(m),
+};
+Object.assign(CHAR, CHARS_R, CHARS_K, CHARS_B);
 // Chaos Nova, the Forgotten Star: rainbow star layers, crystal wings and ONE big eye
 function drawNova(x, y, R, t, k = 1) {
   ctx.save(); ctx.translate(x, y);
@@ -486,6 +1807,7 @@ const opts = { karaoke: false, dance: false, loop: false };
 function prep(v) {
   const S = v.song, n = S.mel.length, loop = n * S.step;
   let reps = 3; while (reps * loop < 38 && reps < 5) reps++; if (reps * loop > 80) reps = 2;
+  if (S.reps) reps = S.reps;   // songs with words play once, start to end
   v.reps = reps; v.n = n; v.N = n * reps; v.musicDur = v.N * S.step; v.total = INTRO + v.musicDur + OUTRO;
   const ps = S.mel.filter(m => m).sort((a, b) => a - b); v.lo = ps[0]; v.hi = ps[ps.length - 1];
   const thr = ps[Math.floor(ps.length * 0.75)];
@@ -510,12 +1832,14 @@ function vinfo(v, t) {
   const list = v.shots || SHOTS;
   let shot = shotIdx < 0 ? 'wide' : list[shotIdx % list.length];
   if (v.party && inMusic && rep === v.reps - 1) shot = 'party';
-  const focus = shotIdx < 0 ? 0 : (shotIdx * 3 + Math.floor(shotIdx / list.length)) % cast.length;
+  let focus = shotIdx < 0 ? 0 : (shotIdx * 3 + Math.floor(shotIdx / list.length)) % cast.length;
   let accAge = 99;
   for (let j = k; j >= 0 && j > k - 12; j--) if (v.acc[j]) { accAge = mt - j * st; break; }
-  const energy = mt < 0 ? 0.5 : ended ? 0.6 : rep === v.reps - 1 ? 1 : rep === 0 ? 0.7 : 0.85;
+  const sec = S.secAt ? S.secAt[k < 0 ? 0 : k % v.n] : null;
+  if (v.focusAt && inMusic) { const f = v.focusAt(k, sec); if (f != null) { focus = f; shot = 'turns'; } }   // e.g. the Meow Solo: the camera follows whose turn it is
+  const energy = mt < 0 ? 0.5 : ended ? 0.6 : sec ? sec.e : rep === v.reps - 1 ? 1 : rep === 0 ? 0.7 : 0.85;
   return { t, mt, k, beat, bp, beatI: Math.floor(beat), pulse: Math.exp(-bp * 4), hop: Math.sin(Math.PI * bp), rep, shot, shotIdx, shotTime, shotProg,
-    focus, cast, accAge, energy, inMusic, ended, note: k >= 0 ? S.mel[k % v.n] : 0 };
+    focus, cast, accAge, energy, inMusic, ended, sec, note: k >= 0 ? S.mel[k % v.n] : 0 };
 }
 function camera(v, I) {
   let s = 1, fx = W / 2, fy = H / 2;
@@ -532,7 +1856,7 @@ function camera(v, I) {
 const MOVES = [['L', 'LEFT', '#ff4081'], ['R', 'RIGHT', '#00b0ff'], ['U', 'JUMP', '#00e676'], ['D', 'SQUAT', '#ff9100'], ['C', 'CLAP', '#d500f9'], ['S', 'SPIN', '#ffd740']];
 const moveAt = b2 => MOVES[Math.floor(hash(b2, 9) * MOVES.length) % MOVES.length];
 function drawCast(v, I) {
-  const mv = opts.dance && I.inMusic ? moveAt(Math.floor(I.beat / 2)) : null, mp = I.beat / 2 - Math.floor(I.beat / 2);
+  const mv = opts.dance && I.inMusic ? moveAt(Math.floor(I.beat / 2)) : null, mp = I.beat / 2 - Math.floor(I.beat / 2), boost = v.ampMul ? v.ampMul(I) : 1;
   if (I.shot === 'turns') {   // spotlight on the one whose turn it is
     const c = I.cast[I.focus];
     ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.beginPath(); ctx.rect(-20, -20, W + 40, H + 40);
@@ -542,7 +1866,7 @@ function drawCast(v, I) {
   I.cast.forEach((c, i) => {
     const [id, x, y, s, ex] = c;
     const isStar = (I.shot === 'close' || I.shot === 'turns') && i === I.focus;
-    const amp = (isStar ? 30 : 16) * s * (0.6 + 0.4 * I.energy) * (ex && ex.amp != null ? ex.amp : 1);
+    const amp = (isStar ? 30 : 16) * s * (0.6 + 0.4 * I.energy) * (ex && ex.amp != null ? ex.amp : 1) * boost;
     const land = Math.exp(-I.bp * 10);
     let dx = 0, bob = -I.hop * amp, rot = Math.sin(Math.PI * I.beat) * 0.1 * (i % 2 ? 1 : -1), sx = 1 + 0.12 * land, sy = 1 - 0.12 * land;
     ARM = Math.sin(Math.PI * I.beat) * (i % 2 ? 1 : -1);
@@ -556,7 +1880,7 @@ function drawCast(v, I) {
       else rot = Math.PI * 2 * (mp < 0.5 ? 2 * mp * mp : 1 - 2 * (1 - mp) * (1 - mp));
     } else if (isStar && I.shot === 'turns' && I.shotTime < v.song.step * 4) rot = Math.PI * 2 * I.shotTime / (v.song.step * 4);   // a spin when it's your turn
     const mood = EVIL_IDS.includes(id) ? (I.accAge < 0.35 ? 'happy' : 'grr') : (isStar || I.accAge < 0.35 ? 'happy' : 'wait');
-    ctx.globalAlpha = I.shot === 'turns' && !isStar ? 0.6 : 1;
+    ctx.globalAlpha = (I.shot === 'turns' && !isStar ? 0.6 : 1) * (ex && ex.alpha ? ex.alpha : 1);
     ell(x, y + 2, 38 * s * (1 - I.hop * 0.25), 8 * s, 'rgba(0,0,0,.25)');
     ctx.save(); ctx.translate(x + dx, y + bob - 60 * s); ctx.rotate(rot); ctx.translate(0, 60 * s); ctx.scale(s * sx, s * sy);
     CHAR[id](mood);
@@ -586,6 +1910,8 @@ function drawVideo(v, t) {
   frame = Math.floor(t * 60);
   const I = vinfo(v, t);
   ctx.save();
+  const shk = v.shake ? v.shake(I) : 0;   // the screen shakes (The Burp Song)
+  if (shk) ctx.translate((hash(frame, 1) - 0.5) * shk * 2, (hash(frame, 2) - 0.5) * shk * 2);
   camera(v, I);
   v.bg(I);
   ctx.globalAlpha = clamp(0.16 * I.pulse * I.energy, 0, 1); ctx.fillStyle = v.pulse || '#fff'; ctx.fillRect(-10, -10, W + 20, H + 20); ctx.globalAlpha = 1;   // background pulses on the beat
@@ -618,7 +1944,8 @@ function drawTitleCard(v, t) {
   text(nm, 0, 0, Math.min(72, 1300 / nm.length), rb(t * 6), 'center', '#1b1b2f');
   text('— the music video! —', 0, 72, 36, '#fff');
   ctx.restore();
-  text('starring ' + v.stars, 480, 420, 24, '#ffd740');
+  if (v.deluxe) { rr(380, 204, 200, 38, 14, '#00e5ff', '#fff', 3); text('💎 DELUXE', 480, 224, 22, '#fff', 'center', '#880e4f'); }
+  text('starring ' + v.stars, 480, 420, v.stars.length > 70 ? 17 : 24, '#ffd740');
   ctx.globalAlpha = 1;
 }
 function drawEndCard(v, I) {
@@ -626,11 +1953,39 @@ function drawEndCard(v, I) {
   ctx.globalAlpha = a * 0.62; ctx.fillStyle = '#0a0014'; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = a;
   text('⭐ THE END ⭐', 480, 110 - 10 * Math.abs(Math.sin(e * 4)), 70, rb(e * 5), 'center', '#1b1b2f');
   text('Thanks for watching!', 480, 180, 34, '#fff');
-  text('Starring: ' + v.stars, 480, 232, 22, '#ffd740');
+  text('Starring: ' + v.stars, 480, 232, v.stars.length > 70 ? 16 : 22, '#ffd740');
   text('Music: ' + v.music, 480, 266, 20, '#b3e5fc');
   ctx.globalAlpha = 1;
 }
-function drawKaraoke(v, I) {   // KARAOKE: a big bouncing ball hops along the notes (no words)
+function drawKaraoke(v, I) {   // KARAOKE: songs with words show the words, and the ball hops from word to word
+  const S = v.song, li = S.v2 && I.inMusic && I.k >= 0 ? S.lineAt[I.k % v.n] : -1;
+  if (li < 0) { drawKaraokeNotes(v, I); return; }
+  const L = S.lines[li], st = S.step, font = sz => `bold ${sz}px "Trebuchet MS", "Arial Rounded MT Bold", sans-serif`;
+  rr(150, 8, 660, 110, 22, 'rgba(10,0,30,.62)', '#fff', 3);
+  text('🎤 SING ALONG!', 170, 22, 13, '#ffd740', 'left', null);
+  const bits = L.syls.map((q, i) => q.s + (q.join || i === L.syls.length - 1 ? '' : ' '));
+  let size = 34; ctx.font = font(size);
+  let wTot = ctx.measureText(bits.join('')).width;
+  if (wTot > 610) { size = Math.floor(size * 610 / wTot); ctx.font = font(size); wTot = ctx.measureText(bits.join('')).width; }
+  let x = 480 - wTot / 2; const xs = [];
+  bits.forEach(b => { xs.push([x, ctx.measureText(b.trimEnd()).width]); x += ctx.measureText(b).width; });
+  const y = 72, cx = i => xs[i][0] + xs[i][1] / 2;
+  let p = -1; L.syls.forEach((q, i) => { if (q.k <= I.k) p = i; });
+  L.syls.forEach((q, i) => text(bits[i].trimEnd(), xs[i][0], y - (i === p ? 3 : 0), size, q.k <= I.k ? '#ffd740' : '#fff', 'left', '#1b1b2f'));
+  let bx, by; const top = y - size * 0.62 - 12;
+  if (p < 0) { bx = cx(0) - 30; by = top - 18 * I.hop; }   // waiting to start
+  else if (p === L.syls.length - 1) { bx = cx(p); by = top - 10 * Math.exp(-(I.mt - L.syls[p].k * st) * 4) * Math.abs(Math.sin((I.mt - L.syls[p].k * st) * 9)); }
+  else {
+    const kp = L.syls[p].k, kq = L.syls[p + 1].k, u = clamp((I.mt - kp * st) / Math.max(0.01, (kq - kp) * st), 0, 1);
+    bx = cx(p) + (cx(p + 1) - cx(p)) * u; by = top - Math.sin(Math.PI * u) * 16 * Math.min(1, (kq - kp) * st / 0.25);
+  }
+  ctx.globalAlpha = 0.3; dot(bx, by, 17, '#fff59d'); ctx.globalAlpha = 1;
+  dot(bx, by, 11, '#fff'); dot(bx - 3, by - 2, 1.8, '#1b1b2f'); dot(bx + 3, by - 2, 1.8, '#1b1b2f');
+  ctx.strokeStyle = '#1b1b2f'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(bx, by + 2, 4, 0.3, Math.PI - 0.3); ctx.stroke();
+  const nx = S.lines[li + 1];
+  if (nx) text('next: ' + nx.say, 480, 104, nx.say.length > 60 ? 13 : 16, '#c5cae9', 'center', null);
+}
+function drawKaraokeNotes(v, I) {   // KARAOKE: a big bouncing ball hops along the notes (no words)
   if (!I.inMusic) return;
   const S = v.song, st = S.step, w0 = Math.floor(I.k / 16) * 16;
   rr(150, 8, 660, 110, 22, 'rgba(10,0,30,.62)', '#fff', 3);
@@ -910,6 +2265,253 @@ const VIDEOS = [
     special(I) { for (let i = 0; i < 8; i++) { ctx.globalAlpha = 0.35; line(i * 137, 0, 480 + Math.sin(I.t * 4 + i) * 300, 420, rb(i + I.beatI), 8); } ctx.globalAlpha = 1; },
     post(I) { if (I.shot === 'party') { ctx.globalAlpha = 0.14 * I.pulse; ctx.fillStyle = rb(I.beatI); ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1; } } },
 ];
+// ---------- 🎤 THE 7 NEW VIDEOS (songs with words, a singing voice, and the karaoke ball hops on the words) ----------
+const secOf = I => I.sec || {};
+const since = (I, steps, st) => { let best = 99; for (const s of steps) { const a = I.mt - s * st; if (a >= 0 && a < best) best = a; } return best; };
+function spotlight(x, y, r, c = '#fff9c4', a = 0.18) { ctx.globalAlpha = a; poly([x - 24, -20, x + 24, -20, x + r, y, x - r, y], c); ctx.globalAlpha = 1; }
+function banner(s, y, size, I, c) { ctx.save(); ctx.translate(480, y - I.hop * 6); ctx.rotate(Math.sin(I.t * 2) * 0.03); text(s, 0, 0, size, c || rb(I.beatI), 'center', '#1b1b2f'); ctx.restore(); }
+function discoBall(x, y, I) {
+  line(x, 0, x, y - 30, '#bdbdbd', 2); dot(x, y, 30, '#9e9e9e');
+  for (let r = 0; r < 5; r++) for (let c = 0; c < 6; c++) { const px = x - 24 + c * 9 + ((I.t * 30) % 9), py = y - 24 + r * 10; if (Math.hypot(px - x, py - y) < 26) { ctx.fillStyle = hash(r * 7 + c, I.beatI) > 0.6 ? '#fff' : '#cfd8dc'; ctx.fillRect(px, py, 7, 8); } }
+}
+
+// 🦘 ROBO JUMP REMIX: who dances in each game's 2 bars (Robo is always there!)
+const RJR = [
+  ['🤖', 'ROBO JUMP', ['gloop', 'pinch'], '#0b1033', '#3a1c71'], ['👾', 'ROBO JUMP 2', ['glitchgloop', 'bytecrab'], '#140026', '#002b36'],
+  ['🌌', 'ROBO JUMP 3', ['gloop', 'sparks'], '#1b5e20', '#81c784'], ['🔮', 'ROBO JUMP 4', ['nega'], '#4a148c', '#ce93d8'],
+  ['👻', 'ROBO JUMP 5', ['phantom'], '#0d0221', '#5c6bc0'], ['💾', 'ROBO JUMP 6', ['robo2'], '#004d40', '#00e676'],
+  ['⏰', 'ROBO JUMP 7', ['timerobo'], '#3e2723', '#ffb300'], ['🔒', 'ROBO JUMP 8', ['lockrobo'], '#263238', '#90a4ae'],
+  ['💗', 'ROBO JUMP 9', ['laserheart', 'glint'], '#1a0033', '#ff4081'], ['🌅', 'ROBO JUMP 10', ['kingelement'], '#bf360c', '#ffd180'],
+  ['🎵', 'ROBO JUMP 11', ['maestro'], '#880e4f', '#f48fb1'], ['🌌', 'ROBO JUMP 12', ['dusty', 'robozero'], '#0d47a1', '#4fc3f7'],
+  ['🖤', 'ROBO JUMP 13', ['nega', 'dusty'], '#000000', '#616161'], ['👾', 'ROBO JUMP 14', ['robo2', 'glitchgloop'], '#1a0033', '#00ffd0'],
+  ['🙃', 'ROBO JUMP 15', ['robozero', 'gloop'], '#311b92', '#ffab40'], ['⚡', 'ROBO JUMP 16', ['minimax'], '#f9a825', '#fff59d'],
+  ['🌌', 'GLOOP GALAXY', ['babygloop', 'mechagloop'], '#12005e', '#9c27b0'],
+];
+const RJR_CASTS = RJR.map(g => g[2].length === 1 ? [['robo', 330, 462, 1.15], [g[2][0], 630, 460, 1.1]]
+  : [['robo', 480, 465, 1.15], [g[2][0], 220, 458, 1.0], [g[2][1], 750, 458, 1.0]]);
+const RJR_PARTY = [
+  ['nega', 80, 345, 0.6], ['phantom', 205, 345, 0.6], ['timerobo', 330, 345, 0.6], ['lockrobo', 455, 345, 0.6], ['glint', 580, 345, 0.6], ['maestro', 705, 345, 0.6], ['minimax', 860, 345, 0.6],
+  ['gloop', 100, 462, 0.8], ['laserheart', 275, 462, 0.8], ['robo', 480, 468, 1.0], ['dusty', 660, 462, 0.8], ['babygloop', 840, 462, 0.8],
+];
+
+// 👑 BOSS BATTLE BOOGIE: all the bosses, friends now
+const BOSS_CAST = [
+  ['mirror', 110, 352, 0.62], ['glint', 290, 352, 0.62], ['negaholo', 480, 352, 0.62], ['nova', 670, 352, 0.62], ['mechagloop', 850, 352, 0.62],
+  ['kingelement', 120, 468, 0.8], ['laserheart', 345, 468, 0.82], ['gloop', 580, 466, 0.85], ['bookboss', 810, 468, 0.72],
+];
+// 🐱 CAT PARTY (from Cat Cozy Corner)
+const CAT_CAST = [['sammy', 85, 458, 0.78], ['jimmy', 215, 458, 0.78], ['rocky', 345, 458, 0.78], ['mimo', 475, 458, 0.78], ['charlie', 605, 458, 0.78], ['august', 740, 458, 0.8], ['pagescat', 875, 458, 0.78]];
+// 👻 SPOOKY SHUFFLE (the Ghost Hunt ghosts + Wispy)
+const GHOST_CAST = [
+  ['plink', 130, 335, 0.62], ['mira', 300, 330, 0.62], ['topsy', 480, 330, 0.62], ['whiskerwisp', 660, 335, 0.62], ['profboo', 830, 335, 0.62],
+  ['bubbles', 110, 462, 0.78], ['teeny', 270, 462, 0.9], ['wispy', 480, 466, 0.9], ['biggus', 700, 470, 0.72],
+];
+// 🌍 ROBO CITY ROCK: who's in each scene
+const CITY_CASTS = {
+  city: [['dusty', 170, 458, 0.95], ['robo', 400, 462, 1.1], ['robo2', 620, 458, 0.95], ['sparks', 830, 458, 0.9]],
+  jobs: [['robo', 330, 462, 1.15], ['dusty', 620, 458, 1.0]],
+  mountain: [['sammy', 210, 462, 0.9], ['robo', 470, 466, 1.05], ['gloop', 740, 462, 0.95]],
+  sleepover: [['sparks', 150, 470, 0.85], ['sammy', 330, 470, 0.85], ['robo', 520, 474, 1.0], ['gloop', 740, 470, 0.85]],
+  space: [['alien', 170, 455, 0.9], ['robo', 420, 455, 1.1], ['dusty', 640, 455, 0.95], ['alien', 850, 455, 0.8]],
+  drive: [['dusty', 110, 470, 0.75], ['sparks', 860, 470, 0.75]], launch: [['robo', 160, 466, 0.95], ['dusty', 810, 462, 0.9]],
+};
+const CITY_JOBS = ['📬', '🍕', '🛒', '🐾', '🚒', '🌻', '🍦'];
+// 💨 THE BURP SONG
+const BURP_CAST = [['robo', 110, 462, 0.85], ['sparks', 260, 462, 0.8], ['gloop', 480, 470, 1.55], ['pagescat', 700, 462, 0.8], ['pinch', 860, 462, 0.8]];
+function burpAge(v, I) { return since(I, v.song.burps, v.song.step); }
+// 💗 LASERHEART DELUXE
+const LH_CAST = [['robo', 220, 466, 1.1], ['laserheart', 520, 470, 1.45], ['glint', 800, 462, 0.95]];
+const LH_CHORUS = [['laserheart', 90, 360, 0.6, { alpha: 0.45 }], ['laserheart', 880, 360, 0.6, { alpha: 0.45 }]].concat(LH_CAST);
+
+const NEW_VIDEOS = [
+  { id: 'rjremix', name: 'Robo Jump Remix', icon: '🦘', color: '#283593', song: J['Robo Jump Remix'], fresh: true, endChord: J['Robo Jump Remix'].endChord,
+    stars: 'Robo and his friends from every Robo Jump', music: 'Robo Jump Remix (the main theme of Robo Jump 1 to 16 + Gloop Galaxy)', pulse: '#b388ff',
+    castAt: k => { const g = k < 0 ? 0 : J['Robo Jump Remix'].secAt[Math.min(k, J['Robo Jump Remix'].mel.length - 1)].game; return g == null ? RJR_CASTS[0] : g >= 17 ? RJR_PARTY : RJR_CASTS[g]; },
+    cast: RJR_CASTS[0], burst: ['⭐', '♪', '🦘'], shots: ['wide', 'close', 'wide', 'turns', 'close', 'special'],
+    bg(I) {
+      const g = secOf(I).game, G = RJR[g == null || g > 16 ? 0 : g], party = g >= 17;
+      if (party) { sky('#311b92', '#d500f9'); ctx.save(); ctx.translate(480, 220); ctx.rotate(I.t); for (let i = 0; i < 12; i++) { ctx.rotate(Math.PI / 6); ctx.globalAlpha = 0.25; poly([0, 0, 700, -60, 700, 60], rb(i)); } ctx.restore(); ctx.globalAlpha = 1; }
+      else { sky(G[3], G[4]); stars(I, 50, 3 + (g || 0), 300); }
+      for (let i = 0; i < 6; i++) {   // floating Robo Jump platforms with coins
+        const x = ((i * 190 - I.t * 60) % (W + 200) + W + 200) % (W + 200) - 100, y = 150 + (i % 3) * 55 + Math.sin(I.t * 2 + i) * 6;
+        rr(x - 50, y, 100, 18, 6, '#8d6e63'); rr(x - 50, y, 100, 7, 4, '#7cb342'); dot(x, y - 22 - I.hop * 8, 9, '#ffd740'); dot(x - 2, y - 24 - I.hop * 8, 3, '#fff8e1');
+      }
+      floorTiles(I, 400, 12, '#1a237e', '#283593');
+      if (I.k >= 0 && I.inMusic) banner(party ? '🎉 EVERYBODY! 🎉' : G[0] + ' ' + G[1], 190, 46, I);
+    },
+    special(I) { for (let i = 0; i < 10; i++) { const a = I.t * 2 + i * 0.63; ctx.globalAlpha = 0.4; line(480, 0, 480 + Math.cos(a) * 600, Math.abs(Math.sin(a)) * 600, rb(i), 5); } ctx.globalAlpha = 1; } },
+
+  { id: 'bossboogie', name: 'Boss Battle Boogie', icon: '👑', color: '#4a148c', song: J['Boss Battle Boogie'], fresh: true, endChord: J['Boss Battle Boogie'].endChord,
+    stars: 'King Gloop, Laserheart, Mirror Robo, Glint, King Element Robo, Mecha Gloop, Nega Hologram, Chaos Nova & the Book Boss', music: 'Boss Battle Boogie (with bits of Turn the Page! and Laserheart)', pulse: '#ea80fc',
+    cast: BOSS_CAST, burst: ['👑', '♪', '⚡'], shots: ['wide', 'turns', 'close', 'wide', 'turns', 'special'],
+    bg(I) {
+      sky('#12002b', '#4a148c');
+      for (let i = 0; i < 5; i++) { const x = 100 + i * 190, a = Math.PI / 2 + Math.sin(I.t * 1.3 + i) * 0.45; ctx.globalAlpha = 0.15; poly([x - 8, 0, x + 8, 0, x + Math.cos(a - 0.13) * 560, Math.sin(a - 0.13) * 560, x + Math.cos(a + 0.13) * 560, Math.sin(a + 0.13) * 560], rb(i + I.beatI)); }
+      ctx.globalAlpha = 1; discoBall(480, 60, I);
+      rr(250, 160, 460, 56, 18, 'rgba(0,0,0,.35)', rb(I.beatI), 4); text('👑 BOSS BATTLE BOOGIE 👑', 480, 188, 30, '#fff', 'center', rb(I.beatI + 3));
+      ctx.fillStyle = '#2a0050'; ctx.fillRect(0, 380, W, 160); floorTiles(I, 400, 12, '#1a0033', '#311b92');
+      if (secOf(I).n === 'Boss Solo!') banner('🎸 BOSS SOLO! 🎸', 250, 40, I, '#ffd740');
+    },
+    special(I) { for (let i = 0; i < 8; i++) { ctx.globalAlpha = 0.3; line(i * 137, 0, 480 + Math.sin(I.t * 4 + i) * 300, 420, rb(i + I.beatI), 8); } ctx.globalAlpha = 1; } },
+
+  { id: 'catparty', name: 'Cat Party', icon: '🐱', color: '#ec407a', song: J['Cat Party'], fresh: true, endChord: J['Cat Party'].endChord,
+    stars: 'Sammy, Jimmy, Rocky, Mimo, Charlie, August & Pages', music: 'Cat Party (Meow-meow-MEOW!)', pulse: '#ffd1e8',
+    focusAt: (k, P) => P && P.solo && k - P.from < 56 ? Math.floor((k - P.from) / 8) : null,
+    cast: CAT_CAST, burst: ['🐟', '🧶', '♪', '🐾'], shots: ['wide', 'close', 'turns', 'wide', 'close', 'special'],
+    bg(I) {
+      sky('#f8bbd0', '#fce4ec'); ctx.fillStyle = '#f48fb1'; for (let x = 0; x < W; x += 80) ctx.fillRect(x, 0, 40, 380);
+      for (const [x, y] of [[150, 170], [810, 170]]) { rr(x - 70, y - 60, 140, 110, 10, '#81d4fa', '#fff', 8); line(x, y - 60, x, y + 50, '#fff', 5); line(x - 70, y - 5, x + 70, y - 5, '#fff', 5); }   // windows
+      discoBall(480, 70, I);
+      for (let i = 0; i < 6; i++) { const x = 60 + i * 170, y = 395 - Math.abs(Math.sin(I.t * 3 + i)) * 10; dot(x, y, 14, rb(i + 1)); ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, 9, 0, 4); ctx.stroke(); }   // yarn balls
+      floorTiles(I, 400, 12, '#ad1457', '#c2185b');
+      const P = secOf(I);
+      if (P.solo && I.k >= 0) {   // MEOW SOLO: the spotlight goes to each cat in turn
+        const c = Math.floor((I.k - P.from) / 8);
+        if (c < 7) { const q = CAT_CAST[c]; spotlight(q[1], 470, 80, '#fff59d', 0.3); text('MEOW!', q[1], 300 - I.hop * 10, 30, '#fff', 'center', '#ad1457'); }
+        else banner('🐱 MEOW! MEOW! MEOW! 🐱', 300, 40, I, '#fff');
+      }
+    },
+    special(I) { for (let i = 0; i < 14; i++) { const x = hash(i, 4) * W, y = ((I.shotTime * 140 + hash(i, 5) * 500) % 560) - 40; emoji(['🐟', '🧶', '🐾'][i % 3], x, y, 30); } } },
+
+  { id: 'spookyshuffle', name: 'Spooky Shuffle', icon: '👻', color: '#4527a0', song: J['Spooky Shuffle'], fresh: true, endChord: J['Spooky Shuffle'].endChord,
+    stars: 'Plink, Mira, Topsy, Whiskerwisp, Professor Boo, Bubbles, Teeny, Big Gus & Wispy', music: 'Spooky Shuffle (a quiet tip-toe song)', pulse: '#b39ddb',
+    cast: GHOST_CAST.map(c => c.concat([{ amp: 0.7 }])), burst: ['👻', '✨', '🌙'], shots: ['wide', 'close', 'wide', 'turns', 'close', 'special'],
+    bg(I) {
+      sky('#0d0221', '#311b92'); stars(I, 50, 9, 260);
+      dot(820, 90, 46, '#fff9c4'); dot(840, 80, 40, 'rgba(13,2,33,.85)');   // crescent moon
+      ctx.fillStyle = '#1a0f3a'; ctx.fillRect(40, 120, 300, 260); poly([20, 125, 190, 40, 360, 125], '#1a0f3a');   // the old house
+      for (const [x, y] of [[110, 180], [250, 180], [110, 280], [250, 280]]) { ctx.globalAlpha = 0.5 + 0.3 * Math.sin(I.t * 2 + x); rr(x - 26, y - 30, 52, 60, 6, '#ffe082'); ctx.globalAlpha = 1; line(x, y - 30, x, y + 30, '#1a0f3a', 4); }
+      for (let i = 0; i < 5; i++) { const x = 420 + i * 110, y = 360; rr(x - 6, y - 30, 12, 30, 3, '#efebe9'); ctx.globalAlpha = 0.6 + 0.3 * Math.sin(I.t * 7 + i); ell(x, y - 40, 6, 11, '#ffca28'); dot(x, y - 38, 18, 'rgba(255,202,40,.15)'); ctx.globalAlpha = 1; }   // candles
+      floorTiles(I, 400, 12, '#1a0f3a', '#24154f'); ctx.globalAlpha = 0.55; ctx.fillStyle = '#0d0221'; ctx.fillRect(0, 400, W, 140); ctx.globalAlpha = 1;   // dim, spooky lights
+      ctx.globalAlpha = 0.25; for (let i = 0; i < 4; i++) ell(((i * 300 + I.t * 20) % (W + 300)) - 150, 420 + i * 30, 200, 18, '#d1c4e9'); ctx.globalAlpha = 1;   // floaty fog
+    },
+    special(I) { for (let i = 0; i < 10; i++) { ctx.globalAlpha = 0.35; ctx.save(); ctx.translate(hash(i, 2) * W, 380 - ((I.shotTime * 50 + hash(i, 3) * 380) % 380)); ctx.scale(0.3, 0.3); drawGhost('happy'); ctx.restore(); } ctx.globalAlpha = 1; } },
+
+  { id: 'robocityrock', name: 'Robo City Rock', icon: '🌍', color: '#00897b', song: J['Robo City Rock'], fresh: true, endChord: J['Robo City Rock'].endChord,
+    stars: 'Robo, Dusty, Robo 2.0, Sparks, Sammy, King Gloop & the little aliens', music: 'Robo City Rock', pulse: '#fff59d',
+    castAt: k => CITY_CASTS[(k < 0 ? 'city' : J['Robo City Rock'].secAt[Math.min(k, J['Robo City Rock'].mel.length - 1)].scene) || 'city'] || CITY_CASTS.city,
+    cast: CITY_CASTS.city, burst: ['⭐', '♪', '🚗'], specialFocus: [480, 300, 1.2],
+    bg(I) {
+      const sc = secOf(I).scene || 'city', P = secOf(I);
+      if (sc === 'space' || sc === 'launch' && I.k - P.from >= 20) {   // ⭐ STAR STATION
+        sky('#05010d', '#1a237e'); stars(I, 90, 4, 520);
+        dot(800, 110, 60, '#1e88e5'); ell(785, 95, 22, 14, '#43a047'); ell(820, 128, 16, 9, '#43a047'); text('Robo City is down there!', 800, 190, 14, '#bbdefb', 'center', null);
+        for (const [x, y, w] of [[60, 300, 200], [380, 250, 180], [640, 320, 220]]) { rr(x, y, w, 20, 8, '#455a64'); rr(x, y, w, 6, 3, '#76ff03'); }
+        ctx.save(); ctx.translate(160 + Math.sin(I.t) * 60, 110 + Math.sin(I.t * 2) * 10); ctx.scale(0.6, 0.6); drawK_MegaSaucer('happy'); ctx.restore();
+        floorTiles(I, 400, 12, '#263238', '#37474f'); ctx.fillStyle = 'rgba(118,255,3,.6)'; ctx.fillRect(0, 398, W, 4);
+        if (sc === 'launch') { ctx.save(); ctx.translate(480, 420 - (I.k - P.from - 20) * 30); drawK_Rocket(I.t, true); ctx.restore(); }
+        if (sc === 'space') banner('⭐ STAR STATION ⭐', 190, 40, I, '#76ff03');
+        return;
+      }
+      if (sc === 'sleepover') {   // 🛏️ night, pillow fort, popcorn
+        sky('#1a237e', '#3949ab', 380); stars(I, 30, 6, 200); dot(150, 80, 34, '#fff9c4');
+        ctx.fillStyle = '#5d4037'; ctx.fillRect(0, 380, W, 160);
+        poly([300, 380, 480, 230, 660, 380], '#ce93d8'); poly([330, 380, 480, 255, 630, 380], '#ba68c8');   // blanket fort roof
+        for (let i = 0; i < 6; i++) rr(140 + i * 120, 360, 90, 40, 18, ['#fff59d', '#80deea', '#f48fb1'][i % 3]);   // pillows
+        emoji('🍿', 860, 330, 50); emoji('🔦', 90, 330, 40); emoji('☎️', 880, 240, 40);
+        banner('🛏️ SLEEPOVER! 🛏️', 190, 40, I, '#fff59d');
+        return;
+      }
+      if (sc === 'mountain') {   // 🏔️ Mount Sweet Freedom
+        sky('#4fc3f7', '#fff3e0', 400);
+        poly([380, 400, 620, 60, 860, 400], '#8d6e63'); poly([570, 140, 620, 60, 670, 140], '#fff');
+        for (let i = 0; i < 6; i++) dot(450 + i * 30 + (i % 2) * 20, 360 - i * 45, 7, '#d7ccc8');   // stepping stones up the trail
+        line(620, 60, 620, 0, '#5d4037', 4); for (let i = 0; i < 6; i++) { ctx.fillStyle = RB[i]; ctx.fillRect(622, 4 + i * 6, 80 + Math.sin(I.t * 5 + i) * 6, 6); }
+        text('SWEET FREEDOM!', 700, 54, 14, '#fff', 'center', '#5d4037');
+        poly([0, 400, 160, 200, 330, 400], '#a1887f'); ctx.fillStyle = '#7cb342'; ctx.fillRect(0, 400, W, 140);
+        emoji('⛺', 120, 380, 60); emoji('🔥', 260, 395, 30);
+        banner('🏔️ MOUNT SWEET FREEDOM', 150, 30, I, '#fff');
+        return;
+      }
+      // 🏙️ the city (and the road for driving)
+      sky('#4fc3f7', '#e1f5fe', 380);
+      for (let i = 0; i < 4; i++) cloud(((hash(i, 1) * W + I.t * 20) % (W + 200)) - 100, 60 + i * 30, 0.8);
+      const off = sc === 'drive' ? I.t * 160 : 0, B = [['#ef5350', 'Pizza'], ['#42a5f5', 'Library'], ['#ab47bc', 'Toy Store'], ['#26a69a', 'City Hall'], ['#ffa726', 'Bakery'], ['#ec407a', 'Ice Cream'], ['#8d6e63', 'Garage']];
+      for (let i = 0; i < 9; i++) {
+        const x = ((i * 150 - off) % 1350 + 1350) % 1350 - 150, b = B[i % B.length], h = 130 + (i % 3) * 40;
+        ctx.fillStyle = b[0]; ctx.fillRect(x, 330 - h, 130, h);
+        for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) { ctx.fillStyle = '#fff59d'; ctx.fillRect(x + 14 + c * 38, 340 - h + 14 + r * 34, 22, 20); }
+        rr(x + 10, 300, 110, 22, 6, '#fff'); text(b[1], x + 65, 311, 14, '#37474f', 'center', null);
+      }
+      ctx.fillStyle = '#9e9e9e'; ctx.fillRect(0, 330, W, 22); ctx.fillStyle = '#424242'; ctx.fillRect(0, 352, W, 190);
+      ctx.fillStyle = '#ffeb3b'; for (let i = 0; i < 12; i++) ctx.fillRect(((i * 100 - off * 1.4) % (W + 100) + W + 100) % (W + 100) - 50, 470, 50, 7);
+      if (sc === 'drive') {   // 🚗 Robo drives his Cherry Red car
+        ctx.save(); ctx.translate(480 + Math.sin(I.t * 1.5) * 120, 445 - I.hop * 6); ctx.scale(1.3, 1.3); drawK_RoboCar(I.t, true); ctx.restore();
+        if (I.accAge < 0.4) text('BEEP BEEP!', 640, 330, 30, '#fff', 'center', '#e53935');
+        banner('🚗 ROBO CITY 🚗', 190, 40, I, '#e53935');
+      } else if (sc === 'jobs') {
+        const j = Math.floor((I.k - (secOf(I).from || 0)) / 16) % 4;
+        rr(300, 160, 360, 56, 14, '#fff', '#26a69a', 5); text('JOB BOARD: ' + ['Mail + Pizza', 'Groceries + Pets', 'Fire Truck!', 'Ice Cream + Flowers'][j], 480, 188, 20, '#26a69a', 'center', null);
+        for (let i = 0; i < 7; i++) emoji(CITY_JOBS[i], 90 + i * 130, 250 + Math.sin(I.t * 3 + i) * 10, 40);
+      } else banner('🌍 ROBO CITY ROCK! 🌍', 190, 40, I);
+    },
+    fx(I) { const P = secOf(I); if (P.scene === 'launch' && I.k - P.from < 20) {   // 3... 2... 1... BLAST OFF!
+      const s = I.k - P.from; ctx.save(); ctx.translate(480, 400 - Math.max(0, s - 16) * 22); drawK_Rocket(I.t, s >= 16); ctx.restore();
+      text(s < 4 ? '3...' : s < 8 ? '2...' : s < 16 ? '1...' : '🚀 BLAST OFF! 🚀', 480, 120, 60, '#fff', 'center', '#e53935'); } },
+    special(I) { for (let i = 0; i < 12; i++) { const x = hash(i, 4) * W, y = ((I.shotTime * 120 + hash(i, 5) * 500) % 560) - 40; star(x, y, 10, rb(i), I.t); } } },
+
+  { id: 'burpsong', name: 'The Burp Song', icon: '💨', color: '#7b1fa2', song: J['The Burp Song'], fresh: true, endChord: [60, 64, 67, 72],
+    stars: 'King Gloop (and his very surprised friends)', music: 'The Burp Song (the burp that shakes the world!)', pulse: '#ce93d8',
+    cast: BURP_CAST, burst: ['🫧', '♪', '💨', '🍰'], shots: ['wide', 'close', 'wide', 'close', 'turns', 'special'], specialFocus: [480, 330, 1.35],
+    shake(I) { const a = burpAge(this, I), big = (secOf(I).big || 0); return a < 1.3 ? (big ? 14 : 8) * (1 - a / 1.3) : 0; },
+    ampMul(I) { const a = burpAge(this, I); return a < 1.3 ? 1 + 2.2 * (1 - a / 1.3) : 1; },
+    bg(I) {
+      sky('#7b1fa2', '#e1bee7', 380);
+      for (let i = 0; i < 8; i++) { ctx.fillStyle = i % 2 ? '#ffd740' : '#ab47bc'; poly([i * 120, 0, i * 120 + 120, 0, i * 120 + 60, 50], ctx.fillStyle); }   // royal banners
+      rr(100, 250, 760, 26, 8, '#8d6e63'); rr(120, 276, 18, 104, 4, '#6d4c41'); rr(822, 276, 18, 104, 4, '#6d4c41');   // the royal table
+      rr(160, 200, 120, 50, 20, '#a1887f'); ell(220, 200, 60, 14, '#ce93d8'); text('goo pie', 220, 226, 14, '#fff', 'center', null);   // goo pie
+      for (let i = 0; i < 4; i++) rr(620 + i * 6, 70 + i * 45, 140 - i * 12, 45, 8, ['#f8bbd0', '#fff59d', '#b3e5fc', '#c8e6c9'][i]);   // a cake as tall as the sky
+      rr(420, 160, 40, 90, 10, '#4caf50'); rr(430, 140, 20, 24, 4, '#e53935');   // the fizzy pop
+      for (let i = 0; i < 6; i++) dot(440 + Math.sin(I.t * 3 + i) * 10, 150 - ((I.t * 40 + i * 20) % 100), 4, 'rgba(255,255,255,.8)');
+      ctx.fillStyle = '#4a148c'; ctx.fillRect(0, 380, W, 160); floorTiles(I, 400, 12, '#6a1b9a', '#4a148c');
+    },
+    fx(I) {
+      const a = burpAge(this, I), big = secOf(I).big;
+      if (a < 1.6) {   // BUUURP! rings + a wobbly word
+        const f = clamp(a / 1.6, 0, 1);
+        for (let i = 0; i < 3; i++) { const r = 40 + (a * 300 + i * 60) % 260; ctx.globalAlpha = (1 - f) * 0.6; ctx.strokeStyle = '#b2ff59'; ctx.lineWidth = 8; ctx.beginPath(); ctx.arc(480, 330, Math.max(0.1, r), 0, Math.PI * 2); ctx.stroke(); }
+        ctx.globalAlpha = 1;
+      }
+    },
+    post(I) {   // BUUURP! (drawn on top, so every camera shot shows it)
+      const a = burpAge(this, I), big = secOf(I).big;
+      if (a >= 1.6) return;
+      const f = clamp(a / 1.6, 0, 1);
+      ctx.globalAlpha = 1 - f * f; ctx.save(); ctx.translate(480, 230); ctx.rotate(Math.sin(a * 30) * 0.06); ctx.scale(1 + 0.25 * Math.sin(a * 20), 1);
+      text(big ? 'BUUUUUURRRP!!' : 'BUUURP!', 0, 0, big ? 76 : 60, '#b2ff59', 'center', '#4a148c'); ctx.restore();
+      if (big) text('🌍 the burp that shakes the WORLD! 🌍', 480, 310, 28, '#fff', 'center', '#4a148c');
+      ctx.globalAlpha = 1;
+    },
+    special(I) { for (let i = 0; i < 14; i++) { const x = hash(i, 4) * W, y = 400 - ((I.shotTime * 90 + hash(i, 5) * 400) % 420); dot(x, y, 8 + hash(i, 6) * 10, 'rgba(178,255,89,.5)'); dot(x - 3, y - 3, 3, 'rgba(255,255,255,.8)'); } } },
+
+  { id: 'laserheartdeluxe', name: 'Laserheart Deluxe', icon: '💗', color: '#c2185b', song: J['Laserheart Deluxe'], fresh: true, deluxe: true, endChord: J['Laserheart Deluxe'].endChord,
+    stars: 'LASERHEART, with Robo and Glint', music: "Laserheart DELUXE (Laserheart's boss song from Robo Jump 9, extended)", pulse: '#ff80ab',
+    castAt: k => { const P = k < 0 ? {} : J['Laserheart Deluxe'].secAt[Math.min(k, J['Laserheart Deluxe'].mel.length - 1)]; return P.chorus ? LH_CHORUS : LH_CAST; },
+    cast: LH_CAST, burst: ['💗', '♪', '💖', '✨'], shots: ['wide', 'close', 'turns', 'special', 'close', 'wide'], specialFocus: [520, 330, 1.3],
+    bg(I) {
+      const P = secOf(I), up = P.keyUp;
+      sky(up ? '#1a0033' : '#12001f', up ? '#ff6f00' : '#880e4f');
+      stars(I, 70, 11, 380);
+      const n = P.s === 'C' || P.n === 'Laser Show' ? 10 : P.s === 'H' ? 2 : 6;   // the laser light show
+      for (let i = 0; i < n; i++) {
+        const a = -Math.PI / 2 + Math.sin(I.t * (1.2 + (i % 3) * 0.4) + i * 1.7) * 1.1, c = i % 2 ? (up ? '#ffd740' : '#ff4081') : '#00e5ff';
+        const ex = 520 + Math.cos(a) * 900, ey = 300 + Math.sin(a) * 900;
+        ctx.globalAlpha = 0.14; line(520, 300, ex, ey, c, 22); ctx.globalAlpha = 0.75; line(520, 300, ex, ey, c, 4);
+      }
+      ctx.globalAlpha = 1;
+      const beat = I.bp < 0.12 || (I.bp > 0.37 && I.bp < 0.5);   // ba-BUM: two heart pulses every beat-pair
+      for (let i = 0; i < 3; i++) { const f = frac(I.beat / 2 + i / 3); ctx.globalAlpha = (1 - f) * 0.5; heart(520, 280, 60 + f * 220, up ? '#ffd740' : '#ff4081'); }
+      ctx.globalAlpha = 1; heart(520, 280, 46 * (beat ? 1.15 : 1), 'rgba(255,64,129,.35)');
+      floorTiles(I, 400, 12, up ? '#4a148c' : '#2a0033', up ? '#6a1b9a' : '#3d0040');
+      if (P.n === 'KEY CHANGE!' && I.k - P.from < 16) banner('⬆️ KEY CHANGE! ⬆️', 200, 56, I, '#ffd740');
+      if (P.s === 'H') banner('💓 ba-BUM 💓', 200 + (beat ? -6 : 0), 50, I, '#ff80ab');
+    },
+    special(I) { ctx.save(); ctx.translate(520, 280); ctx.rotate(I.t); for (let i = 0; i < 16; i++) { ctx.rotate(Math.PI / 8); ctx.globalAlpha = 0.22; poly([0, -8, 420, -30, 420, 30, 0, 8], i % 2 ? '#ff4081' : '#00e5ff'); } ctx.restore(); ctx.globalAlpha = 1; },
+    post(I) {   // the 💎 DELUXE badge
+      ctx.save(); ctx.translate(890, 40); ctx.rotate(0.08); rr(-62, -20, 124, 40, 14, '#00e5ff', '#fff', 3); text('💎 DELUXE', 0, 1, 20, '#fff', 'center', '#880e4f'); ctx.restore();
+    } },
+];
+VIDEOS.push(...NEW_VIDEOS);
 const VIDEOS_BY_ID = {};
 VIDEOS.forEach(v => { VIDEOS_BY_ID[v.id] = v; prep(v); });
 
@@ -929,7 +2531,7 @@ function markWatched(v) {
 // ---------- Playing a video (the picture and the music both follow the same clock) ----------
 const clockNow = () => performance.now() / 1000;
 let mode = 'picker', sel = 0;
-const P = { vi: 0, playing: false, start: 0, pausedAt: 0, done: false, doneAt: 0, events: [], ev: 0 };
+const P = { gen: 0, vi: 0, playing: false, start: 0, pausedAt: 0, done: false, doneAt: 0, events: [], ev: 0 };
 const vidT = () => P.playing ? clockNow() - P.start : P.pausedAt;
 function buildEvents(v) {   // count-in clicks, then every step of the song, then a big last chord
   const st = v.song.step, ev = [];
@@ -938,7 +2540,79 @@ function buildEvents(v) {   // count-in clicks, then every step of the song, the
   ev.push({ t: INTRO + v.musicDur, k: 'end' });
   return ev;
 }
+// ---------- 🎤 sound + voice for the songs with words ----------
+function tom(at, vol) {
+  const a = audio(), o2 = out(); if (!a || !o2) return;
+  const o = a.createOscillator(), g = a.createGain();
+  o.type = 'sine'; o.frequency.setValueAtTime(170, at); o.frequency.exponentialRampToValueAtTime(80, at + 0.2);
+  g.gain.setValueAtTime(vol, at); g.gain.exponentialRampToValueAtTime(0.001, at + 0.24);
+  o.connect(g); g.connect(o2); o.start(at); o.stop(at + 0.3);
+}
+function zap(at, vol) {   // a soft little "pew" laser
+  const a = audio(), o2 = out(); if (!a || !o2) return;
+  const o = a.createOscillator(), g = a.createGain();
+  o.type = 'sawtooth'; o.frequency.setValueAtTime(1500, at); o.frequency.exponentialRampToValueAtTime(220, at + 0.16);
+  g.gain.setValueAtTime(vol, at); g.gain.exponentialRampToValueAtTime(0.001, at + 0.17);
+  o.connect(g); g.connect(o2); o.start(at); o.stop(at + 0.2);
+}
+function burp(at, big) {   // 💨 King Gloop's burp: SOFT, low and rumbly (never a loud blast)
+  const a = audio(), o2 = out(); if (!a || !o2) return;
+  const d = big ? 1.5 : 1.0, o = a.createOscillator(), lfo = a.createOscillator(), lg = a.createGain(), f = a.createBiquadFilter(), g = a.createGain();
+  o.type = 'sawtooth'; o.frequency.setValueAtTime(big ? 80 : 95, at); o.frequency.exponentialRampToValueAtTime(big ? 50 : 60, at + d);
+  lfo.type = 'sine'; lfo.frequency.value = 22; lg.gain.value = 14; lfo.connect(lg); lg.connect(o.frequency);   // the "rrrr" wobble
+  f.type = 'lowpass'; f.frequency.value = 420; f.Q.value = 2;
+  g.gain.setValueAtTime(0.0001, at); g.gain.linearRampToValueAtTime(0.11, at + 0.09); g.gain.setValueAtTime(0.11, at + d * 0.5); g.gain.exponentialRampToValueAtTime(0.001, at + d);
+  o.connect(f); f.connect(g); g.connect(o2); o.start(at); lfo.start(at); o.stop(at + d + 0.05); lfo.stop(at + d + 0.05);
+}
+const DR2 = {   // the drum kit (same loudness as the other videos' drums)
+  k: (t, v) => kick(t, 0.28 * v), s: (t, v) => noise(t, 0.14, 0.12 * v, false),
+  c: (t, v) => { noise(t, 0.1, 0.07 * v, false); noise(t + 0.012, 0.1, 0.05 * v, false); },
+  h: (t, v) => noise(t, 0.04, 0.045 * v, true), o: (t, v) => noise(t, 0.16, 0.035 * v, true), r: (t, v) => noise(t, 0.03, 0.03 * v, true),
+  t: (t, v) => tom(t, 0.18 * v), g: (t, v) => zap(t, 0.018 * v), j: (t, v) => jbNote(96, t, 0.12, 'sine', 0.015 * v),
+};
+function playStep2(v, k, at) {
+  const S = v.song, st = S.step, P = S.secAt[k], sty = S.style[P.s] || {}, ch = S.chAt[k], dv = S.dv || 1;
+  const m = S.mel[k];
+  if (m) {
+    const d = Math.max(1, S.dur[k]) * st;
+    jbNote(m, at, d * S.len, S.wave, S.vol);
+    if (P.dbl) jbNote(m + 12, at + 0.01, d * 0.7, 'triangle', S.vol * 0.6);   // the big last chorus gets a sparkly high copy
+  }
+  if (S.pad && (k === 0 || S.chAt[k - 1].name !== ch.name || k % 8 === 0)) {   // a soft choir-ish pad when the chord changes
+    let n = 1; while (k + n < S.chAt.length && n < 8 && S.chAt[k + n].name === ch.name && (k + n) % 8) n++;
+    ch.tones.slice(0, 3).forEach(q => jbNote(q + 12, at, n * st * 1.1, 'sine', 0.014));
+  }
+  for (let h = 0; h < 2; h++) {   // drums, bass and arpeggio run on 16th notes (2 per step)
+    const j = (k % 8) * 2 + h, t2 = at + h * st / 2;
+    for (const d in DR2) if (sty[d] && sty[d][j] === 'x') DR2[d](t2, dv);
+    if (sty.p && sty.p[j] === 'x') ch.tones.slice(0, 3).forEach(q => jbNote(q + 12, t2, st * 0.7, 'triangle', 0.02));
+    const b = sty.bass && sty.bass[j];
+    if (b && 'RO5'.includes(b)) { let n = 1; while (sty.bass[j + n] === '-') n++; jbNote(ch.root - 12 + (b === 'O' ? 12 : b === '5' ? 7 : 0), t2, n * st / 2 * 0.95, S.bassWave || 'triangle', S.bassVol || 0.08); }
+    const a = sty.arp && sty.arp[j];
+    if (a && '0123'.includes(a)) { const q = a === '3' ? ch.tones[0] + 12 : ch.tones[Math.min(+a, ch.tones.length - 1)]; jbNote(q + 12, t2, st * 0.8, S.arpWave || 'triangle', S.arpVol || 0.028); }
+  }
+  if (S.burpAt[k]) burp(at, S.burpAt[k] > 1);
+}
+// the singing voice (the same young voice the book uses for the Hyper Factory words); it sings each line as it starts
+function youngVoice() {
+  const vs = 'speechSynthesis' in window ? speechSynthesis.getVoices() : [];
+  return vs.find(v => /junior/i.test(v.name)) || vs.find(v => /samantha|google us english|karen|moira|tessa/i.test(v.name)) || vs.find(v => /^en/i.test(v.lang)) || null;
+}
+function voiceStop() { try { if ('speechSynthesis' in window) speechSynthesis.cancel(); } catch (_) {} }
+function voiceWake() { try { if ('speechSynthesis' in window) { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(' ')); } } catch (_) {} }   // the iPad only lets it talk after a tap
+function singLine(v, L, gen) {
+  if (!('speechSynthesis' in window) || mode !== 'player' || !P.playing || gen !== P.gen) return;
+  try {
+    const S = v.song, V = S.voice || {}, u = new SpeechSynthesisUtterance(L.say), yv = youngVoice();
+    if (yv) u.voice = yv;
+    u.pitch = clamp((V.pitch || 1.4) + (L.avg - S.avgNote) / 24, 0.1, 2);
+    u.rate = clamp(L.syls.length / (3.6 * L.secs) * (V.rate || 1), 0.7, 1.6);
+    u.volume = V.vol != null ? V.vol : 0.85;
+    speechSynthesis.cancel(); speechSynthesis.speak(u);
+  } catch (_) {}
+}
 function playStep(v, k, at) {
+  if (v.song.v2) return playStep2(v, k, at);
   const S = v.song, n = S.mel.length, rep = Math.floor(k / n), last = rep === v.reps - 1, stepDur = S.step;
   // the melody, chords and bass: the same math as the book's Jukebox
   const m = S.mel[k % n]; if (m) jbNote(m + (S.shift || 0) + (S.glitch && Math.random() < 0.04 ? 12 : 0), at, stepDur * S.len, S.wave, S.vol || 0.06);
@@ -955,7 +2629,7 @@ function playStep(v, k, at) {
   if (last && m && (rep >= 2 || hyper)) jbNote(m + 12, at + 0.01, stepDur * 0.7, 'triangle', (S.vol || 0.06) * 0.6);
 }
 function playEvent(v, e, at) {
-  if (e.k === 'end') { for (const m of v.endChord || [60, 64, 67, 72]) jbNote(m, at, 1.6, 'triangle', 0.06); kick(at, 0.3); noise(at, 0.5, 0.08, true); }
+  if (e.k === 'end') { const q = v.song.quiet ? 0.4 : 1; for (const m of v.endChord || [60, 64, 67, 72]) jbNote(m, at, 1.6, 'triangle', 0.06 * q); kick(at, 0.3 * q); noise(at, 0.5, 0.08 * q, true); }
   else if (e.k < 0) jbNote(e.k === -1 ? 84 : 79, at, 0.06, 'square', 0.03);
   else playStep(v, e.k, at);
 }
@@ -963,10 +2637,10 @@ function startVideo(i, from = 0) {
   hush();
   P.vi = (i + VIDEOS.length) % VIDEOS.length; const v = VIDEOS[P.vi];
   P.events = buildEvents(v); P.ev = P.events.findIndex(e => e.t >= from - 0.01); if (P.ev < 0) P.ev = P.events.length;
-  P.start = clockNow() - from; P.playing = true; P.done = false; mode = 'player'; sel = P.vi;
-  audio();
+  P.start = clockNow() - from; P.playing = true; P.done = false; mode = 'player'; sel = P.vi; P.gen++;
+  audio(); if (v.song.v2) voiceWake();
 }
-function pauseVideo() { if (!P.playing) return; P.pausedAt = vidT(); P.playing = false; hush(); }
+function pauseVideo() { if (!P.playing) return; P.pausedAt = vidT(); P.playing = false; P.gen++; hush(); }
 function resumeVideo() {
   if (P.done) { startVideo(P.vi); return; }
   if (P.playing) return;
@@ -982,6 +2656,7 @@ function tick() {   // runs 25 times a second: plays the notes a little bit ahea
   while (P.ev < P.events.length && P.events[P.ev].t < t + 0.2) {
     const e = P.events[P.ev++];
     if (a && e.t >= t - 0.06) { try { playEvent(v, e, a.currentTime + Math.max(0, e.t - t)); } catch (_) {} }
+    if (v.song.v2 && e.k >= 0 && v.song.lineStart[e.k] >= 0 && e.t >= t - 0.06) { const L = v.song.lines[v.song.lineStart[e.k]], g = P.gen; setTimeout(() => singLine(v, L, g), Math.max(0, (e.t - t) * 1000 - 60)); }   // 🎤 the voice sings each line
   }
   if (t >= INTRO + v.musicDur) markWatched(v);
   if (t >= v.total) {
@@ -992,7 +2667,8 @@ function tick() {   // runs 25 times a second: plays the notes a little bit ahea
 setInterval(tick, 40);
 
 // ---------- Buttons ----------
-const CARD = i => ({ x: 36 + (i % 4) * 226, y: 84 + Math.floor(i / 4) * 124, w: 210, h: 112 });
+const COLS = 5;   // 5 videos across, 4 rows
+const CARD = i => ({ x: 34 + (i % COLS) * 180, y: 76 + Math.floor(i / COLS) * 92, w: 170, h: 84 });
 const PICK_TOGGLES = () => [
   { x: 36, y: 468, w: 250, h: 58, label: '🎤 Karaoke: ' + (opts.karaoke ? 'ON' : 'OFF'), on: opts.karaoke, act: () => { opts.karaoke = !opts.karaoke; } },
   { x: 300, y: 468, w: 290, h: 58, label: '💃 Dance-Along: ' + (opts.dance ? 'ON' : 'OFF'), on: opts.dance, act: () => { opts.dance = !opts.dance; } },
@@ -1036,19 +2712,20 @@ function drawPicker(t) {
     const c = (v.castAt ? v.castAt(-1, 0) : v.cast).find(q => !q[0].startsWith('kart')) || v.cast[0];
     const hop = on ? Math.abs(Math.sin(t * 5)) * 8 : 0;
     ARM = on ? Math.sin(t * 5) : 0;
-    ctx.save(); ctx.translate(b.x + b.w - 42, b.y + b.h + lift + 2 - hop); ctx.scale(0.5, 0.5); CHAR[c[0]](on ? 'happy' : 'wait'); ctx.restore();
+    ctx.save(); ctx.translate(b.x + b.w - 34, b.y + b.h + lift + 2 - hop); ctx.scale(0.4, 0.4); CHAR[c[0]](on ? 'happy' : 'wait'); ctx.restore();
     ctx.restore();
-    emoji(v.icon, b.x + 32, b.y + 34 + lift, 36);
-    const nm = v.name, size = nm.length > 13 ? 19 : 23;
-    text(nm, b.x + 12, b.y + 80 + lift, size, '#fff', 'left', '#1b1b2f');
-    text(Math.round(v.total) + ' sec', b.x + 60, b.y + 30 + lift, 15, '#fff', 'left', '#1b1b2f');
-    if (watched[v.id]) { dot(b.x + b.w - 18, b.y + 18 + lift, 15, '#00c853'); text('✓', b.x + b.w - 18, b.y + 19 + lift, 20, '#fff', 'center', null); }
-    if (v.isNew) { rr(b.x + b.w - 74, b.y - 10 + lift, 66, 26, 10, '#ffea00', '#1b1b2f', 2); text('NEW!', b.x + b.w - 41, b.y + 3 + lift, 16, '#d50000', 'center', null); }
+    emoji(v.icon, b.x + 24, b.y + 26 + lift, 30);
+    const nm = v.name, size = nm.length > 15 ? 15 : nm.length > 11 ? 17 : 20;
+    text(nm, b.x + 10, b.y + 64 + lift, size, '#fff', 'left', '#1b1b2f');
+    text(Math.round(v.total) + ' sec', b.x + 46, b.y + 24 + lift, 13, '#fff', 'left', '#1b1b2f');
+    if (watched[v.id]) { dot(b.x + b.w - 16, b.y + 30 + lift, 12, '#00c853'); text('✓', b.x + b.w - 16, b.y + 31 + lift, 16, '#fff', 'center', null); }
+    if (v.deluxe) { rr(b.x + b.w - 96, b.y - 10 + lift, 92, 24, 10, '#00e5ff', '#fff', 2); text('💎 DELUXE', b.x + b.w - 50, b.y + 2 + lift, 13, '#fff', 'center', '#880e4f'); }
+    else if (v.isNew || v.fresh) { rr(b.x + b.w - 62, b.y - 10 + lift, 56, 24, 10, '#ffea00', '#1b1b2f', 2); text('NEW!', b.x + b.w - 34, b.y + 2 + lift, 14, '#d50000', 'center', null); }
   });
   PICK_TOGGLES().forEach((b, i) => drawButton(b, sel === VIDEOS.length + i));
   const n = VIDEOS.filter(v => watched[v.id]).length;
   text('🍿 ' + n + '/' + VIDEOS.length, 862, 497, 26, n === VIDEOS.length ? '#ffd740' : '#fff');
-  text('Tap a video to play it!', 480, 452, 16, '#e1bee7', 'center', null);
+  text('Tap a video to play it!', 480, 454, 15, '#e1bee7', 'center', null);
 }
 function drawPlayer() {
   const v = VIDEOS[P.vi];
@@ -1091,10 +2768,10 @@ function keyPress(k) {
   audio();
   if (mode === 'picker') {
     const nT = PICK_TOGGLES().length, nV = VIDEOS.length;
-    if (k === 'ArrowRight') sel = sel < nV ? (sel % 4 === 3 || sel === nV - 1 ? sel : sel + 1) : Math.min(nV + nT - 1, sel + 1);
-    else if (k === 'ArrowLeft') sel = sel < nV ? (sel % 4 === 0 ? sel : sel - 1) : Math.max(nV, sel - 1);
-    else if (k === 'ArrowDown') sel = sel < nV ? (sel + 4 < nV ? sel + 4 : nV + Math.min(nT - 1, Math.floor((sel % 4) * nT / 4))) : sel;
-    else if (k === 'ArrowUp') sel = sel < nV ? (sel - 4 >= 0 ? sel - 4 : sel) : nV - 4 + Math.min(3, Math.round((sel - nV) * 4 / nT));
+    if (k === 'ArrowRight') sel = sel < nV ? (sel % COLS === COLS - 1 || sel === nV - 1 ? sel : sel + 1) : Math.min(nV + nT - 1, sel + 1);
+    else if (k === 'ArrowLeft') sel = sel < nV ? (sel % COLS === 0 ? sel : sel - 1) : Math.max(nV, sel - 1);
+    else if (k === 'ArrowDown') sel = sel < nV ? (sel + COLS < nV ? sel + COLS : nV + Math.min(nT - 1, Math.floor((sel % COLS) * nT / COLS))) : sel;
+    else if (k === 'ArrowUp') sel = sel < nV ? (sel - COLS >= 0 ? sel - COLS : sel) : Math.min(nV - 1, Math.floor((nV - 1) / COLS) * COLS + Math.round((sel - nV) * (COLS - 1) / Math.max(1, nT - 1)));
     else if (k === ' ' || k === 'Enter') { if (sel < nV) startVideo(sel); else PICK_TOGGLES()[sel - nV].act(); }
     else if (k === 'k' || k === 'K') opts.karaoke = !opts.karaoke;
     else if (k === 'd' || k === 'D') opts.dance = !opts.dance;
