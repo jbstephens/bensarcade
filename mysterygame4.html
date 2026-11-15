@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>🦴 Sparks's Bone Dig</title>
+<script>TOUCHPAD = { dpad: true };</script>
+<script src="touchpad.js?v=10"></script>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body { background: #3e2723; display: flex; align-items: center; justify-content: center; overflow: hidden;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  canvas { width: min(100vw, calc(100vh * 960 / 540)); height: auto; display: block; border-radius: 16px; touch-action: none; }
+</style>
+</head>
+<body>
+<canvas id="c" width="960" height="540"></canvas>
+<script>
+// ================= shared bits (helpers, soft sounds, gentle music) =================
+const C = document.getElementById('c'), W = 960, H = 540;
+const ctx = C.getContext('2d');
+let frame = 0, PRINTING = false;
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const rand = (a, b) => a + Math.random() * (b - a);
+const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+function rrect(x, y, w, h, r) {
+  ctx.beginPath();
+  if (Array.isArray(r)) { if (ctx.roundRect) ctx.roundRect(x, y, w, h, r); else ctx.rect(x, y, w, h); return; }
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function roundRect(x, y, w, h, r, fill) { ctx.fillStyle = fill; rrect(x, y, Math.max(0, w), Math.max(0, h), r); ctx.fill(); }
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, 7); ctx.fill(); }
+function ellipse(x, y, rx, ry, fill, rot = 0) { ctx.fillStyle = fill; ctx.beginPath(); ctx.ellipse(x, y, Math.max(0, rx), Math.max(0, ry), rot, 0, 7); ctx.fill(); }
+function heart(x, y, s, fill = '#ff5c8a') {
+  ctx.fillStyle = fill; ctx.beginPath();
+  ctx.moveTo(x, y + s * 0.35);
+  ctx.bezierCurveTo(x - s * 1.1, y - s * 0.4, x - s * 0.45, y - s * 1.05, x, y - s * 0.45);
+  ctx.bezierCurveTo(x + s * 0.45, y - s * 1.05, x + s * 1.1, y - s * 0.4, x, y + s * 0.35);
+  ctx.fill();
+}
+// the same text style as Robo Jump 1: bold, white, dark outline
+function text(str, x, y, size, color = '#fff', align = 'center') {
+  ctx.font = `bold ${size}px "Comic Sans MS", "Chalkboard SE", sans-serif`;
+  ctx.textAlign = align; ctx.textBaseline = 'alphabetic'; ctx.lineJoin = 'round';
+  ctx.lineWidth = size / 5; ctx.strokeStyle = '#1b1b2f'; ctx.strokeText(str, x, y);
+  ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function emoji(str, x, y, size) { ctx.font = `${size}px "Apple Color Emoji", "Segoe UI Emoji", sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#000'; ctx.fillText(str, x, y); }
+function glow(x, y, r, col, a = 1) {
+  r = Math.max(1, r);
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.save(); ctx.globalAlpha = clamp(a, 0, 1); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); ctx.restore();
+}
+function star(x, y, r, fill, rot = 0, pts = 5, inner = 0.48) {
+  ctx.fillStyle = fill; ctx.beginPath();
+  for (let i = 0; i < pts * 2; i++) { const a = -Math.PI / 2 + rot + i * Math.PI / pts, rr = i % 2 ? r * inner : r; ctx.lineTo(x + Math.cos(a) * Math.max(0, rr), y + Math.sin(a) * Math.max(0, rr)); }
+  ctx.closePath(); ctx.fill();
+}
+function drawStar(x, y, r, fill, rot = 0) { star(x, y, r, fill, rot, 5, 0.45); }
+function twinkle(x, y, r, a = 1, col = '#fff8d0') { ctx.save(); ctx.globalAlpha = clamp(a, 0, 1); star(x, y, r, col, 0, 4, 0.25); ctx.restore(); }
+function sky(c1, c2) { const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, c1); g.addColorStop(1, c2); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); }
+function cloud(x, y, s, col = 'rgba(255,255,255,.9)') { for (const [dx, dy, r] of [[-30, 6, 22], [0, -6, 30], [32, 4, 22], [14, 10, 20], [-14, 10, 20]]) circle(x + dx * s, y + dy * s, r * s, col); }
+
+// ---------- 🔈 SOFT sounds (master volume 0.13, fades in; starts on the first tap or key) ----------
+let actx = null, master = null, musicBus = null, musicOn = true;
+function audio() {
+  try {
+    if (!actx) {
+      actx = new (window.AudioContext || window.webkitAudioContext)();
+      master = actx.createGain(); master.gain.setValueAtTime(0.0001, actx.currentTime);
+      master.gain.linearRampToValueAtTime(0.13, actx.currentTime + 1.5); master.connect(actx.destination);
+      musicBus = actx.createGain(); musicBus.gain.value = musicOn ? 0.5 : 0; musicBus.connect(master);
+    }
+    if (actx.state !== 'running') actx.resume();
+  } catch (_) {}
+  return actx;
+}
+function tone(f, when, d, v, type = 'sine', slide = 0, bus) {
+  const a = actx; if (!a || a.state !== 'running') return;
+  const t = Math.max(a.currentTime, when), o = a.createOscillator(), g = a.createGain();
+  o.type = type; o.frequency.setValueAtTime(f, t); if (slide) o.frequency.linearRampToValueAtTime(Math.max(40, f + slide), t + d);
+  g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(v, t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+  o.connect(g); g.connect(bus || master); o.start(t); o.stop(t + d + 0.05);
+}
+function bleep(f, d = 0.12, v = 0.05, delay = 0, type = 'sine', slide = 0) { if (actx) tone(f, actx.currentTime + delay, d, v, type, slide); }
+const SFX = {
+  tap() { bleep(660, 0.08, 0.04); },
+  good() { bleep(784, 0.1, 0.05); bleep(1047, 0.12, 0.04, 0.07); },
+  bonus() { [784, 988, 1175, 1568].forEach((f, i) => bleep(f, 0.12, 0.04, i * 0.06)); },
+  oops() { bleep(330, 0.28, 0.05, 0, 'triangle', -120); },
+  pop() { bleep(700, 0.07, 0.045, 0, 'sine', 500); },
+  dig() { bleep(170, 0.08, 0.05, 0, 'triangle', -50); },
+  start() { [392, 523, 659].forEach((f, i) => bleep(f, 0.14, 0.045, i * 0.1)); },
+  level() { [523, 659, 784, 1047].forEach((f, i) => bleep(f, 0.16, 0.045, i * 0.1)); },
+  win() { [523, 659, 784, 659, 784, 1047].forEach((f, i) => bleep(f, 0.18, 0.045, i * 0.12)); },
+};
+// 🎵 a short catchy loop: TUNE = { bpm, wave, chords: 4 chords (midi), mel: 32 eighth notes (midi, 0 = rest) on the chord tones }
+const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
+let nextNote = 0, step = 0;
+function musicTick() {
+  if (!actx || actx.state !== 'running' || !musicOn) return;
+  const now = actx.currentTime, e = 60 / TUNE.bpm / 2;
+  if (nextNote < now) nextNote = now + 0.05;           // never pile up old notes
+  while (nextNote < now + 0.25) {
+    const ch = TUNE.chords[Math.floor(step / 8) % TUNE.chords.length], m = TUNE.mel[step % TUNE.mel.length];
+    if (m) tone(mtof(m), nextNote, e * 1.7, 0.05, TUNE.wave || 'triangle', 0, musicBus);
+    if (step % 4 === 0) tone(mtof(ch[0] - 12), nextNote, e * 3.5, 0.06, 'sine', 0, musicBus);
+    if (step % 4 === 2) tone(mtof(ch[1]), nextNote, e * 1.5, 0.02, 'sine', 0, musicBus);
+    nextNote += e; step++;
+  }
+}
+setInterval(musicTick, 50);
+function toggleMusic() {
+  musicOn = !musicOn; audio();
+  if (musicBus && actx) { const t = actx.currentTime; musicBus.gain.cancelScheduledValues(t); musicBus.gain.setValueAtTime(musicBus.gain.value, t); musicBus.gain.linearRampToValueAtTime(musicOn ? 0.5 : 0.0001, t + 0.4); }
+}
+// ================= 🦴 SPARKS'S BONE DIG (❓ Mystery Game 4, 💡 Ben's idea!) =================
+// Sparks the robot dog digs down through the dirt to find bones. Gray rocks are too hard to dig.
+// Yellow SAND wiggles and then falls when you dig under it: move out of the way! Find all the bones to win.
+// Level 1 Backyard (bones peek out), Level 2 Sandy Beach (lots of sand, bones only sparkle), Level 3 Dino Dig (dino bones!).
+const TUNE = { bpm: 116, wave: 'triangle',
+  chords: [[55, 59, 62], [60, 64, 67], [57, 60, 64], [62, 66, 69]],
+  mel: [71, 0, 74, 0, 79, 0, 74, 71, 72, 0, 76, 0, 79, 76, 72, 0, 69, 72, 76, 0, 72, 0, 69, 0, 74, 0, 78, 81, 78, 0, 74, 0] };
+const COLS = 16, ROWS = 7, CELL = 60, TOP = 120;
+const LEVELS = [
+  { name: 'Backyard', tip: 'Dig down and find 4 bones! Rocks are too hard to dig.', bones: 4, rocks: 9, sand: 3, peek: 1 },
+  { name: 'Sandy Beach', tip: 'Sand falls when you dig under it! Find 5 bones.', bones: 5, rocks: 7, sand: 16, peek: 0 },
+  { name: 'Dino Dig', tip: 'Dig up 6 dino bones to build a dinosaur!', bones: 6, rocks: 14, sand: 12, peek: 1, dino: 1 },
+];
+let grid = [], found = 0, dog = { cx: 7, cy: -1, px: 7, py: -1, t: 0, face: 1, inv: 0, cool: 0 };
+const cellAt = (x, y) => (x < 0 || x >= COLS || y < 0 || y >= ROWS) ? null : grid[y][x];
+function makeGrid(L) {
+  for (let tries = 0; tries < 200; tries++) {
+    grid = []; for (let y = 0; y < ROWS; y++) { grid.push([]); for (let x = 0; x < COLS; x++) grid[y].push({ k: 'dirt', bone: 0, wob: 0, fall: 0 }); }
+    const spots = []; for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) spots.push([x, y]);
+    spots.sort(() => Math.random() - 0.5);
+    let i = 0;
+    for (let n = 0; n < L.rocks; n++) { const [x, y] = spots[i++]; grid[y][x].k = 'rock'; }
+    for (let n = 0; n < L.sand; n++) { const [x, y] = spots[i++]; if (y < ROWS - 1) grid[y][x].k = 'sand'; }
+    let b = 0; while (b < L.bones && i < spots.length) { const [x, y] = spots[i++]; if (y >= 1 && grid[y][x].k === 'dirt') { grid[y][x].bone = 1; b++; } }
+    // every bone must be reachable from the grass without digging through rock
+    const seen = new Set(), q = []; for (let x = 0; x < COLS; x++) if (grid[0][x].k !== 'rock') { q.push([x, 0]); seen.add(x + ',0'); }
+    while (q.length) { const [x, y] = q.shift(); for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const c = cellAt(x + dx, y + dy); if (c && c.k !== 'rock' && !seen.has((x + dx) + ',' + (y + dy))) { seen.add((x + dx) + ',' + (y + dy)); q.push([x + dx, y + dy]); } } }
+    let ok = b === L.bones; for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) if (grid[y][x].bone && !seen.has(x + ',' + y)) ok = false;
+    if (ok) return;
+  }
+}
+const GAME = {
+  id: 'mgame4', num: 4, name: "Sparks's Bone Dig", color: '#ffd54f', lives: 4,
+  instr: ['⬅️ ⬆️ ⬇️ ➡️ Dig! (or tap next to Sparks)', '🦴 Find all the bones', '⚠️ Wiggly sand falls: move out of the way!'],
+  reset(L) { makeGrid(L); found = 0; Object.assign(dog, { cx: 7, cy: -1, px: 7, py: -1, t: 0, face: 1, inv: 0, cool: 0 }); },
+  hud(L) { return `🦴 ${found} / ${L.bones}`; },
+  key(k) { const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[k]; if (d) tryMove(d[0], d[1]); },
+  tap(x, y) {
+    const dx = x - (dog.cx * CELL + CELL / 2), dy = y - (dog.cy * CELL + TOP + CELL / 2);
+    if (Math.abs(dx) < 20 && Math.abs(dy) < 20) return;
+    if (Math.abs(dx) > Math.abs(dy)) tryMove(Math.sign(dx), 0); else tryMove(0, Math.sign(dy));
+  },
+  update(L) {
+    if (dog.t > 0) dog.t--; if (dog.inv > 0) dog.inv--; if (dog.cool > 0) dog.cool--;
+    if (dog.t === 0 && dog.cool === 0) {                 // holding a key (or a finger) keeps digging
+      if (keys.ArrowLeft) tryMove(-1, 0); else if (keys.ArrowRight) tryMove(1, 0); else if (keys.ArrowUp) tryMove(0, -1); else if (keys.ArrowDown) tryMove(0, 1);
+      else if (pointer.down) GAME.tap(pointer.x, pointer.y);
+    }
+    // sand: wiggles when the space under it is empty, then falls
+    for (let y = ROWS - 2; y >= 0; y--) for (let x = 0; x < COLS; x++) {
+      const c = grid[y][x]; if (c.k !== 'sand') continue;
+      const below = grid[y + 1][x];
+      if (below.k !== 'empty') { c.wob = 0; c.fall = 0; continue; }
+      if (c.fall) { if (++c.fall > 9) { c.fall = 1; moveSand(x, y); } }
+      else if (++c.wob > 90) { c.fall = 1; bleep(260, 0.15, 0.03, 0, 'triangle', -60); }
+    }
+    if (found >= L.bones && dog.t === 0) levelWon();
+  },
+  draw(L, title) {
+    drawDigWorld(L, title);
+    if (title) return;
+    const k = 1 - dog.t / 8, x = (dog.px + (dog.cx - dog.px) * k) * CELL + CELL / 2, y = (dog.py + (dog.cy - dog.py) * k) * CELL + TOP + CELL - 4;
+    if (!(dog.inv > 0 && Math.floor(frame / 5) % 2)) drawSparks(x, y, { s: 1.3, face: dog.face, walk: dog.t > 0, happy: state !== 'play', mouth: state === 'levelDone' });
+    if (L.dino) drawDinoProgress(found, L.bones);
+  },
+  titleArt() {
+    drawSparks(W / 2 - 60, 330, { s: 2.2, face: 1, walk: true });
+    drawBone(W / 2 + 150, 280 + Math.sin(frame * 0.06) * 8, 1.6, false); drawBone(W / 2 - 220, 230 + Math.sin(frame * 0.06 + 2) * 8, 1.2, true);
+  },
+  winArt() { drawSparks(W / 2, 360, { s: 2.4, face: 1, happy: true, mouth: true }); drawDinoProgress(6, 6, W / 2 + 190, 330, 1.1); drawBone(W / 2 - 200, 300, 1.6, false); },
+};
+function tryMove(dx, dy) {
+  if (state !== 'play' || dog.t > 0) return;
+  const nx = dog.cx + dx, ny = dog.cy + dy;
+  if (dx) dog.face = dx;
+  if (nx < 0 || nx >= COLS || ny < -1 || ny >= ROWS) return;
+  if (ny === -1) { go(nx, ny); return; }               // walking on the grass
+  const c = grid[ny][nx];
+  if (c.k === 'rock') { bleep(140, 0.1, 0.03, 0, 'triangle'); dog.cool = 12; popText(nx * CELL + 30, ny * CELL + TOP, 'Too hard!', '#eceff1'); return; }
+  if (c.k === 'sand' && c.fall) return;
+  if (c.k !== 'empty') { SFX.dig(); burst(nx * CELL + 30, ny * CELL + TOP + 30, c.k === 'sand' ? ['#ffe082', '#fff8e1'] : ['#8d6e63', '#a1887f'], 8, 3); c.k = 'empty'; }
+  if (c.bone) { c.bone = 0; found++; SFX.bonus(); popText(nx * CELL + 30, ny * CELL + TOP, LEVELS[level].dino ? 'Dino bone! 🦕' : 'A bone! 🦴', '#fff59d'); burst(nx * CELL + 30, ny * CELL + TOP + 30, ['#fff', '#ffd740'], 16, 4); }
+  go(nx, ny);
+}
+function go(nx, ny) { dog.px = dog.cx; dog.py = dog.cy; dog.cx = nx; dog.cy = ny; dog.t = 8; dog.cool = 2; }
+function moveSand(x, y) {
+  const c = grid[y][x], b = grid[y + 1][x];
+  if (dog.cx === x && dog.cy === y + 1) {               // plop! it lands on Sparks: just a little bonk, and the sand crumbles away
+    c.k = 'empty'; c.fall = 0; c.wob = 0;
+    if (!dog.inv) { loseLife(); dog.inv = 80; popText(x * CELL + 30, (y + 1) * CELL + TOP - 10, 'Plop! Sand!', '#ffe082'); }
+    burst(x * CELL + 30, (y + 1) * CELL + TOP, ['#ffe082', '#fff8e1'], 14, 4); return;
+  }
+  b.k = 'sand'; b.fall = c.fall; b.wob = 0; c.k = 'empty'; c.fall = 0; c.wob = 0;
+}
+GAME.reset(LEVELS[0]);
+// 🐶 SPARKS (he): the comic-book look from sparks.html (long yellow robot dog, purple head-top/ears/back/tail, big window with Charlie & August), via arcaderoom.html
+function drawSparks(x, y, o = {}) {
+  const s = o.s || 1, t = o.t || frame, f = o.face || 1, w = 34, h = 30;
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s); ctx.translate(-w / 2, -h);
+  const run = o.walk ? Math.sin(t * 0.4) * 3 : 0, GL = '#f4b942', GD = '#c98e2a', PU = '#8e5bd6', PD = '#6a3fb5';
+  const bx = -7, bw = w + 14;
+  ellipse(w / 2, h, 26, 3, 'rgba(0,0,0,.2)');
+  if (o.hover) { ctx.fillStyle = '#ffab40'; for (const fx of [7, w - 7]) { const fl = 6 + Math.sin(t * 0.8 + fx) * 4; ctx.beginPath(); ctx.moveTo(fx - 4, h); ctx.lineTo(fx, h + fl); ctx.lineTo(fx + 4, h); ctx.fill(); } }
+  ctx.fillStyle = GD;
+  ctx.fillRect(bx + 6 + run, h - 9, 6, 9); ctx.fillRect(bx + 15 - run, h - 9, 6, 9);
+  ctx.fillRect(bx + bw - 21 - run, h - 9, 6, 9); ctx.fillRect(bx + bw - 12 + run, h - 9, 6, 9);
+  const back = f > 0 ? bx + 3 : bx + bw - 3;
+  ctx.strokeStyle = PD; ctx.lineWidth = 5; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(back, h * 0.4); ctx.lineTo(back - f * 9, h * 0.1 + Math.sin(t * (o.happy ? 0.9 : 0.4)) * 4); ctx.stroke();
+  roundRect(bx, h * 0.26, bw, h * 0.52, 9, GL);
+  ctx.save(); rrect(bx, h * 0.26, bw, h * 0.52, 9); ctx.clip(); ctx.fillStyle = PU; ctx.fillRect(bx, h * 0.26, bw, h * 0.15); ctx.restore();
+  const wx = bx + bw / 2 - f * 9, wy = h * 0.55;
+  ellipse(wx, wy, 11.5, 8.5, '#263238'); ellipse(wx, wy, 10, 7, '#b3e5fc');
+  for (const [cx, col] of [[wx - 4.5, '#ff9800'], [wx + 4.5, '#9e9e9e']]) {             // Charlie (orange) + August (gray)
+    ctx.fillStyle = col; ctx.beginPath(); ctx.arc(cx, wy + 2, 3.8, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(cx - 3.6, wy + 0.5); ctx.lineTo(cx - 2.8, wy - 4); ctx.lineTo(cx - 0.6, wy - 1); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(cx + 3.6, wy + 0.5); ctx.lineTo(cx + 2.8, wy - 4); ctx.lineTo(cx + 0.6, wy - 1); ctx.fill();
+    ctx.fillStyle = '#000'; ctx.fillRect(cx - 2, wy + 1.2, 1.2, 1.4); ctx.fillRect(cx + 0.8, wy + 1.2, 1.2, 1.4);
+  }
+  ctx.fillStyle = 'rgba(255,255,255,.6)'; ctx.fillRect(wx - 7, wy - 5, 4, 1.5);
+  const hx = f > 0 ? bx + bw - 14 : bx + 14;
+  roundRect(hx - 11, -1, 22, 19, 7, GL); roundRect(hx - 2 + f * 6 - (f < 0 ? 8 : 0), 8, 12, 9, 4, GL);
+  ctx.save(); rrect(hx - 11, -1, 22, 19, 7); ctx.clip(); ctx.fillStyle = PU; ctx.fillRect(hx - 11, -1, 22, 8); ctx.restore();
+  circle(hx + f * 2, 7, 3.2, '#fff'); circle(hx + f * 2.8, 7, 1.9, '#000'); circle(hx + f * 13, 10, 3, '#000');
+  if (o.mouth) ellipse(hx + f * 8, 16, 3, 2 + Math.sin(t * 0.5), '#5d1a1a');
+  ctx.fillStyle = PD; ctx.beginPath(); ctx.ellipse(hx - f * 6, 7, 4.2, 10.5, f * 0.25, 0, 7); ctx.fill();
+  ctx.restore();
+}
+// ---------- 🎨 drawing ----------
+const DIG_PAL = {
+  'Backyard': { dirt: '#8d5a3b', dot: '#6d4127', hole: '#3b2216', rock: '#9e9e9e', sand: '#f2d27a', sky: ['#81d4fa', '#e1f5fe'], grass: '#66bb6a' },
+  'Sandy Beach': { dirt: '#c9a26b', dot: '#a9844f', hole: '#5e4325', rock: '#a1a1a8', sand: '#ffe9a8', sky: ['#4fc3f7', '#e0f7fa'], grass: '#ffe082' },
+  'Dino Dig': { dirt: '#c1693c', dot: '#9c4f28', hole: '#4e2412', rock: '#8a7f78', sand: '#f6cf7e', sky: ['#ffb74d', '#ffe0b2'], grass: '#d7a35f' },
+};
+function drawBone(x, y, s, dino, a = 1) {
+  ctx.save(); ctx.globalAlpha = a; ctx.translate(x, y); ctx.scale(s, s); ctx.rotate(-0.35);
+  const col = dino ? '#fff3d6' : '#ffffff', edge = dino ? '#a1887f' : '#bdbdbd';
+  ctx.fillStyle = edge; rrect(-17, -5.5, 34, 11, 4); ctx.fill();
+  for (const ex of [-17, 17]) for (const ey of [-5, 5]) circle(ex, ey, 7.5, edge);
+  ctx.fillStyle = col; rrect(-16, -4, 32, 8, 3); ctx.fill();
+  for (const ex of [-17, 17]) for (const ey of [-5, 5]) circle(ex, ey, 6, col);
+  if (dino) { ctx.strokeStyle = '#bcaaa4'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(-6, -2); ctx.lineTo(6, 2); ctx.stroke(); }
+  ctx.restore();
+}
+function drawCell(x, y, c, P, L) {
+  const px = x * CELL, py = y * CELL + TOP;
+  if (c.k === 'empty') { ctx.fillStyle = P.hole; ctx.fillRect(px, py, CELL, CELL); return; }
+  ctx.fillStyle = P.dirt; ctx.fillRect(px, py, CELL, CELL);
+  for (let i = 0; i < 4; i++) circle(px + ((x * 37 + y * 23 + i * 17) % 50) + 5, py + ((x * 13 + y * 41 + i * 29) % 50) + 5, 3, P.dot);
+  if (L.dino && y % 2) { ctx.fillStyle = 'rgba(255,255,255,.07)'; ctx.fillRect(px, py + 20, CELL, 10); }
+  if (c.bone) {
+    if (L.peek) drawBone(px + 30, py + 32, 0.9, L.dino, 0.55);
+    else if ((frame + x * 31 + y * 17) % 90 < 30) twinkle(px + 30, py + 30, 10, 1 - ((frame + x * 31 + y * 17) % 90) / 30, '#fffde7');
+  }
+  if (c.k === 'rock') {
+    ctx.fillStyle = P.dirt; ctx.fillRect(px, py, CELL, CELL);
+    ellipse(px + 30, py + 32, 27, 24, P.rock); ellipse(px + 22, py + 22, 10, 6, 'rgba(255,255,255,.3)', -0.4);
+    circle(px + 38, py + 40, 4, 'rgba(0,0,0,.15)'); circle(px + 20, py + 42, 3, 'rgba(0,0,0,.15)');
+  } else if (c.k === 'sand') {
+    const sh = c.wob > 0 && !c.fall ? Math.sin(frame * 0.9) * 3 : 0;
+    ctx.fillStyle = P.hole; ctx.fillRect(px, py, CELL, CELL);
+    roundRect(px + 2 + sh, py + 2, CELL - 4, CELL - 4, 10, P.sand);
+    for (let i = 0; i < 6; i++) circle(px + sh + 10 + (i * 19) % 40, py + 12 + (i * 23) % 38, 2.5, 'rgba(180,140,60,.45)');
+    if (c.wob > 0 && !c.fall) text('!', px + 30, py + 42, 34, '#ff7043');
+  }
+}
+function drawDigWorld(L, title) {
+  const P = DIG_PAL[L.name];
+  sky(P.sky[0], P.sky[1]);
+  if (L.name === 'Backyard') {
+    for (let i = 0; i < 3; i++) cloud(((i * 340 + frame * 0.3) % (W + 200)) - 100, 40 + i * 12, 0.6);
+    ctx.fillStyle = '#fff8e1'; for (let x = 0; x < W; x += 30) { ctx.fillRect(x + 6, 72, 16, 48); ctx.beginPath(); ctx.moveTo(x + 6, 72); ctx.lineTo(x + 14, 62); ctx.lineTo(x + 22, 72); ctx.fill(); }
+    ctx.fillRect(0, 86, W, 6);
+    roundRect(830, 66, 90, 54, 4, '#e53935'); ctx.fillStyle = '#8e24aa'; ctx.beginPath(); ctx.moveTo(820, 70); ctx.lineTo(875, 36); ctx.lineTo(930, 70); ctx.fill();
+    roundRect(860, 86, 30, 34, [15, 15, 0, 0], '#3e2723'); text('SPARKS', 875, 82, 12, '#fff');
+  } else if (L.name === 'Sandy Beach') {
+    ctx.fillStyle = '#29b6f6'; ctx.fillRect(0, 84, W, 20);
+    ctx.strokeStyle = '#e1f5fe'; ctx.lineWidth = 3; ctx.beginPath(); for (let x = 0; x <= W; x += 20) ctx.lineTo(x, 86 + Math.sin(x * 0.05 + frame * 0.05) * 3); ctx.stroke();
+    circle(860, 46, 26, '#fff59d');
+    ctx.strokeStyle = '#6d4c41'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(760, 120); ctx.lineTo(760, 66); ctx.stroke();
+    ctx.fillStyle = '#ff5252'; ctx.beginPath(); ctx.arc(760, 70, 46, Math.PI, 0); ctx.fill();
+    ctx.fillStyle = '#fff'; for (const a of [-2.6, -1.57, -0.55]) { ctx.beginPath(); ctx.moveTo(760, 70); ctx.arc(760, 70, 46, a - 0.25, a + 0.25); ctx.fill(); }
+  } else {
+    ctx.fillStyle = '#e0955a'; ctx.beginPath(); ctx.moveTo(380, 120); ctx.lineTo(420, 64); ctx.lineTo(520, 64); ctx.lineTo(560, 120); ctx.fill();
+    ctx.fillStyle = '#43a047'; roundRect(860, 62, 16, 58, 8, '#43a047'); roundRect(844, 78, 10, 24, 5, '#43a047'); roundRect(844, 96, 18, 8, 4, '#43a047'); roundRect(882, 70, 10, 22, 5, '#43a047');
+    roundRect(700, 74, 120, 34, 6, '#795548'); text('DINO DIG', 760, 99, 18, '#ffe0b2');
+  }
+  ctx.fillStyle = P.grass; ctx.fillRect(0, TOP - 8, W, 8);
+  for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) drawCell(x, y, grid[y][x], P, L);
+  ctx.fillStyle = '#3e2723'; ctx.fillRect(0, TOP + ROWS * CELL, W, H);
+}
+function drawDinoProgress(n, total, x = 590, y = 58, s = 0.75) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s); ctx.lineCap = 'round';
+  roundRect(-90, -50, 180, 96, 16, 'rgba(62,39,35,.55)');
+  const parts = [
+    () => { ctx.beginPath(); ctx.ellipse(58, -24, 14, 9, 0.2, 0, 7); ctx.stroke(); },
+    () => { ctx.beginPath(); ctx.moveTo(36, -2); ctx.quadraticCurveTo(46, -10, 50, -20); ctx.stroke(); },
+    () => { ctx.beginPath(); ctx.ellipse(8, 2, 30, 14, 0, Math.PI, 0); ctx.stroke(); for (let i = -2; i <= 2; i++) { ctx.beginPath(); ctx.moveTo(8 + i * 10, -8); ctx.lineTo(8 + i * 10, 10); ctx.stroke(); } },
+    () => { ctx.beginPath(); ctx.moveTo(-22, 2); ctx.quadraticCurveTo(-50, 0, -72, -16); ctx.stroke(); },
+    () => { ctx.beginPath(); ctx.moveTo(26, 6); ctx.lineTo(28, 34); ctx.lineTo(36, 34); ctx.stroke(); },
+    () => { ctx.beginPath(); ctx.moveTo(-10, 6); ctx.lineTo(-12, 34); ctx.lineTo(-4, 34); ctx.stroke(); },
+  ];
+  parts.forEach((p, i) => {
+    const on = i < Math.round(n / total * parts.length);
+    ctx.strokeStyle = on ? '#fff8e1' : 'rgba(255,255,255,.25)'; ctx.lineWidth = on ? 6 : 4; ctx.setLineDash(on ? [] : [5, 6]); p();
+  });
+  ctx.setLineDash([]);
+  if (n >= total) { circle(62, -26, 3, '#3e2723'); }
+  ctx.restore();
+}
+// ---------- ✨ sparkles, pop-up words and confetti ----------
+let parts = [], confetti = [];
+function burst(x, y, cols, n = 12, sp = 4) { for (let i = 0; i < n; i++) { const a = Math.random() * 7, v = rand(1, sp); parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 1, life: rand(25, 45), max: 45, r: rand(3, 6), col: pick(cols) }); } }
+function popText(x, y, str, col = '#fff') { parts.push({ x, y, vx: 0, vy: -1.2, life: 55, max: 55, str, col }); }
+function makeConfetti(n = 160) { for (let i = 0; i < n; i++) confetti.push({ x: rand(0, W), y: rand(-H, 0), vx: rand(-1, 1), vy: rand(1.5, 3.5), a: rand(0, 7), va: rand(-0.2, 0.2), col: pick(['#ff5c8a', '#ffd740', '#69f0ae', '#40c4ff', '#b388ff', '#ff9e40']) }); }
+function updateParts() {
+  for (const p of parts) { p.x += p.vx; p.y += p.vy; if (!p.str) p.vy += 0.12; p.life--; }
+  parts = parts.filter(p => p.life > 0);
+  for (const c of confetti) { c.x += c.vx + Math.sin(frame * 0.05 + c.a) * 0.6; c.y += c.vy; c.a += c.va; if (c.y > H + 20) { c.y = -10; c.x = rand(0, W); } }
+}
+function drawParts() {
+  for (const p of parts) {
+    ctx.save(); ctx.globalAlpha = clamp(p.life / 25, 0, 1);
+    if (p.str) text(p.str, p.x, p.y, 26, p.col); else circle(p.x, p.y, p.r, p.col);
+    ctx.restore();
+  }
+}
+function drawConfetti() { for (const c of confetti) { ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(c.a); ctx.fillStyle = c.col; ctx.fillRect(-6, -3, 12, 6); ctx.restore(); } }
+
+// ---------- 🎮 keys, taps and the game flow ----------
+const keys = {};
+const pointer = { x: W / 2, y: H / 2, down: false };
+const MUSIC_BTN = { x: W - 64, y: H - 60, w: 52, h: 48 };
+let state = 'title', level = 0, lives = 3, timer = 0, hurtFlash = 0;
+const inBox = (p, b) => p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
+function toCanvas(e) { const r = C.getBoundingClientRect(); return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height }; }
+addEventListener('keydown', e => {
+  const k = e.key;
+  if (k === ' ' || k.startsWith('Arrow')) e.preventDefault();
+  audio(); keys[k] = true;
+  if (e.repeat) return;
+  if (k === 'm' || k === 'M') { toggleMusic(); return; }
+  if (state === 'play') { if (GAME.key) GAME.key(k); }
+  else if (k === 'Enter' || k === ' ') press();
+});
+addEventListener('keyup', e => { keys[e.key] = false; });
+C.addEventListener('mousedown', e => {
+  audio(); const p = toCanvas(e); pointer.x = p.x; pointer.y = p.y; pointer.down = true;
+  if (inBox(p, MUSIC_BTN)) { toggleMusic(); return; }
+  if (state === 'play') { if (GAME.tap) GAME.tap(p.x, p.y); } else press();
+});
+addEventListener('mousemove', e => { const p = toCanvas(e); pointer.x = p.x; pointer.y = p.y; });
+addEventListener('mouseup', () => { pointer.down = false; });
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; pointer.down = false; });
+function press() {
+  if (state === 'title') { SFX.start(); level = 0; startLevel(); }
+  else if (state === 'intro' && timer > 25) state = 'play';
+  else if (state === 'levelDone' && timer > 45) { level++; startLevel(); }
+  else if (state === 'fail' && timer > 40) startLevel();
+  else if (state === 'win' && timer > 120) { state = 'title'; timer = 0; confetti = []; }
+}
+function startLevel() { state = 'intro'; timer = 0; lives = GAME.lives; parts = []; hurtFlash = 0; GAME.reset(LEVELS[level]); }
+function levelWon() {
+  if (level >= LEVELS.length - 1) { state = 'win'; timer = 0; makeConfetti(); SFX.win(); trophy(GAME.id); }
+  else { state = 'levelDone'; timer = 0; SFX.level(); burst(W / 2, H / 2, ['#ffd740', '#69f0ae', '#ff80ab'], 30, 6); }
+}
+function loseLife() {                                  // forgiving: a little "oops", and the level restarts only when all hearts are gone
+  lives--; hurtFlash = 30; SFX.oops();
+  if (lives <= 0) { state = 'fail'; timer = 0; }
+}
+
+// ---------- 🖼️ screens ----------
+function panel(x, y, w, h, col = 'rgba(20,16,50,.78)') { roundRect(x, y, w, h, 24, col); ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 4; rrect(x, y, w, h, 24); ctx.stroke(); }
+function drawHUD() {
+  const L = LEVELS[level];
+  text(`Level ${level + 1}: ${L.name}`, 20, 42, 28, '#fff', 'left');
+  if (GAME.hud) text(GAME.hud(L), 20, 78, 24, '#ffe57f', 'left');
+  for (let i = 0; i < GAME.lives; i++) heart(W - 36 - i * 40, 34, 17, i < lives ? '#ff4f81' : 'rgba(255,255,255,.3)');
+}
+function drawMusicBtn() { roundRect(MUSIC_BTN.x, MUSIC_BTN.y, MUSIC_BTN.w, MUSIC_BTN.h, 14, 'rgba(0,0,0,.35)'); emoji(musicOn ? '🎵' : '🔇', MUSIC_BTN.x + 26, MUSIC_BTN.y + 25, 26); }
+function drawTitle() {
+  GAME.draw(LEVELS[0], true);
+  ctx.fillStyle = 'rgba(10,8,30,.35)'; ctx.fillRect(0, 0, W, H);
+  panel(130, 22, 700, 496);
+  text(`❓ Mystery Game ${GAME.num}`, W / 2, 72, 30, '#ffd740');
+  const bob = Math.sin(frame * 0.06) * 4;
+  text(GAME.name, W / 2, 128 + bob, 50, GAME.color || '#7df9ff');
+  GAME.titleArt();
+  GAME.instr.forEach((s, i) => text(s, W / 2, 380 + i * 34, 23, '#fff'));
+  if (Math.floor(frame / 30) % 2 === 0) text('Tap, press SPACE or START to play!', W / 2, 496, 26, '#69f0ae');
+}
+function drawOverlays() {
+  const L = LEVELS[level];
+  if (state === 'intro') {
+    const s = Math.min(1, timer / 15);
+    ctx.save(); ctx.globalAlpha = s; panel(W / 2 - 300, 170, 600, 190);
+    text(`Level ${level + 1}`, W / 2, 228, 34, '#ffd740'); text(L.name, W / 2, 284, 52, '#fff'); text(L.tip, W / 2, 334, 24, '#b9f6ca');
+    ctx.restore();
+  } else if (state === 'levelDone') {
+    panel(W / 2 - 300, 170, 600, 200);
+    text(pick2(['Great job! ⭐', 'Super! 🌟', 'Hooray! 🎉'], level), W / 2, 240, 56, '#ffd740');
+    text(`You beat ${L.name}!`, W / 2, 292, 30);
+    if (timer > 45) text('Tap or press SPACE for the next level', W / 2, 342, 24, '#69f0ae');
+  } else if (state === 'fail') {
+    panel(W / 2 - 300, 170, 600, 200);
+    text('Oops! 💛', W / 2, 240, 56, '#ffd740'); text("That's OK! Let's try this level again.", W / 2, 292, 28);
+    if (timer > 40) text('Tap or press SPACE to try again', W / 2, 342, 24, '#69f0ae');
+  } else if (state === 'win') {
+    ctx.fillStyle = 'rgba(10,8,30,.45)'; ctx.fillRect(0, 0, W, H);
+    panel(W / 2 - 330, 90, 660, 360, 'rgba(20,16,50,.93)'); drawConfetti();
+    text('YOU DID IT! 🏆', W / 2, 168, 64, '#ffd740'); text(`You beat all 3 levels of ${GAME.name}!`, W / 2, 222, GAME.name.length > 20 ? 21 : 26);
+    if (GAME.winArt) GAME.winArt();
+    text('🏆 You won a new trophy for the Trophy Room!', W / 2, 404, 24, '#69f0ae');
+    if (timer > 120) text('Tap to play again', W / 2, 436, 20, '#fff');
+  }
+}
+const pick2 = (arr, i) => arr[i % arr.length];
+function update() {
+  frame++; timer++;
+  if (state === 'intro' && timer > 110) state = 'play';
+  if (state === 'play') GAME.update(LEVELS[level]);
+  else if (GAME.idle) GAME.idle(LEVELS[level]);
+  if (hurtFlash > 0) hurtFlash--;
+  updateParts();
+}
+function draw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  if (state === 'title') drawTitle();
+  else {
+    GAME.draw(LEVELS[level], false); drawParts();
+    if (hurtFlash > 0) { ctx.fillStyle = `rgba(255,120,150,${hurtFlash / 120})`; ctx.fillRect(0, 0, W, H); }
+    drawHUD(); drawOverlays();
+  }
+  drawMusicBtn();
+}
+let last = performance.now(), acc = 0;
+function loop(now) {
+  acc += Math.min(100, now - last); last = now;
+  while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; }
+  draw(); requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

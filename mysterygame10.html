@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>❓ Mystery Game 10: Rocky &amp; Mimo's Mouse Hunt</title>
+<script>TOUCHPAD = { dpad: true, south: [' ', 'LOOK'] };</script><script src="touchpad.js?v=10"></script>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body { background: #120a2a; display: flex; align-items: center; justify-content: center; overflow: hidden;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  canvas { width: min(100vw, calc(100vh * 960 / 540)); height: auto; display: block; border-radius: 16px; touch-action: none; }
+</style>
+</head>
+<body>
+<canvas id="c" width="960" height="540"></canvas>
+<script>
+// ===== ❓ MYSTERY GAME shared bits: drawing helpers, soft sounds, gentle music, screens (title / level / win) =====
+const C = document.getElementById('c'), W = 960, H = 540;
+let ctx = C.getContext('2d');
+let frame = 0;
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const rand = (a, b) => a + Math.random() * (b - a);
+const pick = a => a[Math.floor(Math.random() * a.length)];
+function rrect(x, y, w, h, r) {
+  ctx.beginPath(); r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function roundRect(x, y, w, h, r, fill) { ctx.fillStyle = fill; rrect(x, y, Math.max(0, w), Math.max(0, h), r); ctx.fill(); }
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, 7); ctx.fill(); }
+function ellipse(x, y, rx, ry, fill, rot = 0) { ctx.fillStyle = fill; ctx.beginPath(); ctx.ellipse(x, y, Math.max(0, rx), Math.max(0, ry), rot, 0, 7); ctx.fill(); }
+const el = ellipse;
+function heart(x, y, s, fill = '#ff5c8a') {
+  ctx.fillStyle = fill; ctx.beginPath(); ctx.moveTo(x, y + s * 0.35);
+  ctx.bezierCurveTo(x - s * 1.1, y - s * 0.4, x - s * 0.45, y - s * 1.05, x, y - s * 0.45);
+  ctx.bezierCurveTo(x + s * 0.45, y - s * 1.05, x + s * 1.1, y - s * 0.4, x, y + s * 0.35); ctx.fill();
+}
+function star(x, y, r, fill, rot = 0, pts = 5, inner = 0.48) {
+  ctx.fillStyle = fill; ctx.beginPath();
+  for (let i = 0; i < pts * 2; i++) { const a = -Math.PI / 2 + rot + i * Math.PI / pts, rr = i % 2 ? r * inner : r; ctx.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); }
+  ctx.closePath(); ctx.fill();
+}
+function glow(x, y, r, col, a = 1) {
+  r = Math.max(1, r); const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.save(); ctx.globalAlpha = clamp(a, 0, 1); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); ctx.restore();
+}
+// big friendly words with a dark outline (same style as Robo Jump 1)
+function text(str, x, y, size, color = '#fff', align = 'center') {
+  ctx.font = `bold ${size}px "Comic Sans MS", "Chalkboard SE", sans-serif`;
+  ctx.textAlign = align; ctx.textBaseline = 'alphabetic'; ctx.lineJoin = 'round';
+  ctx.lineWidth = size / 5; ctx.strokeStyle = '#1b1b2f'; ctx.strokeText(str, x, y);
+  ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function emoji(str, x, y, size) { ctx.font = `${size}px "Apple Color Emoji", "Segoe UI Emoji", sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#000'; ctx.fillText(str, x, y); }
+function bubble(str, x, y, size = 22) {               // a white speech bubble pointing down at (x, y)
+  ctx.font = `bold ${size}px "Comic Sans MS", "Chalkboard SE", sans-serif`;
+  const w = ctx.measureText(str).width + 30, h = size + 22, bx = clamp(x - w / 2, 8, W - w - 8), by = y - h - 14;
+  roundRect(bx, by, w, h, 14, '#fff');
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(x - 10, by + h - 1); ctx.lineTo(x, y); ctx.lineTo(x + 10, by + h - 1); ctx.fill();
+  ctx.fillStyle = '#3a2a5a'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(str, bx + w / 2, by + h / 2 + 1);
+}
+// ---------- 🔈 SOFT sounds (master volume 0.15, fades in gently) ----------
+let actx = null, master = null, musicBus = null, musicOn = true;
+function audio() {
+  try {
+    if (!actx) {
+      actx = new (window.AudioContext || window.webkitAudioContext)();
+      master = actx.createGain(); master.gain.setValueAtTime(0.0001, actx.currentTime); master.gain.linearRampToValueAtTime(0.15, actx.currentTime + 1.2);
+      master.connect(actx.destination);
+      musicBus = actx.createGain(); musicBus.gain.value = musicOn ? 0.6 : 0; musicBus.connect(master);
+    }
+    if (actx.state !== 'running') actx.resume();
+  } catch (_) {}
+  return actx;
+}
+function tone(f, d = 0.12, v = 0.05, when = 0, type = 'sine', slide = 0, bus) {
+  if (!actx || actx.state !== 'running') return;
+  const t = actx.currentTime + when, o = actx.createOscillator(), g = actx.createGain();
+  o.type = type; o.frequency.setValueAtTime(f, t); if (slide) o.frequency.linearRampToValueAtTime(Math.max(40, f + slide), t + d);
+  g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(v, t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+  o.connect(g); g.connect(bus || master); o.start(t); o.stop(t + d + 0.05);
+}
+const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
+const SFX = {
+  tap() { tone(700, 0.08, 0.05, 0, 'triangle'); },
+  good() { tone(784, 0.12, 0.06, 0, 'triangle'); tone(1175, 0.16, 0.05, 0.08, 'triangle'); },
+  oops() { tone(330, 0.25, 0.06, 0, 'sine', -90); },
+  pop() { tone(500, 0.1, 0.06, 0, 'sine', 300); },
+  thud() { tone(160, 0.18, 0.08, 0, 'sine', -40); },
+  level() { [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.22, 0.05, i * 0.12, 'triangle')); },
+  win() { [523, 659, 784, 1047, 784, 1047, 1319].forEach((f, i) => tone(f, 0.25, 0.05, i * 0.13, 'triangle')); },
+  note(m) { tone(mtof(m), 0.5, 0.06, 0, 'sine'); tone(mtof(m + 12), 0.3, 0.015, 0, 'triangle'); },
+};
+// ---------- 🎵 gentle music loop: TUNE = { bpm, chords: [[root, third, fifth] per bar], melody: [MIDI per 8th note, 0 = rest] } ----------
+let musStep = 0, musNext = 0;
+function musicTick() {
+  if (!actx || actx.state !== 'running' || typeof TUNE === 'undefined') return;
+  const e8 = 30 / TUNE.bpm, now = actx.currentTime;
+  if (musNext < now) musNext = now + 0.08;
+  while (musNext < now + 0.35) {
+    const i = musStep % TUNE.melody.length, m = TUNE.melody[i], ch = TUNE.chords[Math.floor(i / 8) % TUNE.chords.length];
+    if (m) tone(mtof(m), e8 * 1.6, 0.05, musNext - now, 'triangle', 0, musicBus);
+    if (i % 4 === 0) tone(mtof(ch[0] - 24), e8 * 3.6, 0.07, musNext - now, 'sine', 0, musicBus);
+    if (i % 2 === 1) tone(mtof(ch[1 + (i >> 1) % 2] - 12), e8 * 0.9, 0.018, musNext - now, 'sine', 0, musicBus);
+    musStep++; musNext += e8;
+  }
+}
+setInterval(musicTick, 90);
+function toggleMusic() {
+  musicOn = !musicOn; audio();
+  if (musicBus) { const t = actx.currentTime; musicBus.gain.cancelScheduledValues(t); musicBus.gain.setValueAtTime(musicBus.gain.value, t); musicBus.gain.linearRampToValueAtTime(musicOn ? 0.6 : 0, t + 0.6); }
+}
+// ---------- 🎉 confetti + sparkles ----------
+const parts = [];
+const CONF = ['#ff5c8a', '#ffd740', '#69f0ae', '#40c4ff', '#b388ff', '#ff9e40'];
+function burst(x, y, n = 20, cols = CONF, spd = 5) {
+  for (let i = 0; i < n; i++) { const a = rand(0, Math.PI * 2), v = rand(1, spd); parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 2, c: pick(cols), r: rand(3, 6), life: rand(40, 70), rot: rand(0, 6), g: 0.15 }); }
+}
+function confettiRain(n = 3) { for (let i = 0; i < n; i++) parts.push({ x: rand(0, W), y: -10, vx: rand(-1, 1), vy: rand(1.5, 3.5), c: pick(CONF), r: rand(4, 7), life: 260, rot: rand(0, 6), g: 0.02 }); }
+function updateParts() {
+  for (let i = parts.length - 1; i >= 0; i--) { const p = parts[i]; p.x += p.vx; p.y += p.vy; p.vy += p.g; p.rot += 0.1; if (--p.life <= 0 || p.y > H + 20) parts.splice(i, 1); }
+}
+function drawParts() {
+  for (const p of parts) { ctx.save(); ctx.globalAlpha = clamp(p.life / 30, 0, 1); ctx.translate(p.x, p.y); ctx.rotate(p.rot); ctx.fillStyle = p.c; ctx.fillRect(-p.r, -p.r / 2, p.r * 2, p.r); ctx.restore(); }
+}
+// ---------- 🎮 game flow: title -> level card -> play -> level done -> ... -> win (hearts lost = try THIS level again) ----------
+let state = 'title', level = 0, hearts = 3, stateT = 0, hurtT = 0;
+const keys = {}, mouse = { x: 0, y: 0, down: false };
+const MUSIC_BTN = { x: W - 62, y: H - 58, w: 50, h: 46 };
+function setState(s) { state = s; stateT = 0; }
+function startLevel(i) { level = i; hearts = GAME.hearts || 3; hurtT = 0; parts.length = 0; GAME.start(i); setState('card'); }
+function levelWin() {
+  if (state !== 'play') return;
+  if (level >= 2) { setState('win'); SFX.win(); burst(W / 2, H / 2, 80); trophy('mgame' + GAME.n); }
+  else { setState('done'); SFX.level(); burst(W / 2, 200, 50); }
+}
+function loseHeart() {                                // returns true if the level has to start again
+  if (state !== 'play') return false;
+  hearts--; hurtT = 50; SFX.oops();
+  if (hearts <= 0) { setState('fail'); return true; }
+  return false;
+}
+const GO = k => k === 'Enter' || k === ' ';
+function press(k) {
+  if (k === 'm' || k === 'M') { toggleMusic(); return; }
+  if (state === 'title') { if (GO(k)) startLevel(0); return; }
+  if (state === 'card') { if (GO(k) && stateT > 25) setState('play'); return; }
+  if (state === 'done') { if (GO(k) && stateT > 40) startLevel(level + 1); return; }
+  if (state === 'fail') { if (GO(k) && stateT > 40) startLevel(level); return; }
+  if (state === 'win') { if (GO(k) && stateT > 120) setState('title'); return; }
+  if (state === 'play' && GAME.key) GAME.key(k);
+}
+addEventListener('keydown', e => {
+  audio(); const k = e.key;
+  if ([' ', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(k)) e.preventDefault();
+  if (keys[k]) return; keys[k] = true; press(k);
+});
+addEventListener('keyup', e => { keys[e.key] = false; });
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+function canvasPos(e) { const r = C.getBoundingClientRect(); return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height }; }
+const inBox = (p, b) => p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
+C.addEventListener('mousedown', e => {
+  audio(); const p = canvasPos(e); mouse.x = p.x; mouse.y = p.y; mouse.down = true;
+  if (inBox(p, MUSIC_BTN)) { toggleMusic(); return; }
+  if (state === 'play') { if (GAME.tap) GAME.tap(p.x, p.y); } else press('Enter');
+});
+addEventListener('mousemove', e => { const p = canvasPos(e); mouse.x = p.x; mouse.y = p.y; if (mouse.down && state === 'play' && GAME.drag) GAME.drag(p.x, p.y); });
+addEventListener('mouseup', () => { if (mouse.down && GAME.release) GAME.release(); mouse.down = false; });
+// ---------- screens ----------
+function panel(x, y, w, h, col = 'rgba(20,10,50,.72)') { roundRect(x, y, w, h, 22, col); ctx.strokeStyle = 'rgba(255,255,255,.5)'; ctx.lineWidth = 3; rrect(x, y, w, h, 22); ctx.stroke(); }
+function drawHUD() {
+  const L = GAME.levels[level];
+  text(`Level ${level + 1}: ${L.name}`, 20, 42, 28, '#fff', 'left');
+  if (!GAME.noHearts) for (let i = 0; i < (GAME.hearts || 3); i++) {
+    const s = i === hearts && hurtT > 0 ? 1 + hurtT / 50 : 1;
+    heart(W - 34 - i * 40, 32, 16 * s, i < hearts ? '#ff4f7b' : 'rgba(255,255,255,.3)');
+  }
+  if (hurtT > 0) hurtT--;
+}
+function drawMusicBtn() {
+  roundRect(MUSIC_BTN.x, MUSIC_BTN.y, MUSIC_BTN.w, MUSIC_BTN.h, 14, 'rgba(0,0,0,.35)');
+  emoji(musicOn ? '🎵' : '🔇', MUSIC_BTN.x + 25, MUSIC_BTN.y + 24, 26);
+}
+function drawTitle() {
+  GAME.drawTitle();
+  ctx.fillStyle = 'rgba(10,5,30,.25)'; ctx.fillRect(0, 0, W, H);
+  text(`❓ Mystery Game ${GAME.n}`, W / 2, 70, 34, '#ffe066');
+  const s = 1 + Math.min(1, frame / 40) * 0, bounce = Math.sin(frame * 0.06) * 4;
+  text(`${GAME.icon} ${GAME.name} ${GAME.icon}`, W / 2, 140 + bounce, 54 * s, GAME.color || '#fff');
+  panel(W / 2 - 330, 175, 660, 44 + GAME.lines.length * 38);
+  GAME.lines.forEach((l, i) => text(l, W / 2, 212 + i * 38, 25, '#fff'));
+  if (frame % 60 < 42) text('Tap or press SPACE to start!', W / 2, 505, 32, '#7dffb0');
+}
+function drawCard() {
+  const L = GAME.levels[level], a = Math.min(1, stateT / 15);
+  ctx.save(); ctx.globalAlpha = a; ctx.fillStyle = 'rgba(10,5,30,.55)'; ctx.fillRect(0, 0, W, H);
+  text(`Level ${level + 1}`, W / 2, 190, 40, '#ffe066');
+  text(L.name, W / 2, 262, 64, '#fff');
+  text(L.tip, W / 2, 330, 28, '#9fe8ff');
+  if (stateT > 25 && frame % 60 < 42) text('Tap or press SPACE to go!', W / 2, 420, 28, '#7dffb0');
+  ctx.restore();
+}
+function drawDone() {
+  ctx.fillStyle = 'rgba(10,5,30,.45)'; ctx.fillRect(0, 0, W, H);
+  text(GAME.doneText ? GAME.doneText(level) : 'Level complete!', W / 2, 220, 60, '#ffe066');
+  text('⭐ ⭐ ⭐', W / 2, 290, 44, '#ffd740');
+  if (stateT > 40 && frame % 60 < 42) text('Tap or press SPACE for the next level!', W / 2, 380, 30, '#7dffb0');
+}
+function drawFail() {
+  ctx.fillStyle = 'rgba(10,5,30,.5)'; ctx.fillRect(0, 0, W, H);
+  text(GAME.failText || 'Oops! Let\'s try again!', W / 2, 220, 52, '#ffb3c6');
+  text('No worries, you get fresh hearts! 💖', W / 2, 285, 30, '#fff');
+  if (stateT > 40 && frame % 60 < 42) text('Tap or press SPACE to try this level again', W / 2, 370, 28, '#7dffb0');
+}
+function drawWin() {
+  ctx.fillStyle = 'rgba(10,5,30,.4)'; ctx.fillRect(0, 0, W, H);
+  if (frame % 2 === 0) confettiRain(2);
+  text('🎉 YOU DID IT! 🎉', W / 2, 150 + Math.sin(frame * 0.08) * 6, 66, '#ffe066');
+  text(GAME.winLine, W / 2, 220, 30, '#fff');
+  panel(W / 2 - 230, 250, 460, 70, 'rgba(90,50,0,.7)');
+  text('🏆 New trophy for the Trophy Room!', W / 2, 296, 28, '#ffd740');
+  if (stateT > 120 && frame % 60 < 42) text('Tap or press SPACE to play again', W / 2, 395, 28, '#7dffb0');
+}
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  if (state === 'title') drawTitle();
+  else {
+    GAME.draw();
+    drawHUD();
+    if (state === 'card') drawCard(); else if (state === 'done') drawDone(); else if (state === 'fail') drawFail(); else if (state === 'win') drawWin();
+  }
+  drawParts();
+  drawMusicBtn();
+}
+function step() {
+  frame++; stateT++;
+  if (state === 'play') GAME.update();
+  else if (GAME.idle) GAME.idle();
+  updateParts();
+}
+let last = 0, acc = 0;
+function loop(now) {
+  if (!last) last = now;
+  acc += Math.min(100, now - last); last = now;
+  while (acc >= 1000 / 60) { step(); acc -= 1000 / 60; }
+  draw(); requestAnimationFrame(loop);
+}
+function boot() { requestAnimationFrame(loop); }
+
+// (Rocky + Mimo copied from The Arcade Room / The Cats' Cozy Corner)
+// ========== 🐱 THE CATS: copied EXACTLY from The Cats' Cozy Corner (catcozycorner.html) ==========
+const CATS = {
+  sammy: { fur: '#8d6e63', dark: '#4e342e', belly: '#e2c8a4', ear: '#ffb3c6', eye: '#a8641f', line: '#3e2a22', stripes: true, eyeRim: '#fff4dc' },
+  jimmy: { fur: '#f59a3c', dark: '#c25e12', belly: '#fff3e0', ear: '#ffb3c6', eye: '#3fbf48', line: '#8a4a12', stripes: true, paws: '#ffffff', eyeRim: '#fffbe8' },
+  rocky: { fur: '#a3a9b2', dark: '#646b75', belly: '#eceff3', ear: '#ffb3c6', eye: '#ffc93c', line: '#4a5059', stripes: true, paws: '#eceff3' },
+  mimo:  { fur: '#1f1f28', dark: '#121218', belly: '#2c2c38', ear: '#ff9fbf', eye: '#8dff4a', line: '#5a5a70', shine: true, muzzle: '#34343f', blink: '#c9ffb0', whisk: 'rgba(255,255,255,.75)', collar: true },
+  // 🤍💙 CHARLIE (Ben's design): a soft, normal WHITE cat, BLUE on the top of the head (from the middle of the eyes up),
+  // both ears, the top of the back (where you pet) and the tail. Same color pattern as Sparks, on a real furry cat.
+  charlie: { fur: '#fbfbfd', dark: '#dfe3ea', belly: '#ffffff', ear: '#ffb3c6', eye: '#5cbf4a', line: '#8790a3', cap: '#3f7fe0', eyeRim: '#ffffff' },
+  tiger: { fur: '#a07856', dark: '#4a3020', belly: '#ecd3ad', ear: '#ffb3c6', eye: '#5ad15a', line: '#3e2a22', spots: true, fewStripes: true, glow: true, eyeRim: '#fff6d8' },
+};
+function catLine(c) { ctx.strokeStyle = c.line; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; }
+function drawTail(c, t, up, pose) {
+  const sw = Math.sin(t * 0.08) * (pose === 'happy' ? 16 : 9);
+  ctx.strokeStyle = c.line; ctx.lineCap = 'round'; ctx.lineWidth = 11;
+  ctx.beginPath(); ctx.moveTo(-18, -22);
+  if (up) ctx.bezierCurveTo(-34, -30, -34 + sw * 0.4, -52, -26 + sw, -62);
+  else ctx.bezierCurveTo(-36, -22, -40, -34 + sw * 0.5, -44 + sw * 0.3, -46 + sw * 0.6);
+  ctx.stroke();
+  ctx.strokeStyle = c.cap || c.fur; ctx.lineWidth = 8; ctx.stroke();
+  if (c.stripes || c.spots) { ctx.strokeStyle = c.dark; ctx.lineWidth = 8; ctx.setLineDash(c.spots ? [3, 9] : [4, 6]); ctx.stroke(); ctx.setLineDash([]); }
+}
+function drawLeg(c, x1, y1, x2, y2) {
+  ctx.strokeStyle = c.line; ctx.lineWidth = 8; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  ctx.strokeStyle = c.fur; ctx.lineWidth = 5.5; ctx.stroke();
+  circle(x2, y2, 3.8, c.paws || c.fur);
+}
+function drawLegs(c, pose, t) {
+  let a = 0, b = 0;
+  if (pose === 'walk') { a = Math.sin(t * 0.32) * 7; b = -a; }
+  if (pose === 'run') { a = Math.sin(t * 0.5) * 11; b = -a; }
+  const legs = pose === 'jump' || pose === 'karate' ? [[-12, -4, 6], [12, 4, 6], [-6, -6, 8], [16, 6, 8]]
+             : pose === 'pounce' ? [[-14, -8, 4], [-8, -10, 4], [16, 12, 0], [22, 14, 0]]
+             : [[-13, a, 0], [-7, b, 0], [11, b, 0], [17, a, 0]];
+  for (const [lx, dx, lift] of legs) drawLeg(c, lx, -16, lx + dx * 0.6, -3 - lift);
+}
+function drawHead(c, hx, hy, t, eyesShut, mouthOpen, grumpy) {
+  for (const ex of [-8, 6]) {                          // ears
+    ctx.fillStyle = c.cap || c.fur; catLine(c);
+    ctx.beginPath(); ctx.moveTo(hx + ex - 5, hy - 7); ctx.lineTo(hx + ex + 1, hy - 21); ctx.lineTo(hx + ex + 8, hy - 7); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = c.ear; ctx.beginPath(); ctx.moveTo(hx + ex - 2, hy - 8); ctx.lineTo(hx + ex + 1, hy - 16); ctx.lineTo(hx + ex + 5, hy - 8); ctx.closePath(); ctx.fill();
+  }
+  ctx.fillStyle = c.fur; catLine(c); ctx.beginPath(); ctx.ellipse(hx, hy, 14, 12.5, 0, 0, 7); ctx.fill(); ctx.stroke();
+  if (c.cap) { ctx.save(); ctx.beginPath(); ctx.ellipse(hx, hy, 14, 12.5, 0, 0, 7); ctx.clip(); ctx.fillStyle = c.cap; ctx.beginPath();   // Charlie's blue cap
+    ctx.moveTo(hx - 16, hy - 1); ctx.quadraticCurveTo(hx + 3, hy - 4, hx + 16, hy - 1); ctx.lineTo(hx + 16, hy - 16); ctx.lineTo(hx - 16, hy - 16); ctx.fill(); ctx.restore();
+    catLine(c); ctx.beginPath(); ctx.ellipse(hx, hy, 14, 12.5, 0, 0, 7); ctx.stroke(); }
+  if (c.stripes || c.fewStripes) {                     // tabby "M" on the forehead
+    ctx.strokeStyle = c.dark; ctx.lineWidth = 2.2;
+    ctx.beginPath(); ctx.moveTo(hx - 6, hy - 5); ctx.lineTo(hx - 3, hy - 10); ctx.lineTo(hx, hy - 6); ctx.lineTo(hx + 3, hy - 10); ctx.lineTo(hx + 6, hy - 5); ctx.stroke();
+  }
+  if (c.stripes) { ctx.beginPath(); ctx.moveTo(hx - 14, hy + 1); ctx.lineTo(hx - 9, hy + 1); ctx.moveTo(hx - 13, hy + 5); ctx.lineTo(hx - 9, hy + 4); ctx.stroke(); }
+  if (c.spots) { for (const [sx, sy, r] of [[-10, 2, 1.8], [-7, 6, 1.5], [-11, -4, 1.4], [-4, -10, 1.3]]) circle(hx + sx, hy + sy, r, c.dark); }
+  if (c.shine) ellipse(hx - 4, hy - 7, 6, 2.6, 'rgba(255,255,255,.22)', -0.3);
+  ellipse(hx + 7, hy + 5, 7.5, 5.5, c.muzzle || c.belly);              // muzzle
+  const blink = eyesShut || (Math.floor(t + hx * 7) % 190) < 6;
+  for (const ex of [hx - 1, hx + 8]) {
+    if (blink) { ctx.strokeStyle = c.blink || '#333'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(ex, hy - 1, 3.2, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+    else {
+      if (c.eyeRim) ellipse(ex, hy - 1, 4.4, 5.2, c.eyeRim);
+      ellipse(ex, hy - 1, 3.6, 4.4, c.eye); ellipse(ex + 0.8, hy - 0.5, 1.6, 3.2, '#111'); circle(ex - 0.6, hy - 2.6, 1.4, '#fff');
+      if (grumpy) {                                    // droopy grumpy eyelids + cross eyebrows
+        ctx.fillStyle = c.fur; ctx.beginPath(); ctx.ellipse(ex, hy - 1, 5, 5.4, 0, Math.PI, 2 * Math.PI); ctx.fill();
+        ctx.strokeStyle = c.dark; ctx.lineWidth = 2.4; ctx.beginPath(); ctx.moveTo(ex - 4, hy - 7 + (ex > hx + 3 ? 2 : -1)); ctx.lineTo(ex + 4, hy - 7 + (ex > hx + 3 ? -1 : 2)); ctx.stroke();
+      }
+    }
+  }
+  ctx.fillStyle = '#ff8fab'; ctx.beginPath(); ctx.moveTo(hx + 10, hy + 2); ctx.lineTo(hx + 15, hy + 2); ctx.lineTo(hx + 12.5, hy + 5); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = c.whisk ? '#aaa' : '#555'; ctx.lineWidth = 1.4; ctx.beginPath();
+  if (grumpy && !mouthOpen) { ctx.moveTo(hx + 8.5, hy + 9); ctx.quadraticCurveTo(hx + 12.5, hy + 5.5, hx + 16, hy + 9); }
+  else { ctx.moveTo(hx + 12.5, hy + 5); ctx.quadraticCurveTo(hx + 11, hy + 8.5, hx + 8.5, hy + 7); ctx.moveTo(hx + 12.5, hy + 5); ctx.quadraticCurveTo(hx + 14, hy + 8.5, hx + 16, hy + 7); }
+  ctx.stroke();
+  if (mouthOpen) ellipse(hx + 12.5, hy + 8.5, 2.6, 2.2, '#d94f70');
+  ctx.strokeStyle = c.whisk || 'rgba(60,60,60,.7)'; ctx.lineWidth = 1; ctx.beginPath();
+  for (const d of [-2, 1, 4]) { ctx.moveTo(hx + 15, hy + 4); ctx.lineTo(hx + 27, hy + 2 + d * 1.3); ctx.moveTo(hx + 3, hy + 4); ctx.lineTo(hx - 8, hy + 2 + d * 1.3); }
+  ctx.stroke();
+  if (c.bow) { ctx.fillStyle = '#7ec8ff'; ctx.beginPath(); ctx.moveTo(hx - 6, hy - 12); ctx.lineTo(hx - 13, hy - 17); ctx.lineTo(hx - 12, hy - 8); ctx.closePath(); ctx.moveTo(hx - 6, hy - 12); ctx.lineTo(hx + 1, hy - 17); ctx.lineTo(hx, hy - 8); ctx.closePath(); ctx.fill(); circle(hx - 6, hy - 12, 2.2, '#4aa3ff'); }
+}
+function bodyMarks(c, sp) {                            // stripes, or Tiger's polka dots (+ just a few stripes)
+  if (c.stripes) { ctx.strokeStyle = c.dark; ctx.lineWidth = 3.2; ctx.lineCap = 'round'; ctx.beginPath(); for (const [sx, sy] of sp.stripes) { ctx.moveTo(sx, sy); ctx.quadraticCurveTo(sx + 3, sy + 7, sx + 1, sy + 12); } ctx.stroke(); }
+  if (c.spots) {
+    for (const [sx, sy, r] of sp.spots) circle(sx, sy, r, c.dark);
+    ctx.strokeStyle = c.dark; ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.beginPath();
+    for (const [sx, sy] of sp.few) { ctx.moveTo(sx, sy); ctx.quadraticCurveTo(sx + 3, sy + 6, sx + 1, sy + 10); } ctx.stroke();
+  }
+}
+const MARKS_STAND = { stripes: [[-12, -34], [-4, -34], [4, -34], [12, -34]], spots: [[-10, -27, 2.8], [-1, -30, 2.6], [8, -26, 2.8], [-15, -19, 2.2], [14, -32, 2], [3, -21, 2.2], [-6, -20, 1.8]], few: [[-15, -34], [16, -33]] };
+const MARKS_SIT = { stripes: [[-15, -32], [-15, -24], [-14, -16]], spots: [[-10, -30, 2.5], [-7, -20, 2.3], [-12, -10, 2.1], [-2, -34, 1.8]], few: [[-14, -36]] };
+function drawBody(c, pose) {
+  const rx = pose === 'pounce' ? 25 : 21, ry = pose === 'pounce' ? 11 : 13;
+  ctx.fillStyle = c.fur; catLine(c); ctx.beginPath(); ctx.ellipse(2, -22, rx, ry, 0, 0, 7); ctx.fill(); ctx.stroke();
+  ellipse(4, -15, rx * 0.65, ry * 0.4, c.belly);
+  if (c.cap) { ctx.save(); ctx.beginPath(); ctx.ellipse(2, -22, rx, ry, 0, 0, 7); ctx.clip(); ellipse(0, -34, rx * 0.95, 7.5, c.cap); ctx.restore(); catLine(c); ctx.beginPath(); ctx.ellipse(2, -22, rx, ry, 0, 0, 7); ctx.stroke(); }
+  bodyMarks(c, MARKS_STAND);
+  if (c.shine) ellipse(-2, -30, 12, 3.2, 'rgba(255,255,255,.2)', -0.08);
+}
+// x, y = between the cat's feet. o = { face, pose, t, s, mouth, shut, grumpy, rot }
+function drawCat(who, x, y, o = {}) {
+  const c = CATS[who] || CATS.sammy, face = o.face || 1, s = o.s || 1, t = o.t === undefined ? frame : o.t, pose = o.pose || 'idle';
+  if (c.glow) {                                        // ⭐ Tiger's soft golden star glow
+    const p = 0.75 + Math.sin(t * 0.05) * 0.15;
+    glow(x, y - 32 * s, 95 * s, 'rgba(255,214,110,.55)', p);
+  }
+  ctx.save(); ctx.translate(x, y); ctx.scale(face * s, s);
+  if (pose !== 'flip' && pose !== 'spin') ellipse(0, 0, 24, 4.5, 'rgba(0,0,0,.18)');
+  if (pose === 'sleep') { drawSleepCat(c, t, who); ctx.restore(); twinkles(c, x, y, s, t); return; }
+  if (pose === 'sit') { drawSitCat(c, t, o, who); ctx.restore(); twinkles(c, x, y, s, t); return; }
+  let bob = 0, tilt = o.rot || 0;
+  if (pose === 'happy') bob = -Math.abs(Math.sin(t * 0.18)) * 9;
+  if (pose === 'walk') bob = -Math.abs(Math.sin(t * 0.32)) * 2;
+  if (pose === 'run') bob = -Math.abs(Math.sin(t * 0.5)) * 4;
+  if (pose === 'jump') tilt += -0.12;
+  if (pose === 'pounce') tilt += 0.12;
+  ctx.translate(0, bob);
+  if (pose === 'roll' || pose === 'spin' || pose === 'flip') { ctx.translate(0, -22); ctx.rotate(pose === 'roll' ? Math.sin(t * 0.15) * 2.6 : t * (pose === 'spin' ? 0.45 : -0.3)); ctx.translate(0, 22); }
+  ctx.rotate(tilt);
+  drawTail(c, t, pose !== 'idle' && pose !== 'pounce', pose);
+  drawLegs(c, pose, t);
+  drawBody(c, pose);
+  if (c.collar) {                                      // Mimo: pink collar + gold bell
+    ctx.strokeStyle = '#ff5ca8'; ctx.lineWidth = 3.5; ctx.beginPath(); ctx.moveTo(14, -36); ctx.lineTo(17, -24); ctx.stroke();
+    circle(19, -26, 3.2, '#ffd54f'); circle(19, -25, 1, '#a0761a');
+  }
+  if (pose === 'karate' || pose === 'spin' || pose === 'flip') drawLeg(c, 14, -26, 42, -32);      // HI-YAH! paw out
+  if (pose === 'chop') drawLeg(c, 14, -28, 24, -64);
+  const sniff = pose === 'sniff';
+  drawHead(c, sniff ? 26 : 21, sniff ? -24 : -38, t, pose === 'happy' || sniff || o.shut, o.mouth || pose === 'happy', o.grumpy);
+  ctx.restore();
+  twinkles(c, x, y, s, t);
+}
+function twinkles(c, x, y, s, t) {                    // little stars that float around Tiger
+  if (!c.glow) return;
+  for (let i = 0; i < 5; i++) {
+    const a = t * 0.02 + i * 1.256, r = 48 + Math.sin(t * 0.03 + i) * 8;
+    twinkle(x + Math.cos(a) * r * s, y - 34 * s + Math.sin(a) * r * 0.7 * s, (3 + (i % 2) * 2) * s, 0.5 + 0.5 * Math.sin(t * 0.1 + i * 2));
+  }
+}
+function drawSitCat(c, t, o, who) {
+  const sw = Math.sin(t * 0.06) * 6;
+  ctx.strokeStyle = c.line; ctx.lineWidth = 10; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(-10, -6); ctx.quadraticCurveTo(-30, -2, -32 + sw, -18); ctx.stroke();
+  ctx.strokeStyle = c.cap || c.fur; ctx.lineWidth = 7; ctx.stroke();
+  ctx.fillStyle = c.fur; catLine(c); ctx.beginPath(); ctx.ellipse(-2, -20, 15, 20, 0, 0, 7); ctx.fill(); ctx.stroke();
+  if (c.cap) { ctx.save(); ctx.beginPath(); ctx.ellipse(-2, -20, 15, 20, 0, 0, 7); ctx.clip(); ellipse(-15, -24, 7, 17, c.cap, 0.15); ctx.restore(); catLine(c); ctx.beginPath(); ctx.ellipse(-2, -20, 15, 20, 0, 0, 7); ctx.stroke(); }
+  ellipse(3, -18, 7, 12, c.belly);
+  bodyMarks(c, MARKS_SIT);
+  if (c.shine) ellipse(-7, -28, 4, 9, 'rgba(255,255,255,.18)', 0.2);
+  for (const lx of [2, 9]) { ctx.strokeStyle = c.line; ctx.lineWidth = 7; ctx.beginPath(); ctx.moveTo(lx, -14); ctx.lineTo(lx, -3); ctx.stroke(); ctx.strokeStyle = c.fur; ctx.lineWidth = 4.5; ctx.stroke(); circle(lx, -3, 3.4, c.paws || c.fur); }
+  if (c.collar) { circle(8, -33, 3, '#ffd54f'); ctx.strokeStyle = '#ff5ca8'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(-6, -36); ctx.lineTo(11, -35); ctx.stroke(); }
+  drawHead(c, 3, -44, t, o.shut, o.mouth, o.grumpy);
+}
+function drawSleepCat(c, t) {                          // curled up in a cozy donut, tail wrapped around
+  const br = Math.sin(t * 0.05) * 1.2;
+  ctx.fillStyle = c.fur; catLine(c); ctx.beginPath(); ctx.ellipse(0, -14, 26 + br, 15 + br * 0.6, 0, 0, 7); ctx.fill(); ctx.stroke();
+  if (c.cap) { ctx.save(); ctx.beginPath(); ctx.ellipse(0, -14, 26 + br, 15 + br * 0.6, 0, 0, 7); ctx.clip(); ellipse(-4, -29, 24, 8, c.cap); ctx.restore(); catLine(c); ctx.beginPath(); ctx.ellipse(0, -14, 26 + br, 15 + br * 0.6, 0, 0, 7); ctx.stroke(); }
+  if (c.stripes) { ctx.strokeStyle = c.dark; ctx.lineWidth = 3; ctx.beginPath(); for (const sx of [-14, -5, 4]) { ctx.moveTo(sx, -28); ctx.quadraticCurveTo(sx + 4, -20, sx + 2, -14); } ctx.stroke(); }
+  if (c.spots) { for (const [sx, sy, r] of [[-14, -20, 2.6], [-4, -24, 2.4], [-10, -10, 2.2], [4, -17, 2]]) circle(sx, sy, r, c.dark); }
+  if (c.shine) ellipse(-6, -24, 12, 3.5, 'rgba(255,255,255,.2)');
+  ctx.strokeStyle = c.line; ctx.lineWidth = 10; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(-24, -10); ctx.quadraticCurveTo(-10, 2, 18, -2); ctx.stroke();
+  ctx.strokeStyle = c.cap || c.fur; ctx.lineWidth = 7; ctx.stroke();
+  if (c.stripes || c.spots) { ctx.strokeStyle = c.dark; ctx.setLineDash([4, 6]); ctx.stroke(); ctx.setLineDash([]); }
+  for (const ex of [8, 20]) { ctx.fillStyle = c.cap || c.fur; catLine(c); ctx.beginPath(); ctx.moveTo(ex - 5, -22); ctx.lineTo(ex, -34); ctx.lineTo(ex + 6, -22); ctx.closePath(); ctx.fill(); ctx.stroke(); }
+  ctx.fillStyle = c.fur; catLine(c); ctx.beginPath(); ctx.ellipse(15, -16, 13, 10, 0, 0, 7); ctx.fill(); ctx.stroke();
+  if (c.cap) { ctx.save(); ctx.beginPath(); ctx.ellipse(15, -16, 13, 10, 0, 0, 7); ctx.clip(); ctx.fillStyle = c.cap; ctx.fillRect(0, -30, 30, 12); ctx.restore(); catLine(c); ctx.beginPath(); ctx.ellipse(15, -16, 13, 10, 0, 0, 7); ctx.stroke(); }
+  ctx.strokeStyle = c.blink || '#333'; ctx.lineWidth = 2;
+  for (const ex of [10, 19]) { ctx.beginPath(); ctx.arc(ex, -17, 3, 0.1 * Math.PI, 0.9 * Math.PI); ctx.stroke(); }
+  ctx.fillStyle = '#ff8fab'; ctx.beginPath(); ctx.moveTo(24, -14); ctx.lineTo(28, -14); ctx.lineTo(26, -11); ctx.closePath(); ctx.fill();
+}
+function twinkle() {}
+// ===================== 🐭 ROCKY & MIMO'S MOUSE HUNT (❓ Mystery Game 10) =====================
+// Rocky (gray tabby) and Mimo (black cat) play hide-and-seek with TOY mice. Tap a hiding spot (or use the
+// arrows + SPACE) and Rocky peeks behind it. Find all the mice before the clock runs out!
+// Gentle hints: tails wiggle out, and Mimo sniffs her way to a mouse if you get stuck.
+// 3 levels: Living Room, Kitchen (wind-up mice zoom to new spots!), Attic (dim, Rocky carries a lantern).
+const TUNE = { bpm: 112, chords: [[67, 71, 74], [60, 64, 67], [62, 66, 69], [67, 71, 74]], melody: [
+  71, 74, 79, 0, 74, 0, 71, 0,   72, 0, 67, 64, 67, 0, 72, 0,   74, 0, 69, 66, 69, 0, 74, 72,   71, 0, 67, 0, 79, 0, 0, 0] };
+const BACK_Y = 372, FRONT_Y = 488;
+let spots = [], sel = 0, rocky = null, mimo = null, found = 0, need = 0, clock = 0, noFindT = 0, hintSpot = -1, mimoSay = '', mimoT = 0;
+let rockySay = '', rockyT = 0, runner = null, runT = 0, wiggle = -1, wiggleT = 0, flyMice = [];
+const LV = () => GAME.levels[level];
+const SPOT_KINDS = [
+  ['couch', 'plant', 'lamp', 'toybox', 'armchair', 'basket', 'cushion'],
+  ['cabinet', 'pot', 'cereal', 'chair', 'basket', 'bag', 'bin', 'stool', 'cabinet'],
+  ['trunk', 'box', 'lampshade', 'suitcase', 'blanket', 'box', 'hatbox', 'horse', 'chair', 'trunk'],
+];
+function mimoTalk(s, t = 150) { mimoSay = s; mimoT = t; }
+function rockyTalk(s, t = 90) { rockySay = s; rockyT = t; }
+function makeSpots() {
+  const kinds = SPOT_KINDS[level], n = kinds.length;
+  spots = kinds.map((k, i) => ({ kind: k, x: 90 + i * (780 / (n - 1)), y: i % 2 ? FRONT_Y : BACK_Y, mouse: false, checked: false, lift: 0, col: pick(['#ef9a9a', '#90caf9', '#a5d6a7', '#ffe082', '#ce93d8', '#ffab91']) }));
+  const idx = spots.map((_, i) => i).sort(() => Math.random() - 0.5);
+  for (let k = 0; k < need; k++) spots[idx[k]].mouse = pick(['#b0bec5', '#f8bbd0', '#90caf9', '#fff59d']);
+}
+function search(i) {
+  const s = spots[i]; if (!s || rocky.busy) return;
+  sel = i; rocky.tx = s.x + (s.x > rocky.x ? -10 : 10); rocky.ty = s.y + 22; rocky.goal = i; SFX.tap();
+}
+const GAME = {
+  n: 10, name: "Rocky & Mimo's Mouse Hunt", icon: '🐭', color: '#ffe0b2',
+  lines: ['Rocky and Mimo are playing hide-and-seek', 'with their TOY mice! 🐭', 'Tap a hiding spot to peek behind it.', 'Find every mouse before the clock runs out!'],
+  winLine: 'Rocky and Mimo found every single toy mouse!',
+  levels: [
+    { name: 'Living Room', tip: 'Find 3 toy mice! Watch for wiggly tails.', mice: 3, time: 60, run: 0, dark: 0 },
+    { name: 'Kitchen', tip: 'Wind-up mice ZOOM to new spots! Find 4!', mice: 4, time: 70, run: 1, dark: 0 },
+    { name: 'Attic', tip: 'It\'s dim up here! Rocky brought a lantern. Find 5!', mice: 5, time: 80, run: 0, dark: 1 },
+  ],
+  doneText: () => 'All the mice found! 🐭',
+  start(i) {
+    need = LV().mice; found = 0; clock = LV().time * 60; noFindT = 0; hintSpot = -1; runner = null; runT = 0; flyMice = []; wiggle = -1; wiggleT = 0;
+    makeSpots(); sel = 0;
+    rocky = { x: 480, y: 520, tx: 480, ty: 520, face: 1, busy: 0, goal: -1, walk: false };
+    mimo = { x: 400, y: 525, tx: 400, ty: 525, face: 1, walk: false, sniff: 0 };
+    mimoTalk(['Ready or not, here we come!', 'Mice in the kitchen? Let\'s go!', 'Ooh, it\'s cozy and dim up here...'][i], 150); rockyT = 0;
+  },
+  key(k) {
+    if (k === 'ArrowLeft' || k === 'ArrowRight') { sel = clamp(sel + (k === 'ArrowLeft' ? -1 : 1), 0, spots.length - 1); SFX.tap(); }
+    if (k === 'ArrowUp' || k === 'ArrowDown') { const want = k === 'ArrowUp' ? BACK_Y : FRONT_Y; let best = sel, bd = 1e9; spots.forEach((s, i) => { if (s.y === want && Math.abs(s.x - spots[sel].x) < bd) { bd = Math.abs(s.x - spots[sel].x); best = i; } }); sel = best; }
+    if (k === ' ' || k === 'Enter') search(sel);
+  },
+  tap(x, y) {
+    let best = -1, bd = 1e9;
+    spots.forEach((s, i) => { const d = Math.hypot(s.x - x, (s.y - 50) - y); if (d < 95 && d < bd) { bd = d; best = i; } });
+    if (best >= 0) search(best);
+  },
+  update() {
+    if (mimoT > 0) mimoT--; if (rockyT > 0) rockyT--;
+    for (const m of flyMice) m.t += 0.03; flyMice = flyMice.filter(m => m.t < 1);
+    if (found >= need) { if (++noFindT > 70) levelWin(); return; }
+    if (--clock <= 0) { if (!loseHeart()) { clock = 25 * 60; mimoTalk('More time! Keep looking!', 150); } return; }
+    // 🐱 Rocky walks to the spot, then peeks
+    const dx = rocky.tx - rocky.x, dy = rocky.ty - rocky.y, d = Math.hypot(dx, dy);
+    rocky.walk = d > 3;
+    if (rocky.walk) { const v = Math.min(5.5, d); rocky.x += dx / d * v; rocky.y += dy / d * v; if (Math.abs(dx) > 2) rocky.face = Math.sign(dx); }
+    else if (rocky.goal >= 0 && !rocky.busy) { rocky.busy = 46; rocky.face = spots[rocky.goal].x >= rocky.x ? 1 : -1; SFX.pop(); }
+    if (rocky.busy) {
+      rocky.busy--;
+      const s = spots[rocky.goal];
+      if (rocky.busy === 24) {
+        if (s.mouse) {
+          found++; flyMice.push({ x: s.x, y: s.y - 40, col: s.mouse, t: 0, k: found - 1 }); s.mouse = false; s.checked = true; noFindT = 0;
+          SFX.good(); tone(1500, 0.08, 0.03, 0.15, 'sine', 300); burst(s.x, s.y - 50, 18);
+          rockyTalk(found >= need ? 'That\'s all of them!' : pick(['Found one!', 'Gotcha, mousey!', 'Squeak! Found you!']));
+          if (hintSpot === rocky.goal) hintSpot = -1;
+          if (found >= need) { SFX.level(); noFindT = 0; mimoTalk('Yay! We found them all!', 120); }
+        } else { s.checked = true; rockyTalk(pick(['Not here!', 'Hmm, nope!', 'Just dust!']), 70); burst(s.x, s.y - 30, 6, ['#d7ccc8', '#bcaaa4'], 2); }
+      }
+      if (!rocky.busy) rocky.goal = -1;
+    }
+    spots.forEach((s, i) => { s.lift += ((rocky.goal === i && rocky.busy > 6 && rocky.busy < 40 ? 1 : 0) - s.lift) * 0.2; });
+    // 💡 hints: wiggly tails, and Mimo sniffing toward a mouse when you're stuck
+    if (++wiggleT > 330) { wiggleT = 0; const m = spots.map((s, i) => s.mouse ? i : -1).filter(i => i >= 0); wiggle = m.length ? pick(m) : -1; }
+    if (wiggleT > 80) wiggle = -1;
+    noFindT++;
+    if (noFindT > 600 && hintSpot < 0) { const m = spots.map((s, i) => s.mouse ? i : -1).filter(i => i >= 0); if (m.length) { hintSpot = pick(m); mimoTalk('Sniff sniff... I smell a mouse!', 200); } }
+    if (hintSpot >= 0 && !spots[hintSpot].mouse) hintSpot = -1;
+    if (hintSpot >= 0) { mimo.tx = spots[hintSpot].x + 50; mimo.ty = spots[hintSpot].y + 28; }
+    else { mimo.tx = clamp(rocky.x - 70 * rocky.face, 40, W - 40); mimo.ty = rocky.y + 6; }
+    const mx = mimo.tx - mimo.x, my = mimo.ty - mimo.y, md = Math.hypot(mx, my);
+    mimo.walk = md > 4; if (mimo.walk) { const v = Math.min(4, md); mimo.x += mx / md * v; mimo.y += my / md * v; if (Math.abs(mx) > 2) mimo.face = Math.sign(mx); }
+    // 🔑 Kitchen: a wind-up mouse zooms to a new hiding spot every so often
+    if (LV().run) {
+      if (runner) { runner.t += 1 / 80; if (runner.t >= 1) { spots[runner.to].mouse = runner.col; spots[runner.to].checked = false; runner = null; } }
+      else if (++runT > 840) {
+        runT = 0;
+        const from = spots.map((s, i) => s.mouse && i !== rocky.goal && i !== hintSpot ? i : -1).filter(i => i >= 0);
+        const to = spots.map((s, i) => !s.mouse && i !== rocky.goal ? i : -1).filter(i => i >= 0);
+        if (from.length && to.length) { const f = pick(from), t = pick(to); runner = { from: f, to: t, t: 0, col: spots[f].mouse }; spots[f].mouse = false; mimoTalk('Zoom! A mouse ran to a new spot!', 150); tone(900, 0.4, 0.03, 0, 'triangle', 500); }
+      }
+    }
+  },
+  drawTitle() {
+    level = 0; drawRoom(0);
+    drawThing({ kind: 'couch', col: '#90caf9' }, 640, 420, 0); drawMouse(720, 418, '#f8bbd0', -1, 1.4 + Math.sin(frame * 0.1) * 0.05);
+    drawCat('rocky', 260, 480, { s: 1.6, pose: 'sniff' }); drawCat('mimo', 420, 490, { s: 1.4, pose: 'sit', face: -1 });
+  },
+  draw() {
+    drawRoom(level);
+    const list = spots.map((s, i) => ({ y: s.y, f: () => drawSpot(s, i) }));
+    list.push({ y: rocky.y, f: () => drawCat('rocky', rocky.x, rocky.y, { s: 1.15, face: rocky.face, pose: rocky.walk ? 'walk' : rocky.busy ? 'sniff' : 'idle' }) });
+    list.push({ y: mimo.y, f: () => drawCat('mimo', mimo.x, mimo.y, { s: 1.0, face: mimo.face, pose: mimo.walk ? 'walk' : hintSpot >= 0 ? 'sniff' : 'sit' }) });
+    list.sort((a, b) => a.y - b.y).forEach(o => o.f());
+    if (runner) {                                       // 🔑 the zooming wind-up mouse
+      const a = spots[runner.from], b = spots[runner.to], t = runner.t, x = a.x + (b.x - a.x) * t, y = a.y + 14 + (b.y - a.y) * t - Math.abs(Math.sin(t * 20)) * 4;
+      drawMouse(x, y, runner.col, b.x > a.x ? 1 : -1, 1.1); for (let k = 1; k < 4; k++) circle(x - (b.x > a.x ? 1 : -1) * k * 14, y - 2, 3 - k * 0.6, 'rgba(255,255,255,.6)');
+    }
+    if (LV().dark) {                                    // 🏮 the attic is dim; Rocky's lantern lights it up
+      const g = ctx.createRadialGradient(rocky.x, rocky.y - 40, 60, rocky.x, rocky.y - 40, 330);
+      g.addColorStop(0, 'rgba(20,10,40,0)'); g.addColorStop(1, 'rgba(20,10,40,.72)'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+      glow(rocky.x + rocky.face * 26, rocky.y - 60, 60, 'rgba(255,214,110,.5)'); circle(rocky.x + rocky.face * 26, rocky.y - 60, 7, '#ffd54f');
+      for (const ex of [mimo.face > 0 ? 1 : -1]) { glow(mimo.x + ex * 22, mimo.y - 40, 16, 'rgba(141,255,74,.6)'); }
+    }
+    if (hintSpot >= 0) for (let k = 0; k < 4; k++) { const a = frame * 0.05 + k * 1.57, s = spots[hintSpot]; star(s.x + Math.cos(a) * 60, s.y - 60 + Math.sin(a) * 30, 7, '#fff59d', a); }
+    if (state === 'play' && !rocky.busy) { const s = spots[sel], b = Math.sin(frame * 0.15) * 5; ctx.fillStyle = '#ffeb3b'; ctx.strokeStyle = '#5d4037'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(s.x - 14, s.y - 150 + b); ctx.lineTo(s.x + 14, s.y - 150 + b); ctx.lineTo(s.x, s.y - 132 + b); ctx.closePath(); ctx.stroke(); ctx.fill(); }
+    for (const m of flyMice) { const k = m.t * m.t, tx = 410 + m.k * 54, x = m.x + (tx - m.x) * k, y = m.y + (36 - m.y) * k - Math.sin(m.t * Math.PI) * 80; drawMouse(x, y, m.col, 1, 1.2); }
+    if (rockyT > 0) bubble(rockySay, rocky.x, rocky.y - 78, 20);
+    if (mimoT > 0) bubble(mimoSay, mimo.x, mimo.y - 70 - (rockyT > 0 && Math.abs(mimo.x - rocky.x) < 260 ? 64 : 0), 20);
+    for (let k = 0; k < need; k++) { const got = k < found - flyMice.length; if (got) drawMouse(410 + k * 54, 36, '#ffe0b2', 1, 1); else { ctx.globalAlpha = 0.35; drawMouse(410 + k * 54, 36, '#fff', 1, 1); ctx.globalAlpha = 1; } }
+    const sec = Math.ceil(clock / 60); text(`⏰ ${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`, 735, 44, 28, sec <= 10 ? '#ffab91' : '#fff');
+  },
+};
+function drawSpot(s, i) {
+  ctx.save(); ctx.translate(s.x, s.y);
+  ellipse(0, 2, 58, 9, 'rgba(0,0,0,.15)');
+  if (s.mouse && s.lift > 0.3) drawMouse(0, -4, s.mouse, 1, 1.2);
+  if (wiggle === i && s.mouse) {                       // a little tail wiggling out the side
+    ctx.strokeStyle = '#f48fb1'; ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(44, -6);
+    for (let k = 1; k <= 6; k++) ctx.lineTo(44 + k * 5, -6 + Math.sin(frame * 0.4 + k) * 4 - k); ctx.stroke();
+  }
+  ctx.translate(0, -s.lift * 34); ctx.rotate(s.lift * 0.12);
+  drawThing(s, 0, 0, i);
+  ctx.restore();
+  if (s.checked) { circle(s.x - 40, s.y - 8, 11, 'rgba(255,255,255,.75)'); text('✓', s.x - 40, s.y - 1, 18, '#81c784'); }
+}
+function drawThing(s, x, y, i) {                       // (x, y) = bottom middle. Every hiding spot is about 110 wide.
+  ctx.save(); ctx.translate(x, y); const c = s.col;
+  const line = () => { ctx.strokeStyle = 'rgba(60,40,30,.5)'; ctx.lineWidth = 2.5; ctx.stroke(); };
+  switch (s.kind) {
+    case 'couch': roundRect(-60, -80, 120, 50, 16, c); roundRect(-66, -46, 132, 40, 12, c); roundRect(-70, -60, 22, 56, 10, c); roundRect(48, -60, 22, 56, 10, c); roundRect(-46, -50, 44, 16, 8, 'rgba(255,255,255,.35)'); roundRect(2, -50, 44, 16, 8, 'rgba(255,255,255,.35)'); ctx.fillStyle = '#6d4c41'; ctx.fillRect(-60, -6, 8, 6); ctx.fillRect(52, -6, 8, 6); break;
+    case 'armchair': roundRect(-42, -110, 84, 70, 18, c); roundRect(-50, -54, 100, 46, 12, c); roundRect(-56, -70, 18, 64, 9, c); roundRect(38, -70, 18, 64, 9, c); ctx.fillStyle = '#6d4c41'; ctx.fillRect(-44, -8, 8, 8); ctx.fillRect(36, -8, 8, 8); break;
+    case 'plant': ctx.fillStyle = '#e57373'; ctx.beginPath(); ctx.moveTo(-30, -50); ctx.lineTo(30, -50); ctx.lineTo(22, 0); ctx.lineTo(-22, 0); ctx.fill(); for (let k = -2; k <= 2; k++) ellipse(k * 14, -76 - (2 - Math.abs(k)) * 18, 12, 34, k % 2 ? '#43a047' : '#66bb6a', k * 0.35); break;
+    case 'lamp': ellipse(0, -4, 26, 7, '#8d6e63'); ctx.fillStyle = '#8d6e63'; ctx.fillRect(-4, -120, 8, 116); glow(0, -120, 70, 'rgba(255,236,150,.5)'); ctx.fillStyle = '#ffe082'; ctx.beginPath(); ctx.moveTo(-24, -170); ctx.lineTo(24, -170); ctx.lineTo(40, -112); ctx.lineTo(-40, -112); ctx.fill(); break;
+    case 'toybox': roundRect(-50, -70, 100, 70, 8, c); roundRect(-54, -80, 108, 16, 6, '#fff'); star(0, -36, 16, '#fff59d'); break;
+    case 'basket': ctx.fillStyle = '#c8935a'; ctx.beginPath(); ctx.moveTo(-48, -56); ctx.lineTo(48, -56); ctx.lineTo(38, 0); ctx.lineTo(-38, 0); ctx.fill(); ctx.strokeStyle = '#8d5a2b'; ctx.lineWidth = 3; for (let k = 1; k < 4; k++) { ctx.beginPath(); ctx.moveTo(-48 + k * 2.5, -56 + k * 14); ctx.lineTo(48 - k * 2.5, -56 + k * 14); ctx.stroke(); } ctx.beginPath(); ctx.arc(0, -56, 38, Math.PI, 0); ctx.stroke(); for (const [dx, cc] of [[-20, '#f48fb1'], [6, '#81d4fa'], [26, '#fff59d']]) circle(dx, -60, 13, cc); break;
+    case 'cushion': ellipse(0, -26, 56, 28, c); ellipse(-14, -36, 20, 8, 'rgba(255,255,255,.35)'); for (const dx of [-54, 54]) circle(dx, -26, 6, c); break;
+    case 'cabinet': roundRect(-52, -110, 104, 110, 6, '#a1887f'); roundRect(-46, -104, 44, 98, 4, '#bcaaa4'); roundRect(2, -104, 44, 98, 4, '#bcaaa4'); circle(-8, -55, 4, '#ffd54f'); circle(8, -55, 4, '#ffd54f'); break;
+    case 'pot': ellipse(0, -30, 50, 32, '#90a4ae'); roundRect(-50, -60, 100, 50, 10, '#90a4ae'); ellipse(0, -62, 52, 10, '#b0bec5'); circle(0, -72, 7, '#546e7a'); roundRect(-64, -52, 16, 8, 4, '#546e7a'); roundRect(48, -52, 16, 8, 4, '#546e7a'); break;
+    case 'cereal': roundRect(-34, -130, 68, 130, 6, c); roundRect(-26, -118, 52, 26, 6, '#fff'); text('YUM', 0, -98, 18, '#e53935'); ellipse(0, -46, 22, 12, '#fff'); for (let k = 0; k < 5; k++) circle(-14 + k * 7, -52, 4, '#ffb74d'); break;
+    case 'chair': ctx.fillStyle = '#8d6e63'; ctx.fillRect(-36, -130, 10, 130); ctx.fillRect(26, -130, 10, 130); ctx.fillRect(-36, -130, 72, 12); ctx.fillRect(-36, -100, 72, 10); roundRect(-44, -58, 88, 14, 5, '#a1887f'); ctx.fillRect(-40, -46, 8, 46); ctx.fillRect(32, -46, 8, 46); break;
+    case 'bag': ctx.fillStyle = '#d7b98e'; ctx.fillRect(-36, -96, 72, 96); ctx.fillStyle = '#c4a476'; ctx.fillRect(-36, -96, 72, 10); ellipse(-10, -104, 10, 24, '#ffcc80', -0.3); ctx.fillStyle = '#66bb6a'; ctx.fillRect(10, -122, 8, 30); break;
+    case 'bin': roundRect(-34, -90, 68, 90, 8, '#66bb6a'); roundRect(-40, -98, 80, 14, 6, '#43a047'); roundRect(-10, -104, 20, 8, 4, '#2e7d32'); break;
+    case 'stool': ellipse(0, -66, 40, 12, '#ef5350'); ctx.fillStyle = '#795548'; ctx.fillRect(-28, -60, 7, 60); ctx.fillRect(21, -60, 7, 60); ctx.fillRect(-4, -60, 7, 60); break;
+    case 'trunk': roundRect(-58, -66, 116, 66, 8, '#8d6e63'); ctx.fillStyle = '#6d4c41'; ctx.beginPath(); ctx.ellipse(0, -66, 58, 24, 0, Math.PI, 0); ctx.fill(); ctx.fillStyle = '#ffca28'; ctx.fillRect(-40, -88, 10, 88); ctx.fillRect(30, -88, 10, 88); roundRect(-10, -60, 20, 18, 4, '#ffca28'); break;
+    case 'box': roundRect(-46, -80, 92, 80, 4, '#d7a86e'); ctx.fillStyle = '#c4935a'; ctx.fillRect(-46, -80, 92, 12); ctx.fillStyle = 'rgba(255,255,255,.4)'; ctx.fillRect(-8, -80, 16, 80); text('TOYS', 0, -30, 16, '#fff'); break;
+    case 'lampshade': ctx.fillStyle = c; ctx.beginPath(); ctx.moveTo(-26, -76); ctx.lineTo(26, -76); ctx.lineTo(48, 0); ctx.lineTo(-48, 0); ctx.fill(); ctx.fillStyle = 'rgba(255,255,255,.3)'; for (let k = -2; k <= 2; k++) ctx.fillRect(k * 16 - 2, -70, 4, 66); break;
+    case 'suitcase': roundRect(-54, -74, 108, 74, 10, c); roundRect(-16, -86, 32, 14, 6, '#5d4037'); circle(-24, -40, 10, '#fff59d'); star(22, -40, 11, '#fff'); break;
+    case 'blanket': for (const [dx, dy, r, cc] of [[-30, -30, 34, '#f48fb1'], [20, -34, 38, '#81d4fa'], [-4, -58, 30, '#fff59d'], [36, -18, 22, '#ce93d8']]) circle(dx, dy, r, cc); ctx.fillStyle = '#f48fb1'; ctx.fillRect(-60, -16, 120, 16); break;
+    case 'hatbox': ellipse(0, -10, 40, 12, c); ctx.fillStyle = c; ctx.fillRect(-40, -64, 80, 54); ellipse(0, -64, 42, 13, '#fff'); ellipse(-10, -76, 12, 7, '#e91e63', 0.4); ellipse(10, -76, 12, 7, '#e91e63', -0.4); circle(0, -74, 5, '#ad1457'); break;
+    case 'horse': ctx.strokeStyle = '#8d6e63'; ctx.lineWidth = 7; ctx.beginPath(); ctx.arc(0, -120, 120, Math.PI * 0.33, Math.PI * 0.67); ctx.stroke(); ellipse(0, -60, 44, 20, '#fff8e1'); ellipse(40, -90, 16, 24, '#fff8e1', 0.5); ellipse(48, -100, 18, 11, '#fff8e1', 0.2); circle(46, -104, 3, '#333'); ctx.fillStyle = '#e57373'; ctx.fillRect(-14, -84, 30, 10); for (const dx of [-30, 30]) { ctx.fillStyle = '#fff8e1'; ctx.fillRect(dx - 5, -46, 10, 30); } ctx.strokeStyle = '#ffb74d'; ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(-40, -66); ctx.quadraticCurveTo(-62, -60, -56, -36); ctx.stroke(); break;
+  }
+  ctx.restore();
+}
+function drawMouse(x, y, col, f, s) {                  // a cute wind-up TOY mouse. (x, y) = bottom middle
+  ctx.save(); ctx.translate(x, y); ctx.scale(f * s, s);
+  ctx.strokeStyle = '#f48fb1'; ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(-14, -6); ctx.quadraticCurveTo(-26, -2, -24, -14); ctx.quadraticCurveTo(-22, -22, -28, -22); ctx.stroke();
+  ellipse(0, -8, 16, 9, col); circle(13, -11, 7.5, col); circle(10, -18, 5, col); circle(10, -18, 3, '#f8bbd0');
+  circle(16, -12, 1.6, '#222'); circle(20.5, -10, 2, '#f06292');
+  ctx.strokeStyle = '#ffca28'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(-2, -16); ctx.lineTo(-2, -22); ctx.stroke(); ellipse(-6, -23, 4, 2.5, '#ffca28'); ellipse(2, -23, 4, 2.5, '#ffca28');
+  ctx.restore();
+}
+function drawRoom(lv) {
+  const wall = ['#ffe9b0', '#c8f0e0', '#7b5a48'][lv], floor = ['#c8956a', '#e3f2fd', '#5d4037'][lv];
+  ctx.fillStyle = wall; ctx.fillRect(0, 0, W, 300);
+  if (lv === 0) {
+    ctx.fillStyle = 'rgba(255,183,77,.25)'; for (let x = 0; x < W; x += 60) ctx.fillRect(x, 0, 24, 300);
+    roundRect(560, 70, 170, 130, 8, '#fff'); roundRect(570, 80, 150, 110, 6, '#81d4fa'); circle(690, 110, 18, '#fff59d'); ctx.fillStyle = '#fff'; ctx.fillRect(642, 80, 6, 110); ctx.fillRect(570, 132, 150, 6);
+    roundRect(180, 90, 110, 80, 6, '#8d6e63'); roundRect(190, 100, 90, 60, 4, '#b2ebf2'); ellipse(235, 130, 22, 12, '#ff8a65'); circle(244, 126, 3, '#333');
+  } else if (lv === 1) {
+    for (let x = 0; x < W; x += 40) for (let y = 150; y < 300; y += 40) { ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 2; ctx.strokeRect(x, y, 40, 40); }
+    roundRect(0, 40, W, 90, 0, '#a1887f'); for (let x = 20; x < W; x += 160) { roundRect(x, 50, 140, 70, 6, '#bcaaa4'); circle(x + 70, 110, 4, '#ffd54f'); }
+    roundRect(0, 230, W, 22, 0, '#eceff1');
+  } else {
+    ctx.strokeStyle = '#4e342e'; ctx.lineWidth = 18; for (const x of [120, 480, 840]) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, 300); ctx.stroke(); }
+    ctx.beginPath(); ctx.moveTo(0, 120); ctx.lineTo(480, 10); ctx.lineTo(960, 120); ctx.stroke();
+    circle(300, 150, 46, '#3e2723'); circle(300, 150, 38, '#1a237e'); circle(312, 140, 14, '#fff8e1'); circle(318, 136, 12, '#1a237e');
+    for (let k = 0; k < 6; k++) circle(600 + k * 50, 60 + (k % 2) * 20, 2, 'rgba(255,255,255,.5)');
+  }
+  ctx.fillStyle = floor; ctx.fillRect(0, 300, W, H - 300);
+  if (lv === 1) { for (let x = 0; x < W; x += 60) for (let y = 300; y < H; y += 60) if (((x + y) / 60) % 2 === 0) { ctx.fillStyle = '#90caf9'; ctx.fillRect(x, y, 60, 60); } }
+  else { ctx.strokeStyle = 'rgba(0,0,0,.12)'; ctx.lineWidth = 2; for (let y = 320; y < H; y += 34) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); } }
+  if (lv === 0) ellipse(480, 440, 360, 70, 'rgba(236,64,122,.22)');
+}
+boot();
+</script>
+</body>
+</html>

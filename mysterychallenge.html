@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>❓ Mystery Challenge: Robo's Zap Floor</title>
+<script>TOUCHPAD = { dpad: true, south: [" ", "GO"] };</script>
+<script src="touchpad.js?v=10"></script>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body { background: #0b2a4a; display: flex; align-items: center; justify-content: center; overflow: hidden;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  canvas { width: min(100vw, calc(100vh * 960 / 540)); height: auto; display: block; border-radius: 16px; touch-action: none; }
+</style>
+</head>
+<body>
+<canvas id="c" width="960" height="540"></canvas>
+<script>
+// ================= shared bits (helpers, soft sounds, gentle music) =================
+const C = document.getElementById('c'), W = 960, H = 540;
+const ctx = C.getContext('2d');
+let frame = 0, PRINTING = false;
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const rand = (a, b) => a + Math.random() * (b - a);
+const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+function rrect(x, y, w, h, r) {
+  ctx.beginPath();
+  if (Array.isArray(r)) { if (ctx.roundRect) ctx.roundRect(x, y, w, h, r); else ctx.rect(x, y, w, h); return; }
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function roundRect(x, y, w, h, r, fill) { ctx.fillStyle = fill; rrect(x, y, Math.max(0, w), Math.max(0, h), r); ctx.fill(); }
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, 7); ctx.fill(); }
+function ellipse(x, y, rx, ry, fill, rot = 0) { ctx.fillStyle = fill; ctx.beginPath(); ctx.ellipse(x, y, Math.max(0, rx), Math.max(0, ry), rot, 0, 7); ctx.fill(); }
+function heart(x, y, s, fill = '#ff5c8a') {
+  ctx.fillStyle = fill; ctx.beginPath();
+  ctx.moveTo(x, y + s * 0.35);
+  ctx.bezierCurveTo(x - s * 1.1, y - s * 0.4, x - s * 0.45, y - s * 1.05, x, y - s * 0.45);
+  ctx.bezierCurveTo(x + s * 0.45, y - s * 1.05, x + s * 1.1, y - s * 0.4, x, y + s * 0.35);
+  ctx.fill();
+}
+// the same text style as Robo Jump 1: bold, white, dark outline
+function text(str, x, y, size, color = '#fff', align = 'center') {
+  ctx.font = `bold ${size}px "Comic Sans MS", "Chalkboard SE", sans-serif`;
+  ctx.textAlign = align; ctx.textBaseline = 'alphabetic'; ctx.lineJoin = 'round';
+  ctx.lineWidth = size / 5; ctx.strokeStyle = '#1b1b2f'; ctx.strokeText(str, x, y);
+  ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function emoji(str, x, y, size) { ctx.font = `${size}px "Apple Color Emoji", "Segoe UI Emoji", sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#000'; ctx.fillText(str, x, y); }
+function glow(x, y, r, col, a = 1) {
+  r = Math.max(1, r);
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.save(); ctx.globalAlpha = clamp(a, 0, 1); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); ctx.restore();
+}
+function star(x, y, r, fill, rot = 0, pts = 5, inner = 0.48) {
+  ctx.fillStyle = fill; ctx.beginPath();
+  for (let i = 0; i < pts * 2; i++) { const a = -Math.PI / 2 + rot + i * Math.PI / pts, rr = i % 2 ? r * inner : r; ctx.lineTo(x + Math.cos(a) * Math.max(0, rr), y + Math.sin(a) * Math.max(0, rr)); }
+  ctx.closePath(); ctx.fill();
+}
+function drawStar(x, y, r, fill, rot = 0) { star(x, y, r, fill, rot, 5, 0.45); }
+function twinkle(x, y, r, a = 1, col = '#fff8d0') { ctx.save(); ctx.globalAlpha = clamp(a, 0, 1); star(x, y, r, col, 0, 4, 0.25); ctx.restore(); }
+function sky(c1, c2) { const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, c1); g.addColorStop(1, c2); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); }
+function cloud(x, y, s, col = 'rgba(255,255,255,.9)') { for (const [dx, dy, r] of [[-30, 6, 22], [0, -6, 30], [32, 4, 22], [14, 10, 20], [-14, 10, 20]]) circle(x + dx * s, y + dy * s, r * s, col); }
+
+// ---------- 🔈 SOFT sounds (master volume 0.13, fades in; starts on the first tap or key) ----------
+let actx = null, master = null, musicBus = null, musicOn = true;
+function audio() {
+  try {
+    if (!actx) {
+      actx = new (window.AudioContext || window.webkitAudioContext)();
+      master = actx.createGain(); master.gain.setValueAtTime(0.0001, actx.currentTime);
+      master.gain.linearRampToValueAtTime(0.13, actx.currentTime + 1.5); master.connect(actx.destination);
+      musicBus = actx.createGain(); musicBus.gain.value = musicOn ? 0.5 : 0; musicBus.connect(master);
+    }
+    if (actx.state !== 'running') actx.resume();
+  } catch (_) {}
+  return actx;
+}
+function tone(f, when, d, v, type = 'sine', slide = 0, bus) {
+  const a = actx; if (!a || a.state !== 'running') return;
+  const t = Math.max(a.currentTime, when), o = a.createOscillator(), g = a.createGain();
+  o.type = type; o.frequency.setValueAtTime(f, t); if (slide) o.frequency.linearRampToValueAtTime(Math.max(40, f + slide), t + d);
+  g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(v, t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+  o.connect(g); g.connect(bus || master); o.start(t); o.stop(t + d + 0.05);
+}
+function bleep(f, d = 0.12, v = 0.05, delay = 0, type = 'sine', slide = 0) { if (actx) tone(f, actx.currentTime + delay, d, v, type, slide); }
+const SFX = {
+  tap() { bleep(660, 0.08, 0.04); },
+  good() { bleep(784, 0.1, 0.05); bleep(1047, 0.12, 0.04, 0.07); },
+  bonus() { [784, 988, 1175, 1568].forEach((f, i) => bleep(f, 0.12, 0.04, i * 0.06)); },
+  oops() { bleep(330, 0.28, 0.05, 0, 'triangle', -120); },
+  pop() { bleep(700, 0.07, 0.045, 0, 'sine', 500); },
+  dig() { bleep(170, 0.08, 0.05, 0, 'triangle', -50); },
+  start() { [392, 523, 659].forEach((f, i) => bleep(f, 0.14, 0.045, i * 0.1)); },
+  level() { [523, 659, 784, 1047].forEach((f, i) => bleep(f, 0.16, 0.045, i * 0.1)); },
+  win() { [523, 659, 784, 659, 784, 1047].forEach((f, i) => bleep(f, 0.18, 0.045, i * 0.12)); },
+};
+// 🎵 a short catchy loop: TUNE = { bpm, wave, chords: 4 chords (midi), mel: 32 eighth notes (midi, 0 = rest) on the chord tones }
+const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
+let nextNote = 0, step = 0;
+function musicTick() {
+  if (!actx || actx.state !== 'running' || !musicOn) return;
+  const now = actx.currentTime, e = 60 / TUNE.bpm / 2;
+  if (nextNote < now) nextNote = now + 0.05;           // never pile up old notes
+  while (nextNote < now + 0.25) {
+    const ch = TUNE.chords[Math.floor(step / 8) % TUNE.chords.length], m = TUNE.mel[step % TUNE.mel.length];
+    if (m) tone(mtof(m), nextNote, e * 1.7, 0.05, TUNE.wave || 'triangle', 0, musicBus);
+    if (step % 4 === 0) tone(mtof(ch[0] - 12), nextNote, e * 3.5, 0.06, 'sine', 0, musicBus);
+    if (step % 4 === 2) tone(mtof(ch[1]), nextNote, e * 1.5, 0.02, 'sine', 0, musicBus);
+    nextNote += e; step++;
+  }
+}
+setInterval(musicTick, 50);
+function toggleMusic() {
+  musicOn = !musicOn; audio();
+  if (musicBus && actx) { const t = actx.currentTime; musicBus.gain.cancelScheduledValues(t); musicBus.gain.setValueAtTime(musicBus.gain.value, t); musicBus.gain.linearRampToValueAtTime(musicOn ? 0.5 : 0.0001, t + 0.4); }
+}
+// ================= 🤖 THE FRIENDS: copied from Robo Jump 13 (via arcaderoom.html) and Sparks from the mystery games =================
+const PAL_ROBO = { head: '#ffffff', body: '#f5f7ff', visor: '#111827', eye: '#40c4ff', legs: '#3d5afe', pod: '#2979ff' };
+const PAL_R2 = { head: '#fdf4ff', body: '#effff4', visor: '#1a0033', eye: '#00e676', legs: '#d500f9', pod: '#00e676', r2: true };       // 💚 ROBO 2.0 (no antenna!)
+const PAL_PINK = { head: '#f8bbd0', body: '#fce4ec', visor: '#4a148c', eye: '#ff80ab', legs: '#ec407a', pod: '#f06292', pink: true };    // 🎀 PINK ROBO (big bow + a heart)
+function heartPath(x, y, s) {
+  ctx.beginPath();
+  ctx.moveTo(x, y + s * 0.9);
+  ctx.bezierCurveTo(x - s * 1.25, y + s * 0.05, x - s * 0.95, y - s * 0.95, x, y - s * 0.4);
+  ctx.bezierCurveTo(x + s * 0.95, y - s * 0.95, x + s * 1.25, y + s * 0.05, x, y + s * 0.9);
+  ctx.closePath();
+}
+function poly(pts, c, stroke, lw) {
+  ctx.beginPath(); ctx.moveTo(pts[0], pts[1]);
+  for (let i = 2; i < pts.length; i += 2) ctx.lineTo(pts[i], pts[i + 1]);
+  ctx.closePath();
+  if (c) { ctx.fillStyle = c; ctx.fill(); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw == null ? 3 : lw; ctx.stroke(); }
+}
+function drawRoboBase(p, pal) {
+  const sx = 1 / (p.squash || 1), sy = p.squash || 1;
+  const w = p.w * sx, h = p.h * sy, face = p.face || 1;
+  const x = p.x + (p.w - w) / 2, y = p.y + p.h - h, es = w / 30;
+  ctx.fillStyle = pal.legs;
+  ctx.fillRect(x + 4 * es, y + h - 7 * (h / 40), 8 * es, 7 * (h / 40)); ctx.fillRect(x + w - 12 * es, y + h - 7 * (h / 40), 8 * es, 7 * (h / 40));
+  roundRect(x + 2, y + h * 0.5, w - 4, h * 0.4, 6 * es, pal.body);
+  if (!pal.r2 && !pal.pink) circle(x + w / 2, y + h * 0.7, 3 * es, pal.pod);
+  roundRect(x - 5 * es, y + h * 0.3 - 3, 6 * es, 9 * (h / 40), 3, pal.pod);
+  roundRect(x + w - 1 * es, y + h * 0.3 - 3, 6 * es, 9 * (h / 40), 3, pal.pod);
+  roundRect(x - 2, y, w + 4, h * 0.55, 12 * es, pal.head);
+  roundRect(x + 2, y + 4, w - 4, h * 0.55 - 9, 9 * es, pal.visor);
+  const ex = x + w / 2 + face * 3 * es, ey = y + h * 0.27, blink = frame % 180 < 6 ? 1 : 5 * (h / 40);
+  if (p.dizzy) {                                        // 💫 swirly dizzy eyes (after a zap)
+    ctx.strokeStyle = pal.eye; ctx.lineWidth = 2;
+    for (const d of [-1, 1]) { ctx.beginPath(); for (let a = 0; a < 12; a += 0.4) ctx.lineTo(ex + d * 6 * es + Math.cos(a + frame * 0.2) * a * 0.35 * es, ey + Math.sin(a + frame * 0.2) * a * 0.35 * es); ctx.stroke(); }
+  } else if (p.happy) {                                 // ^ ^ happy eyes
+    ctx.strokeStyle = pal.eye; ctx.lineWidth = 2.5;
+    for (const d of [-1, 1]) { ctx.beginPath(); ctx.arc(ex + d * 6 * es, ey + 2 * es, 3.4 * es, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+  } else {
+    ctx.fillStyle = pal.eye;
+    ctx.beginPath(); ctx.ellipse(ex - 6 * es, ey, 3.5 * es, Math.max(0.5, blink), 0, 0, 7); ctx.ellipse(ex + 6 * es, ey, 3.5 * es, Math.max(0.5, blink), 0, 0, 7); ctx.fill();
+  }
+  if (pal.r2) {                                          // 💚 Robo 2.0: a happy smile, cute pixel freckles and a "2.0" (no antenna!)
+    ctx.strokeStyle = '#00e676'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(ex, ey + 6 * es, 3.5 * es, 0.2, Math.PI - 0.2); ctx.stroke();
+    ctx.fillStyle = '#ff00e5'; ctx.fillRect(x + 3, y + 3, 4 * es, 4 * es); ctx.fillStyle = '#00e676'; ctx.fillRect(x + w - 7 * es, y + 5, 4 * es, 4 * es);
+    ctx.fillStyle = '#7b1fa2'; ctx.font = `bold ${Math.round(9 * es)}px Arial`; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.fillText('2.0', x + w / 2, y + h * 0.84);
+  }
+  if (pal.pink) {                                        // 🎀 Pink Robo: a BIG pink bow, eyelashes and a heart on her chest
+    ctx.strokeStyle = '#4a148c'; ctx.lineWidth = Math.max(1, 1.3 * es);
+    for (const d of [-1, 1]) for (const k of [-1, 0, 1]) { ctx.beginPath(); ctx.moveTo(ex + d * 6 * es + k * 2 * es, ey - 4 * es); ctx.lineTo(ex + d * 6 * es + k * 3 * es, ey - 7 * es); ctx.stroke(); }
+    ctx.fillStyle = '#ff4081'; heartPath(x + w / 2, y + h * 0.69, 4.5 * es); ctx.fill();
+    const bx = x + w - 5 * es, by = y + 1 * es, s = es;
+    poly([bx, by, bx - 11 * s, by - 8 * s, bx - 11 * s, by + 8 * s], '#ff4081', '#c2185b', 1.2);
+    poly([bx, by, bx + 11 * s, by - 8 * s, bx + 11 * s, by + 8 * s], '#ff4081', '#c2185b', 1.2);
+    circle(bx, by, 3.2 * s, '#f50057');
+  }
+}
+// a robot standing with its feet at (x, y)
+function drawBot(x, y, pal, o = {}) { const w = (o.s || 1) * 40, h = (o.s || 1) * 44; drawRoboBase({ x: x - w / 2, y: y - h, w, h, face: o.face || 1, squash: o.squash, dizzy: o.dizzy, happy: o.happy }, pal); }
+// 🐶 SPARKS: long yellow robot dog, purple head-top/ears/back/tail, big window with little Charlie (orange) & August (gray)
+function drawSparks(x, y, o = {}) {
+  const s = o.s || 1, t = o.t || frame, f = o.face || 1, w = 34, h = 30;
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s); ctx.translate(-w / 2, -h);
+  const run = o.walk ? Math.sin(t * 0.4) * 3 : 0, GL = '#f4b942', GD = '#c98e2a', PU = '#8e5bd6', PD = '#6a3fb5';
+  const bx = -7, bw = w + 14;
+  ellipse(w / 2, h, 26, 3, 'rgba(0,0,0,.2)');
+  ctx.fillStyle = GD;
+  ctx.fillRect(bx + 6 + run, h - 9, 6, 9); ctx.fillRect(bx + 15 - run, h - 9, 6, 9);
+  ctx.fillRect(bx + bw - 21 - run, h - 9, 6, 9); ctx.fillRect(bx + bw - 12 + run, h - 9, 6, 9);
+  const back = f > 0 ? bx + 3 : bx + bw - 3;
+  ctx.strokeStyle = PD; ctx.lineWidth = 5; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(back, h * 0.4); ctx.lineTo(back - f * 9, h * 0.1 + Math.sin(t * (o.happy ? 0.9 : 0.4)) * 4); ctx.stroke();
+  roundRect(bx, h * 0.26, bw, h * 0.52, 9, GL);
+  ctx.save(); rrect(bx, h * 0.26, bw, h * 0.52, 9); ctx.clip(); ctx.fillStyle = PU; ctx.fillRect(bx, h * 0.26, bw, h * 0.15); ctx.restore();
+  const wx = bx + bw / 2 - f * 9, wy = h * 0.55;
+  ellipse(wx, wy, 11.5, 8.5, '#263238'); ellipse(wx, wy, 10, 7, '#b3e5fc');
+  for (const [cx, col] of [[wx - 4.5, '#ff9800'], [wx + 4.5, '#9e9e9e']]) {             // Charlie (orange) + August (gray), the small window cats
+    ctx.fillStyle = col; ctx.beginPath(); ctx.arc(cx, wy + 2, 3.8, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(cx - 3.6, wy + 0.5); ctx.lineTo(cx - 2.8, wy - 4); ctx.lineTo(cx - 0.6, wy - 1); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(cx + 3.6, wy + 0.5); ctx.lineTo(cx + 2.8, wy - 4); ctx.lineTo(cx + 0.6, wy - 1); ctx.fill();
+    ctx.fillStyle = col === '#ffffff' ? '#000' : '#ffd740'; ctx.fillRect(cx - 2, wy + 1.2, 1.2, 1.4); ctx.fillRect(cx + 0.8, wy + 1.2, 1.2, 1.4);
+  }
+  ctx.fillStyle = 'rgba(255,255,255,.6)'; ctx.fillRect(wx - 7, wy - 5, 4, 1.5);
+  const hx = f > 0 ? bx + bw - 14 : bx + 14;
+  roundRect(hx - 11, -1, 22, 19, 7, GL); roundRect(hx - 2 + f * 6 - (f < 0 ? 8 : 0), 8, 12, 9, 4, GL);
+  ctx.save(); rrect(hx - 11, -1, 22, 19, 7); ctx.clip(); ctx.fillStyle = PU; ctx.fillRect(hx - 11, -1, 22, 8); ctx.restore();
+  circle(hx + f * 2, 7, 3.2, '#fff'); circle(hx + f * 2.8, 7, 1.9, '#000'); circle(hx + f * 13, 10, 3, '#000');
+  if (o.happy) ellipse(hx + f * 8, 16, 3, 2 + Math.sin(t * 0.5), '#5d1a1a');
+  ctx.fillStyle = PD; ctx.beginPath(); ctx.ellipse(hx - f * 6, 7, 4.2, 10.5, f * 0.25, 0, 7); ctx.fill();
+  ctx.restore();
+}
+// ================= ⚡ ROBO'S ZAP FLOOR (❓ Mystery Challenge: VERY HARD!) =================
+// Robo hops around a big floor of tiles. Tiles glow YELLOW (with a shrinking ring) before they ZAP, always
+// 55+ frames ahead, so you can see every zap coming. Grab the batteries! One zap = Bzzt! and you try the level again.
+// The zaps come in the SAME order every try, so you can learn them ("I can do it next time!").
+// Level 1 Zappy Lab, Level 2 Bolt Factory (zaps that aim at Robo), Level 3 Thunder Tower (super fast + boss RUMBLES).
+const TUNE = { bpm: 126, wave: 'triangle',
+  chords: [[57, 60, 64], [53, 57, 60], [60, 64, 67], [55, 59, 62]],
+  mel: [69, 0, 72, 76, 72, 0, 69, 0, 65, 0, 69, 72, 77, 72, 69, 0, 67, 0, 72, 76, 79, 76, 72, 0, 67, 71, 74, 0, 71, 0, 67, 0] };
+const COLS = 9, ROWS = 5, TS = 80, GX = 120, GY = 118, HOP = 7;
+const P1 = ['row', 'col', 'rows2', 'cols3', 'checker', 'half'];
+const P2 = P1.concat(['diag', 'target', 'ring', 'center', 'target']);
+const P3 = P2.concat(['cross', 'plus', 'cross']);
+const LEVELS = [
+  { name: 'Zappy Lab', tip: 'Yellow = a zap is coming! Grab 10 batteries!', goal: 10, warn: 66, zap: 24, every: 96, seed: 11, pats: P1,
+    sky: ['#1a1446', '#3b2d7a'], tile: ['#4a3f99', '#5a4fb0'] },
+  { name: 'Bolt Factory', tip: 'NEW: zaps that aim right at Robo! Grab 12!', goal: 12, warn: 60, zap: 24, every: 72, seed: 22, pats: P2,
+    sky: ['#0d3b3a', '#1f6d5c'], tile: ['#2f7a6a', '#3a8f7c'] },
+  { name: 'Thunder Tower', tip: 'Super fast zaps... and then a BOSS! 😮', goal: 12, warn: 56, zap: 22, every: 62, seed: 33, pats: P3, boss: true,
+    sky: ['#2a0f3d', '#6a1f5c'], tile: ['#6b2f6e', '#803a83'] },
+];
+const BOSS = { epithet: 'The Grumpy Storm Cloud,', name: 'RUMBLES', hits: 4,
+  phases: [{ every: 64, seed: 44, pats: P2 }, { every: 58, seed: 55, pats: P3 }, { every: 54, seed: 66, pats: P3 }] };
+function mulberry(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const robo = { c: 4, r: 2, tc: 4, tr: 2, hop: 0, q: null, hold: 0, face: 1, happy: 0, dizzy: false };
+let events = [], lt = 0, nextEv = 0, rng = Math.random, brng = Math.random, battery = null, got = 0, phase = -1, tries = 0;
+let boss = { hp: 9, ouch: 0, angry: 0, say: '', sayT: 0 }, shots = [], cheer = 0, banner = '', bannerT = 0, bossCardT = 0;
+function cfg() { const L = LEVELS[level]; return phase >= 0 ? Object.assign({}, L, BOSS.phases[phase], { goal: BOSS.hits }) : L; }
+function roboTile() { return robo.hop >= 4 ? [robo.tc, robo.tr] : [robo.c, robo.r]; }
+function zapping(c, r, t) { for (const e of events) if (t >= e.zapAt && t < e.endAt && e.tiles[r * COLS + c]) return true; return false; }
+function warnOf(c, r, t) {                              // 0..1 how close a zap is on this tile (0 = none)
+  let w = 0; for (const e of events) if (t >= e.warnAt && t < e.zapAt && e.tiles[r * COLS + c]) w = Math.max(w, (t - e.warnAt) / (e.zapAt - e.warnAt)); return w;
+}
+function makeEvent(L) {
+  const pat = L.pats[Math.floor(rng() * L.pats.length)], a = rng(), b = rng();   // always 3 draws: the same zaps every try
+  const tiles = new Uint8Array(COLS * ROWS), set = (c, r) => { if (c >= 0 && c < COLS && r >= 0 && r < ROWS) tiles[r * COLS + c] = 1; };
+  const [rc, rr] = robo.hop ? [robo.tc, robo.tr] : [robo.c, robo.r];
+  const R = Math.floor(a * ROWS), C2 = Math.floor(a * COLS), k = Math.floor(b * 3);
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    let on = false;
+    if (pat === 'row') on = r === R;
+    else if (pat === 'rows2') on = r === R || r === (R + 2 + Math.floor(b * 2)) % ROWS;
+    else if (pat === 'col') on = c === C2;
+    else if (pat === 'cols3') on = c % 3 === k;
+    else if (pat === 'checker') on = (c + r) % 2 === (b < 0.5 ? 0 : 1);
+    else if (pat === 'half') on = b < 0.5 ? c <= 3 : c >= 5;
+    else if (pat === 'diag') on = (c + r) % 3 === k;
+    else if (pat === 'ring') on = c === 0 || r === 0 || c === COLS - 1 || r === ROWS - 1;
+    else if (pat === 'center') on = c > 0 && r > 0 && c < COLS - 1 && r < ROWS - 1;
+    else if (pat === 'target') on = Math.abs(c - rc) <= 1 && Math.abs(r - rr) <= 1;
+    else if (pat === 'cross') on = c === rc || r === rr;
+    else if (pat === 'plus') on = r === R || c % 3 === k;
+    if (on) set(c, r);
+  }
+  return { tiles, pat, warnAt: lt, zapAt: lt + L.warn, endAt: lt + L.warn + L.zap, boomed: false };
+}
+function placeBattery() {                              // a new battery pops up every time a zap fires
+  const [c0, r0] = roboTile();
+  let c = 0, r = 0;
+  const next = events.find(e => lt < e.zapAt), sneaky = brng() < 0.5;
+  if (next && sneaky) {                                 // 😈 sometimes it lands where the NEXT zap is coming: grab it fast, or wait!
+    const list = []; for (let i = 0; i < COLS * ROWS; i++) if (next.tiles[i] && i !== r0 * COLS + c0) list.push(i);
+    if (list.length) { const i = list[Math.floor(brng() * list.length)]; battery = { c: i % COLS, r: Math.floor(i / COLS), t: 0 }; return; }
+  }
+  for (let i = 0; i < 60; i++) { c = Math.floor(brng() * COLS); r = Math.floor(brng() * ROWS); const d = Math.abs(c - c0) + Math.abs(r - r0); if (d >= 3 && d <= 7) break; }
+  battery = { c, r, t: 0 };
+}
+function resetFloor(keepRobo) {
+  const L = cfg();
+  if (!keepRobo) Object.assign(robo, { c: 4, r: 2, tc: 4, tr: 2, hop: 0, q: null, face: 1 });
+  robo.dizzy = false; robo.happy = 0;
+  events = []; shots = []; lt = 0; nextEv = 45; got = 0;
+  rng = mulberry(L.seed); brng = mulberry(L.seed * 7 + 3);
+  placeBattery();
+}
+function startPhase(p) {
+  phase = p; boss.hp = (BOSS.phases.length - p) * BOSS.hits; boss.ouch = 0; boss.say = ''; boss.sayT = 0;
+  resetFloor(state === 'play'); state = 'play'; timer = 0;
+  banner = p === 0 ? '⭐ Grab the stars to zap RUMBLES back!' : `Phase ${p + 1}! ✅ Checkpoint saved!`; bannerT = 120;
+}
+const DIRS = { ArrowLeft: [-1, 0], a: [-1, 0], ArrowRight: [1, 0], d: [1, 0], ArrowUp: [0, -1], w: [0, -1], ArrowDown: [0, 1], s: [0, 1] };
+function tryMove(d) {
+  const nc = robo.c + d[0], nr = robo.r + d[1];
+  if (nc < 0 || nr < 0 || nc >= COLS || nr >= ROWS) return false;
+  robo.tc = nc; robo.tr = nr; robo.hop = 1; if (d[0]) robo.face = d[0];
+  bleep(520 + nr * 30, 0.05, 0.018, 0, 'sine', 120);
+  return true;
+}
+function heldDir() {
+  for (const k in DIRS) if (keys[k]) return DIRS[k];
+  if (pointer.down) {                                   // touch / mouse: hold a finger on a tile and Robo hops toward it
+    const pc = Math.floor((pointer.x - GX) / TS), pr = Math.floor((pointer.y - GY) / TS), dc = pc - robo.c, dr = pr - robo.r;
+    if (pc >= 0 && pr >= 0 && pc < COLS && pr < ROWS && (dc || dr)) return Math.abs(dc) >= Math.abs(dr) ? [Math.sign(dc), 0] : [0, Math.sign(dr)];
+  }
+  return null;
+}
+function die() {
+  tries++; robo.dizzy = true; state = 'fail'; timer = 0; SFX.oops();
+  const [c, r] = roboTile(); burst(GX + c * TS + TS / 2, GY + r * TS + TS / 2, ['#b3f5ff', '#ffffff', '#ffd740'], 16, 4);
+}
+function stepFloor() {
+  const L = cfg();
+  lt++;
+  if (lt >= nextEv) { events.push(makeEvent(L)); nextEv += L.every; bleep(880, 0.06, 0.014); if (phase >= 0) boss.angry = 30; }
+  events = events.filter(e => e.endAt > lt);
+  for (const e of events) if (!e.boomed && lt >= e.zapAt) { e.boomed = true; if (!battery && got + shots.length < L.goal && got < L.goal) placeBattery(); bleep(150, 0.25, 0.03, 0, 'triangle', -40); bleep(1200, 0.08, 0.008, 0, 'sine', -600); }
+  // 🦿 hopping
+  if (robo.hop > 0) { robo.hop++; if (robo.hop >= HOP) { robo.c = robo.tc; robo.r = robo.tr; robo.hop = 0; } }
+  if (window.BOT) window.BOT();
+  if (robo.hold > 0) robo.hold--;
+  if (robo.hop === 0) { const d = robo.q || (robo.hold > 0 ? null : heldDir()); robo.q = null; if (d) tryMove(d); }
+  const [c, r] = roboTile();
+  // 🔋 batteries (⭐ stars in the boss fight)
+  if (battery) battery.t++;
+  if (battery && c === battery.c && r === battery.r) {
+    got++; cheer = 50; robo.happy = 30; SFX.good();
+    const bx = GX + c * TS + TS / 2, by = GY + r * TS + TS / 2;
+    burst(bx, by, phase >= 0 ? ['#ffd740', '#fff59d', '#fff'] : ['#69f0ae', '#b9f6ca', '#fff'], 14, 4);
+    if (phase >= 0) { shots.push({ x: bx, y: by, t: 0 }); popText(bx, by - 30, 'ZAP BACK! ⚡', '#ffd740'); }
+    else popText(bx, by - 30, pick(['+1 🔋', 'Got it! 🔋', 'Charged! ⚡']), '#b9f6ca');
+    battery = null;
+    if (got >= L.goal) {
+      events = []; nextEv = Infinity;
+      if (phase < 0) { if (L.boss) { state = 'bossCard'; timer = 0; SFX.start(); } else levelWon(); return; }
+    }
+  }
+  if (zapping(c, r, lt)) { die(); return; }
+}
+function updateShots() {                                // ⭐ sparks fly up and bonk RUMBLES
+  for (const s of shots) {
+    s.t++; const k = Math.min(1, s.t / 30);
+    s.cx = s.x + (W / 2 - s.x) * k; s.cy = s.y + (66 - s.y) * k - Math.sin(k * Math.PI) * 60;
+    if (s.t === 30) {
+      boss.hp--; boss.ouch = 40; boss.say = pick(['Ouch, my fluff!', 'Hey! My fluff!', 'Grr... ouch!']); boss.sayT = 80; SFX.bonus();
+      burst(W / 2, 66, ['#ffd740', '#fff', '#b3e5fc'], 18, 5);
+    }
+  }
+  shots = shots.filter(s => s.t < 31);
+  if (phase >= 0 && got >= BOSS.hits && !shots.length && state === 'play') {
+    if (phase < BOSS.phases.length - 1) { events = []; startPhase(phase + 1); SFX.level(); }
+    else { events = []; state = 'bossDown'; timer = 0; boss.say = 'Okay, okay... you win! 🌈'; boss.sayT = 200; SFX.level(); }
+  }
+}
+const GAME = {
+  id: 'mysteryHard', name: "Robo's Zap Floor", color: '#7df9ff',
+  instr: ['⬅️⬆️⬇️➡️ Hop Robo around (or hold a finger on a tile)', '⚠️ YELLOW tiles are about to ZAP: hop off!', '🔋 Grab every battery. One zap = try again!'],
+  reset() { phase = -1; resetFloor(false); },
+  hud(L) { return phase >= 0 ? `⭐ ${got} / ${BOSS.hits}   Boss phase ${phase + 1} of 3` : `🔋 ${got} / ${L.goal}`; },
+  key(k) { if (DIRS[k]) { robo.q = DIRS[k]; robo.hold = 14; } },   // a quick tap = exactly one hop; holding keeps hopping
+  tap(x, y) {
+    const pc = Math.floor((x - GX) / TS), pr = Math.floor((y - GY) / TS), dc = pc - robo.c, dr = pr - robo.r;
+    if (pc >= 0 && pr >= 0 && pc < COLS && pr < ROWS && (dc || dr)) robo.q = Math.abs(dc) >= Math.abs(dr) ? [Math.sign(dc), 0] : [0, Math.sign(dr)];
+    robo.hold = 14;
+  },
+  update() {
+    stepFloor(); if (state !== 'play') return;
+    updateShots();
+    if (cheer > 0) cheer--; if (robo.happy > 0) robo.happy--; if (bannerT > 0) bannerT--;
+    if (boss.ouch > 0) boss.ouch--; if (boss.angry > 0) boss.angry--; if (boss.sayT > 0) boss.sayT--;
+  },
+  idle() {
+    if (cheer > 0) cheer--; if (boss.ouch > 0) boss.ouch--; if (boss.sayT > 0) boss.sayT--;
+    if (state === 'bossDown') { updateShots(); if (timer > 150) levelWon(); }
+    if (state === 'bossCard' && timer > 170) startPhase(0);
+  },
+};
+// ---------- 🎨 drawing ----------
+function bolt(x1, y1, x2, y2, seed, col = '#ffffff', lw = 3) {   // a little zig-zag lightning line
+  ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.lineJoin = 'round'; ctx.beginPath(); ctx.moveTo(x1, y1);
+  for (let i = 1; i < 6; i++) { const k = i / 6, j = Math.sin(seed * 12.9 + i * 78.2) * 9; ctx.lineTo(x1 + (x2 - x1) * k + j, y1 + (y2 - y1) * k - j * 0.5); }
+  ctx.lineTo(x2, y2); ctx.stroke();
+}
+function drawBattery(x, y, t) {
+  const b = Math.sin(t * 0.12) * 4; glow(x, y + b, 36, 'rgba(105,240,174,.55)');
+  roundRect(x - 13, y - 20 + b, 26, 40, 6, '#1b5e20'); roundRect(x - 6, y - 25 + b, 12, 6, 2, '#cfd8dc');
+  roundRect(x - 10, y - 17 + b, 20, 34, 4, '#69f0ae');
+  poly([x + 3, y - 13 + b, x - 6, y + 2 + b, x, y + 2 + b, x - 3, y + 14 + b, x + 7, y - 3 + b, x + 1, y - 3 + b], '#fff59d', '#f9a825', 1.2);
+}
+function drawStarBtn(x, y, t) {
+  const b = Math.sin(t * 0.12) * 4; glow(x, y + b, 40, 'rgba(255,215,64,.6)');
+  star(x, y + b, 24, '#ffb300', t * 0.03); star(x, y + b, 17, '#ffe57f', t * 0.03);
+}
+function drawCloud(x, y) {                              // ⛈️ RUMBLES: a grumpy (but cute!) storm cloud
+  const sh = boss.ouch > 0 ? Math.sin(boss.ouch * 1.3) * 5 : 0, happy = state === 'bossDown';
+  const col = happy ? '#e1f5fe' : boss.angry > 0 ? '#7e8db0' : '#9aa7c7';
+  ctx.save(); ctx.translate(x + sh, y + Math.sin(frame * 0.05) * 3);
+  if (happy) for (let i = 0; i < 6; i++) { ctx.strokeStyle = ['#ff5c8a', '#ff9e40', '#ffd740', '#69f0ae', '#40c4ff', '#b388ff'][i]; ctx.lineWidth = 6; ctx.beginPath(); ctx.arc(0, 60, 150 - i * 6, Math.PI * 1.05, Math.PI * 1.95); ctx.stroke(); }
+  for (const [dx, dy, r] of [[-62, 8, 30], [-30, -12, 38], [10, -20, 42], [50, -6, 34], [74, 12, 26], [0, 14, 40]]) circle(dx, dy, r, col);
+  ellipse(-24, -26, 14, 6, 'rgba(255,255,255,.35)', -0.3);
+  // face
+  if (boss.ouch > 0) { text('>', -20, 14, 24, '#2c2c54'); text('<', 20, 14, 24, '#2c2c54'); }
+  else if (happy) { ctx.strokeStyle = '#2c2c54'; ctx.lineWidth = 3; for (const ex of [-20, 20]) { ctx.beginPath(); ctx.arc(ex, 8, 6, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); } }
+  else { circle(-20, 6, 6, '#2c2c54'); circle(20, 6, 6, '#2c2c54'); circle(-18, 4, 2, '#fff'); circle(22, 4, 2, '#fff');
+    ctx.strokeStyle = '#2c2c54'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(-28, -6); ctx.lineTo(-12, -2); ctx.moveTo(28, -6); ctx.lineTo(12, -2); ctx.stroke(); }
+  ctx.strokeStyle = '#2c2c54'; ctx.lineWidth = 3; ctx.beginPath();
+  if (happy) ctx.arc(0, 20, 9, 0.2, Math.PI - 0.2); else ctx.arc(0, 30, 8, Math.PI + 0.4, -0.4); ctx.stroke();
+  ellipse(-36, 18, 7, 4, 'rgba(255,128,171,.5)'); ellipse(36, 18, 7, 4, 'rgba(255,128,171,.5)');
+  // ❤️ how many zaps RUMBLES has left
+  for (let i = 0; i < 12; i++) circle(-50 + i * 9.1, 46, 3.8, i < boss.hp ? '#ffd740' : 'rgba(255,255,255,.3)');
+  ctx.restore();
+  if (boss.sayT > 0) { roundRect(x + 100, y - 24, 250, 40, 14, 'rgba(255,255,255,.92)'); text(boss.say, x + 225, y + 4, 19, '#4a148c'); }
+}
+function tileXY(c, r) { return [GX + c * TS, GY + r * TS]; }
+function drawFloor(L, t) {
+  sky(L.sky[0], L.sky[1]);
+  for (let i = 0; i < 30; i++) twinkle((i * 137) % W, (i * 71) % 110 + 6, 3 + (i % 3), 0.3 + 0.3 * Math.sin(frame * 0.05 + i));
+  roundRect(GX - 10, GY - 10, COLS * TS + 20, ROWS * TS + 20, 18, 'rgba(0,0,0,.35)');
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    const [x, y] = tileXY(c, r);
+    roundRect(x + 3, y + 3, TS - 6, TS - 6, 12, L.tile[(c + r) % 2]);
+    roundRect(x + 8, y + 8, TS - 16, 8, 4, 'rgba(255,255,255,.08)');
+    if (t == null) continue;
+    const w = warnOf(c, r, t);
+    if (w > 0) {                                        // ⚠️ the warning: yellow glow + a ring that runs out
+      const blink = w > 0.72 ? (Math.floor(frame / 4) % 2 ? 1 : 0.55) : 1;
+      ctx.save(); ctx.globalAlpha = (0.35 + 0.5 * w) * blink; roundRect(x + 3, y + 3, TS - 6, TS - 6, 12, '#ffd740'); ctx.restore();
+      ctx.strokeStyle = '#fff8e1'; ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(x + TS / 2, y + TS / 2, 22, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (1 - w)); ctx.stroke();
+      text('!', x + TS / 2, y + TS / 2 + 10, 28, '#ff6d00');
+    }
+    if (zapping(c, r, t)) {                             // ⚡ ZAP!
+      glow(x + TS / 2, y + TS / 2, 60, 'rgba(128,222,255,.8)');
+      roundRect(x + 3, y + 3, TS - 6, TS - 6, 12, 'rgba(200,245,255,.92)');
+      const sd = Math.floor(frame / 3) + c * 7 + r * 13;
+      bolt(x + 10, y + 12, x + TS - 12, y + TS - 10, sd, '#40c4ff', 4); bolt(x + TS - 10, y + 14, x + 14, y + TS - 12, sd + 5, '#ffffff', 3);
+    }
+  }
+}
+function roboPos() {
+  const k = robo.hop / HOP, [x0, y0] = tileXY(robo.c, robo.r), [x1, y1] = tileXY(robo.tc, robo.tr);
+  const x = robo.hop ? x0 + (x1 - x0) * k : x0, y = robo.hop ? y0 + (y1 - y0) * k : y0;
+  return [x + TS / 2, y + TS / 2 + 30 - (robo.hop ? Math.sin(k * Math.PI) * 22 : 0)];
+}
+function drawFriends(happy) {
+  const j = happy ? -Math.abs(Math.sin(frame * 0.3)) * 12 : 0;
+  drawBot(60, 290 + j, PAL_R2, { s: 1.15, happy });
+  drawSparks(62, 470 + j * 0.8, { s: 1.6, happy, face: 1 });
+  drawBot(900, 400 + j, PAL_PINK, { s: 1.15, face: -1, happy });
+  if (happy) { text('Go Robo!', 60, 220, 18, '#69f0ae'); text('You can do it!', 900, 330, 16, '#ff80ab'); }
+}
+GAME.draw = function (L, title) {
+  if (title) { drawFloor(LEVELS[0], null); return; }
+  const live = state === 'play' || state === 'fail';
+  drawFloor(L, live ? lt : null);
+  if (battery && (state === 'play' || state === 'intro' || state === 'fail')) { const [x, y] = tileXY(battery.c, battery.r); (phase >= 0 ? drawStarBtn : drawBattery)(x + TS / 2, y + TS / 2, battery.t + frame); }
+  drawFriends(cheer > 0 || state === 'levelDone' || state === 'win' || state === 'bossDown');
+  const [rx, ry] = roboPos();
+  ellipse(rx, ry - (robo.hop ? 0 : 0) + 2, 22, 6, 'rgba(0,0,0,.3)');
+  drawBot(rx, ry, PAL_ROBO, { s: 1.25, face: robo.face, dizzy: robo.dizzy, happy: robo.happy > 0 || state === 'levelDone' || state === 'bossDown', squash: robo.hop === 1 ? 0.85 : 1 });
+  if (robo.dizzy) for (let i = 0; i < 3; i++) { const a = frame * 0.08 + i * 2.1; star(rx + Math.cos(a) * 26, ry - 66 + Math.sin(a) * 6, 7, '#ffd54f', a); }
+  if (phase >= 0 || state === 'bossDown') drawCloud(W / 2, 62);
+  for (const s of shots) { glow(s.cx, s.cy, 26, 'rgba(255,215,64,.8)'); star(s.cx, s.cy, 12, '#fff59d', frame * 0.3); }
+  if (bannerT > 0 && state === 'play') { ctx.save(); ctx.globalAlpha = Math.min(1, bannerT / 20); roundRect(W / 2 - 290, 280, 580, 54, 18, 'rgba(20,16,50,.8)'); text(banner, W / 2, 317, 26, '#ffd740'); ctx.restore(); }
+};
+GAME.titleArt = function () {
+  for (let i = 0; i < 5; i++) {                         // a little row of zap tiles
+    const x = W / 2 - 200 + i * 80, y = 168, w = (frame * 0.012 + i * 0.2) % 1.2;
+    roundRect(x + 3, y + 3, 74, 74, 12, '#5a4fb0');
+    if (w < 1) { ctx.save(); ctx.globalAlpha = 0.3 + 0.5 * w; roundRect(x + 3, y + 3, 74, 74, 12, '#ffd740'); ctx.restore(); text('!', x + 40, y + 50, 28, '#ff6d00'); }
+    else { roundRect(x + 3, y + 3, 74, 74, 12, 'rgba(200,245,255,.92)'); bolt(x + 10, y + 12, x + 68, y + 70, frame + i, '#40c4ff', 4); }
+  }
+  drawBot(W / 2, 350 + Math.sin(frame * 0.1) * -6, PAL_ROBO, { s: 1.6, happy: frame % 160 < 50 });
+  drawBattery(W / 2 + 130, 310, frame); drawBattery(W / 2 - 130, 310, frame + 30);
+  drawSparks(W / 2 - 250, 350, { s: 1.4, happy: true }); drawBot(W / 2 + 250, 350, PAL_PINK, { s: 1.2, face: -1 });
+};
+GAME.winArt = function () {
+  drawBot(W / 2, 340, PAL_ROBO, { s: 1.5, happy: true });
+  drawBot(W / 2 - 110, 340, PAL_R2, { s: 1.1, happy: true }); drawBot(W / 2 + 110, 340, PAL_PINK, { s: 1.1, face: -1, happy: true });
+  drawSparks(W / 2 - 220, 340, { s: 1.4, happy: true }); drawBattery(W / 2 + 220, 310, frame); drawStarBtn(W / 2 + 280, 290, frame);
+};
+// ---------- ✨ sparkles, pop-up words and confetti ----------
+let parts = [], confetti = [];
+function burst(x, y, cols, n = 12, sp = 4) { for (let i = 0; i < n; i++) { const a = Math.random() * 7, v = rand(1, sp); parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 1, life: rand(25, 45), max: 45, r: rand(3, 6), col: pick(cols) }); } }
+function popText(x, y, str, col = '#fff') { parts.push({ x, y, vx: 0, vy: -1.2, life: 55, max: 55, str, col }); }
+function makeConfetti(n = 160) { for (let i = 0; i < n; i++) confetti.push({ x: rand(0, W), y: rand(-H, 0), vx: rand(-1, 1), vy: rand(1.5, 3.5), a: rand(0, 7), va: rand(-0.2, 0.2), col: pick(['#ff5c8a', '#ffd740', '#69f0ae', '#40c4ff', '#b388ff', '#ff9e40']) }); }
+function updateParts() {
+  for (const p of parts) { p.x += p.vx; p.y += p.vy; if (!p.str) p.vy += 0.12; p.life--; }
+  parts = parts.filter(p => p.life > 0);
+  for (const c of confetti) { c.x += c.vx + Math.sin(frame * 0.05 + c.a) * 0.6; c.y += c.vy; c.a += c.va; if (c.y > H + 20) { c.y = -10; c.x = rand(0, W); } }
+}
+function drawParts() {
+  for (const p of parts) {
+    ctx.save(); ctx.globalAlpha = clamp(p.life / 25, 0, 1);
+    if (p.str) text(p.str, p.x, p.y, 26, p.col); else circle(p.x, p.y, p.r, p.col);
+    ctx.restore();
+  }
+}
+function drawConfetti() { for (const c of confetti) { ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(c.a); ctx.fillStyle = c.col; ctx.fillRect(-6, -3, 12, 6); ctx.restore(); } }
+
+// ---------- 🎮 keys, taps and the game flow ----------
+const keys = {};
+const pointer = { x: W / 2, y: H / 2, down: false };
+const MUSIC_BTN = { x: W - 64, y: H - 60, w: 52, h: 48 };
+let state = 'title', level = 0, timer = 0, hurtFlash = 0;
+GAME.reset();
+const inBox = (p, b) => p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
+function toCanvas(e) { const r = C.getBoundingClientRect(); return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height }; }
+addEventListener('keydown', e => {
+  const k = e.key;
+  if (k === ' ' || k.startsWith('Arrow')) e.preventDefault();
+  audio(); keys[k] = true;
+  if (e.repeat) return;
+  if (k === 'm' || k === 'M') { toggleMusic(); return; }
+  if (state === 'play') { if (GAME.key) GAME.key(k); }
+  else if (k === 'Enter' || k === ' ') press();
+});
+addEventListener('keyup', e => { keys[e.key] = false; });
+C.addEventListener('mousedown', e => {
+  audio(); const p = toCanvas(e); pointer.x = p.x; pointer.y = p.y; pointer.down = true;
+  if (inBox(p, MUSIC_BTN)) { pointer.down = false; toggleMusic(); return; }
+  if (state === 'play') { if (GAME.tap) GAME.tap(p.x, p.y); } else press();
+});
+addEventListener('mousemove', e => { const p = toCanvas(e); pointer.x = p.x; pointer.y = p.y; });
+addEventListener('mouseup', () => { pointer.down = false; });
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; pointer.down = false; });
+function press() {
+  if (state === 'title') { SFX.start(); level = 0; tries = 0; startLevel(); }
+  else if (state === 'intro' && timer > 25) state = 'play';
+  else if (state === 'levelDone' && timer > 45) { level++; startLevel(); }
+  else if (state === 'fail' && timer > 30) retry();
+  else if (state === 'bossCard' && timer > 50) startPhase(0);
+  else if (state === 'win' && timer > 120) { state = 'title'; timer = 0; confetti = []; }
+}
+function retry() { if (phase >= 0) { const p = phase; startPhase(p); } else startLevel(); }   // 🚩 boss phases are checkpoints
+function startLevel() { state = 'intro'; timer = 0; parts = []; hurtFlash = 0; cheer = 0; bannerT = 0; GAME.reset(); }
+function levelWon() {
+  if (level >= LEVELS.length - 1) {
+    state = 'win'; timer = 0; makeConfetti(); SFX.win(); trophy('mysteryHard');
+    if (tries <= 10) trophy('mysteryHardPro');
+  }
+  else { state = 'levelDone'; timer = 0; SFX.level(); burst(W / 2, H / 2, ['#ffd740', '#69f0ae', '#ff80ab'], 30, 6); }
+}
+
+// ---------- 🖼️ screens ----------
+function panel(x, y, w, h, col = 'rgba(20,16,50,.78)') { roundRect(x, y, w, h, 24, col); ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 4; rrect(x, y, w, h, 24); ctx.stroke(); }
+function drawHUD() {
+  const L = LEVELS[level];
+  text(`Level ${level + 1}: ${L.name}`, 20, 42, 28, '#fff', 'left');
+  text(GAME.hud(cfg()), 20, 78, 24, '#ffe57f', 'left');
+  text(`💀 Tries: ${tries}`, W - 20, 42, 28, '#fff', 'right');
+}
+function drawMusicBtn() { roundRect(MUSIC_BTN.x, MUSIC_BTN.y, MUSIC_BTN.w, MUSIC_BTN.h, 14, 'rgba(0,0,0,.35)'); emoji(musicOn ? '🎵' : '🔇', MUSIC_BTN.x + 26, MUSIC_BTN.y + 25, 26); }
+function drawTitle() {
+  GAME.draw(LEVELS[0], true);
+  ctx.fillStyle = 'rgba(10,8,30,.35)'; ctx.fillRect(0, 0, W, H);
+  panel(110, 18, 740, 504);
+  text('❓ MYSTERY CHALLENGE: VERY HARD!', W / 2, 66, 30, '#ff8a80');
+  const bob = Math.sin(frame * 0.06) * 4;
+  text(GAME.name + ' ⚡', W / 2, 128 + bob, 50, GAME.color);
+  GAME.titleArt();
+  GAME.instr.forEach((s, i) => text(s, W / 2, 396 + i * 32, 22, '#fff'));
+  if (Math.floor(frame / 30) % 2 === 0) text('Tap, press SPACE or START to play!', W / 2, 502, 26, '#69f0ae');
+}
+const CHEERS = ['So close! You can do it! 💪', 'Watch the yellow tiles! 👀', 'Every try makes you better! ⭐', 'The zaps come the same way every time!', 'Robo believes in you! 🤖'];
+function drawOverlays() {
+  const L = LEVELS[level];
+  if (state === 'intro') {
+    const s = Math.min(1, timer / 15);
+    ctx.save(); ctx.globalAlpha = s; panel(W / 2 - 310, 170, 620, 190);
+    text(`Level ${level + 1}`, W / 2, 228, 34, '#ffd740'); text(L.name, W / 2, 284, 52, '#fff'); text(L.tip, W / 2, 334, 24, '#b9f6ca');
+    ctx.restore();
+  } else if (state === 'levelDone') {
+    panel(W / 2 - 300, 170, 600, 200);
+    text(['Charged up! 🔋', 'AMAZING! 🌟'][level % 2], W / 2, 240, 56, '#ffd740');
+    text(`You beat ${L.name}!`, W / 2, 292, 30);
+    if (timer > 45) text('Tap or press SPACE for the next level', W / 2, 342, 24, '#69f0ae');
+  } else if (state === 'fail' && timer > 18) {
+    panel(W / 2 - 320, 170, 640, 210);
+    text('Bzzt! 💫', W / 2, 236, 56, '#7df9ff');
+    text(CHEERS[tries % CHEERS.length], W / 2, 286, 26);
+    text(phase >= 0 ? `🚩 Back to boss phase ${phase + 1} (checkpoint!)` : `💀 Tries: ${tries}`, W / 2, 322, 22, '#ffe57f');
+    if (timer > 30) text('Tap or press SPACE to try again', W / 2, 360, 24, '#69f0ae');
+  } else if (state === 'bossCard') {
+    ctx.fillStyle = `rgba(10,8,30,${Math.min(0.6, timer / 40)})`; ctx.fillRect(0, 0, W, H);
+    drawCloud(W / 2, 140);
+    const s = clamp((timer - 20) / 20, 0, 1);
+    ctx.save(); ctx.globalAlpha = s;
+    text(BOSS.epithet, W / 2, 290, 34, '#b3e5fc'); text(BOSS.name, W / 2, 370, 84 + Math.sin(frame * 0.1) * 3, '#ffd740');
+    text('Grab the ⭐ stars to zap RUMBLES back!', W / 2, 430, 24, '#fff');
+    ctx.restore();
+    if (timer > 50) text('Tap or press SPACE!', W / 2, 480, 24, '#69f0ae');
+  } else if (state === 'win') {
+    ctx.fillStyle = 'rgba(10,8,30,.45)'; ctx.fillRect(0, 0, W, H);
+    panel(W / 2 - 340, 70, 680, 400, 'rgba(20,16,50,.93)'); drawConfetti();
+    text('YOU DID IT! 🏆', W / 2, 140, 60, '#ffd740'); text('You beat the VERY HARD Mystery Challenge!', W / 2, 190, 26);
+    GAME.winArt();
+    text(`💀 Tries: ${tries}` + (tries <= 10 ? '   PRO! 🥇' : ''), W / 2, 386, 28, tries <= 10 ? '#ffd740' : '#fff');
+    text(tries <= 10 ? '🏆🏆 You won TWO trophies for the Trophy Room!' : '🏆 You won a trophy! (Beat it in 10 tries or less for a PRO trophy!)', W / 2, 424, tries <= 10 ? 24 : 19, '#69f0ae');
+    if (timer > 120) text('Tap to play again', W / 2, 456, 20, '#fff');
+  }
+}
+function update() {
+  frame++; timer++;
+  if (state === 'intro' && timer > 110) state = 'play';
+  if (state === 'play') GAME.update(LEVELS[level]);
+  else if (GAME.idle) GAME.idle(LEVELS[level]);
+  if (hurtFlash > 0) hurtFlash--;
+  updateParts();
+}
+function draw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  if (state === 'title') drawTitle();
+  else {
+    GAME.draw(LEVELS[level], false); drawParts();
+    drawHUD(); drawOverlays();
+  }
+  drawMusicBtn();
+}
+let last = performance.now(), acc = 0;
+function loop(now) {
+  acc += Math.min(100, now - last); last = now;
+  while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; }
+  draw(); requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
