@@ -1,0 +1,1120 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>The Phone Museum</title>
+<script src="touchpad.js?v=10"></script>
+<style>
+  html, body { height: 100%; }
+  body { margin: 0; background: #141b24; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  canvas { width: min(100vw, calc(100vh * 960 / 540)); height: auto; display: block; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
+  #printBox { position: fixed; inset: 0; overflow: auto; -webkit-overflow-scrolling: touch; background: #fff3e0; z-index: 99999; text-align: center; padding: 12px 12px 40px; box-sizing: border-box; font-family: "Trebuchet MS", Arial, sans-serif; }
+  #printBox .pbBar { position: sticky; top: 0; display: flex; gap: 14px; justify-content: center; padding: 8px; background: #fff3e0; z-index: 2; }
+  #printBox button { font: bold 26px "Trebuchet MS", Arial, sans-serif; border: 0; border-radius: 16px; padding: 14px 30px; color: #fff; cursor: pointer; box-shadow: 0 5px 0 rgba(0,0,0,.25); }
+  #printBox .pbPrint { background: #43a047; } #printBox .pbBack { background: #455a64; }
+  #printBox .pbTip { font-size: 20px; color: #6d3a12; margin: 6px 0 4px; }
+  #printBox .pbPage { display: block; width: min(94vw, 720px); margin: 16px auto; background: #fff; box-shadow: 0 6px 20px rgba(0,0,0,.25); border-radius: 6px; }
+  @media print {
+    @page { size: letter portrait; margin: 0.3in; }
+    html, body { display: block !important; height: auto !important; overflow: visible !important; background: #fff !important; }
+    body > *:not(#printBox) { display: none !important; }
+    #printBox { position: static; overflow: visible; background: #fff; padding: 0; }
+    #printBox .pbBar, #printBox .pbTip { display: none !important; }
+    #printBox .pbPage { width: 100%; margin: 0; box-shadow: none; border-radius: 0; break-after: page; page-break-after: always; }
+    #printBox .pbPage:last-child { break-after: auto; page-break-after: auto; }
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+<canvas id="game" width="960" height="540"></canvas>
+<script>
+// ☎️ THE PHONE MUSEUM — Ben's idea! A museum of telephones: Bell's first telephone, switchboards, candlestick and
+// rotary phones, push buttons, the first handheld mobile call, flip phones, the first text, smartphones...
+// and in the GRAND HALL: the Cat Phone, where you can call Mr. Whiskers (from Ben's game Cat Phone).
+// Robo is your museum guide. Tap an exhibit to see it up close (some you can PLAY with: spin the rotary dial,
+// push the buttons, be a switchboard operator), collect a 📘 passport stamp for each, then print souvenirs.
+// Engine copied from The MacBook Museum. All sound goes through one quiet master volume (0.15).
+const C = document.getElementById('game');
+let ctx = C.getContext('2d');
+const W = 960, H = 540;
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }
+let save = { seen: {} };
+try { const s = JSON.parse(localStorage.getItem('phoneMuseum') || 'null'); if (s && s.seen) save = s; } catch (_) {}
+function writeSave() { try { localStorage.setItem('phoneMuseum', JSON.stringify(save)); } catch (_) {} }
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, k) => a + (b - a) * k;
+let frame = 0;
+
+// ---------- drawing helpers ----------
+function rr(x, y, w, h, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(x, y, Math.max(0, w), Math.max(0, h), r); else ctx.rect(x, y, w, h); ctx.fill(); }
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, 7); ctx.fill(); }
+function ellipse(x, y, rx, ry, fill, rot = 0) { ctx.fillStyle = fill; ctx.beginPath(); ctx.ellipse(x, y, Math.max(0, rx), Math.max(0, ry), rot, 0, 7); ctx.fill(); }
+function tri(a, b, c, d, e, f, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.lineTo(e, f); ctx.closePath(); ctx.fill(); }
+function text(str, x, y, size, color = '#fff', align = 'center', outline = true) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; ctx.textAlign = align; ctx.lineJoin = 'round';
+  if (outline) { ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = Math.max(3, size / 6); ctx.strokeText(str, x, y); }
+  ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function fit(str, x, y, size, maxW, color, align, outline) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; const w = ctx.measureText(str).width || 0;
+  text(str, x, y, w > maxW ? Math.max(9, Math.floor(size * maxW / w)) : size, color, align, outline);
+}
+function emoji(e, x, y, size) { ctx.font = `${size}px Arial`; ctx.textAlign = 'center'; ctx.fillStyle = '#000'; ctx.fillText(e, x, y); }
+function wrap(str, size, maxW) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; const out = []; let line = '';
+  for (const wd of String(str).split(' ')) { const t = line ? line + ' ' + wd : wd; if (line && ctx.measureText(t).width > maxW) { out.push(line); line = wd; } else line = t; }
+  if (line) out.push(line); return out;
+}
+function button(b, label, fill, size = 22) {
+  rr(b.x, b.y + 4, b.w, b.h, 14, 'rgba(0,0,0,.35)'); rr(b.x, b.y, b.w, b.h, 14, fill);
+  fit(label, b.x + b.w / 2, b.y + b.h / 2 + size * 0.36, size, b.w - 12);
+}
+const inBox = (t, b) => t && t.x >= b.x && t.x <= b.x + b.w && t.y >= b.y && t.y <= b.y + b.h;
+function line(x1, y1, x2, y2, col, w) { ctx.strokeStyle = col; ctx.lineWidth = w; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+function bubble(str, x, y, maxW, size = 18, col = '#4e2a10') {          // a white speech bubble centered on x, top at y
+  const ln = wrap(str, size, maxW - 24), h = ln.length * (size + 4) + 18;
+  rr(x - maxW / 2, y + 3, maxW, h, 16, 'rgba(0,0,0,.2)'); rr(x - maxW / 2, y, maxW, h, 16, '#fff');
+  ln.forEach((l, i) => fit(l, x, y + 12 + size * 0.85 + i * (size + 4), size, maxW - 20, col, 'center', false));
+  return h;
+}
+// ---------- copied from Robo: The Beginning (robomovie.html) ----------
+function rrect(x, y, w, h, r) {
+  ctx.beginPath();
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function roundRect(x, y, w, h, r, fill) { ctx.fillStyle = fill; rrect(x, y, Math.max(0, w), Math.max(0, h), r); ctx.fill(); }
+function glow(x, y, r, col, a = 1) {                  // soft round light (radial gradient, no ctx.filter)
+  r = Math.max(1, r);
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.save(); ctx.globalAlpha = clamp(a, 0, 1); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); ctx.restore();
+}
+function star(x, y, r, fill, rot = 0, pts = 5, inner = 0.48) {
+  ctx.fillStyle = fill; ctx.beginPath();
+  for (let i = 0; i < pts * 2; i++) { const a = -Math.PI / 2 + rot + i * Math.PI / pts, rr = i % 2 ? r * inner : r; ctx.lineTo(x + Math.cos(a) * Math.max(0, rr), y + Math.sin(a) * Math.max(0, rr)); }
+  ctx.closePath(); ctx.fill();
+}
+function twinkle(x, y, r, a = 1, col = '#fff8d0') {   // a 4-point sparkle
+  ctx.save(); ctx.globalAlpha = clamp(a, 0, 1); star(x, y, r, col, 0, 4, 0.25); ctx.restore();
+}
+const ROBO = { head: '#ffffff', body: '#f5f7ff', visor: '#111827', eye: '#40c4ff', legs: '#3d5afe', pod: '#2979ff', edge: '#9fa8da' };
+// o = { s, face, t, pose (idle/off/walk/run/wobble/jump/happy/fall/sit/wave), eyes 0..1, mouth, parts (bitmask: 1 body+legs, 2 head+visor, 4 ear pods, 8 antenna), dizzy }
+function drawRobo(x, y, o = {}) {
+  const s = o.s || 2.6, f = o.face || 1, t = o.t || frame, pose = o.pose || 'idle', parts = o.parts === undefined ? 15 : o.parts;
+  const eyes = o.eyes === undefined ? 1 : o.eyes;
+  let tilt = o.tilt || 0, bob = 0, lA = 0, lB = 0, sq = 1;
+  if (pose === 'walk' || pose === 'run') { const k = t * (pose === 'run' ? 0.5 : 0.3); lA = Math.max(0, Math.sin(k)) * 4; lB = Math.max(0, -Math.sin(k)) * 4; bob = -Math.abs(Math.sin(k)) * 1.5; }
+  else if (pose === 'wobble') { const k = t * 0.16; tilt += Math.sin(k) * 0.22; lA = Math.max(0, Math.sin(k)) * 5; lB = Math.max(0, -Math.sin(k)) * 5; }
+  else if (pose === 'jump') { lA = lB = 4; sq = 1.06; }
+  else if (pose === 'happy') { bob = -Math.abs(Math.sin(t * 0.25)) * 4; tilt += Math.sin(t * 0.25) * 0.08; }
+  else if (pose === 'fall') { tilt += -0.5; bob = 3; }
+  else if (pose === 'sit') { lA = lB = 3; bob = 3; }
+  else if (pose !== 'off') bob = Math.sin(t * 0.06) * 0.6;
+  ctx.save(); ctx.translate(x, y); ctx.rotate(tilt * f); ctx.scale(s * f, s * sq); ctx.translate(0, bob);
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  if (parts & 1) {
+    ctx.fillStyle = ROBO.legs; ctx.fillRect(-11, -7 - lA, 8, 7); ctx.fillRect(3, -7 - lB, 8, 7);
+    roundRect(-13, -21, 26, 17, 6, ROBO.body);
+    ctx.strokeStyle = ROBO.edge; ctx.lineWidth = 0.8; rrect(-13, -21, 26, 17, 6); ctx.stroke();
+    circle(0, -12, 3, ROBO.pod); circle(-0.8, -12.8, 1, 'rgba(255,255,255,.7)');
+  }
+  if (parts & 8) {                                     // 📡 the little antenna (wiggles when he moves)
+    const tip = Math.sin(t * 0.12) * (pose === 'idle' || pose === 'off' ? 0.6 : 2);
+    ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 1.4; ctx.beginPath(); ctx.moveTo(0, -40); ctx.quadraticCurveTo(tip * 0.4, -45, tip, -49); ctx.stroke();
+    const lit = pose === 'off' ? 0.25 : 0.6 + (o.mouth ? 0.4 * Math.abs(Math.sin(t * 0.4)) : 0);
+    if (pose !== 'off') glow(tip, -50, 7, 'rgba(64,196,255,.8)', lit);
+    circle(tip, -50, 2.6, ROBO.pod); circle(tip - 0.8, -50.8, 0.8, 'rgba(255,255,255,.8)');
+  }
+  if (parts & 4) { roundRect(-20, -31, 6, 9, 3, ROBO.pod); roundRect(14, -31, 6, 9, 3, ROBO.pod); }
+  if (parts & 2) {
+    roundRect(-17, -40, 34, 22, 12, ROBO.head);
+    ctx.strokeStyle = ROBO.edge; ctx.lineWidth = 0.8; rrect(-17, -40, 34, 22, 12); ctx.stroke();
+    roundRect(-13, -36, 26, 13, 9, ROBO.visor);
+    ellipse(-7, -34, 4, 1.2, 'rgba(255,255,255,.18)', -0.2);
+    if (eyes > 0.01) {
+      ctx.save(); ctx.globalAlpha *= clamp(eyes, 0, 1);
+      glow(3, -29.5, 16, 'rgba(64,196,255,.45)', eyes);
+      const ey = -29.5;
+      if (o.dizzy) {                                   // 💫 swirly dizzy eyes
+        ctx.strokeStyle = ROBO.eye; ctx.lineWidth = 1.1;
+        for (const ex of [-3, 9]) { ctx.beginPath(); for (let a = 0; a < 12; a += 0.4) ctx.lineTo(ex + Math.cos(a + t * 0.2) * a * 0.3, ey + Math.sin(a + t * 0.2) * a * 0.3); ctx.stroke(); }
+      } else if (pose === 'happy' || o.happy) {        // ^ ^ happy eyes
+        ctx.strokeStyle = ROBO.eye; ctx.lineWidth = 1.8;
+        for (const ex of [-3, 9]) { ctx.beginPath(); ctx.arc(ex, ey + 2, 3.2, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+      } else {
+        const blink = (t % 200) < 6 ? 0.6 : 5, talk = o.mouth ? 0.85 + 0.15 * Math.sin(t * 0.6) : 1;
+        ctx.fillStyle = ROBO.eye; ctx.beginPath();
+        ctx.ellipse(-3, ey, 3.5, Math.max(0.5, blink * talk), 0, 0, 7); ctx.ellipse(9, ey, 3.5, Math.max(0.5, blink * talk), 0, 0, 7); ctx.fill();
+        if (blink > 1) { circle(-2, ey - 2, 1, 'rgba(255,255,255,.85)'); circle(10, ey - 2, 1, 'rgba(255,255,255,.85)'); }
+      }
+      if (o.mouth) { ctx.strokeStyle = ROBO.eye; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(1, -25); ctx.lineTo(1 + 2 + Math.abs(Math.sin(t * 0.5)) * 3, -25); ctx.stroke(); }
+      ctx.restore();
+    }
+  }
+  if (o.wave) {                                        // 👋 a little waving hand
+    const a = Math.sin(t * 0.3) * 0.5;
+    ctx.save(); ctx.translate(13, -16); ctx.rotate(-1.2 + a); roundRect(-2, -14, 4, 14, 2, ROBO.pod); circle(0, -15, 3.4, ROBO.head); ctx.restore();
+  }
+  ctx.restore();
+  if (o.dizzy) for (let i = 0; i < 3; i++) { const a = t * 0.08 + i * 2.1; star(x + Math.cos(a) * 22 * s / 2.6, y - 118 * s / 2.6 + Math.sin(a) * 6, 7, '#ffd54f', a); }
+}
+</script>
+<script>
+// ---------- ⭐ MR. WHISKERS, copied EXACTLY from Ben's game Cat Phone (catphone.html) ----------
+const CATS = {
+  sammy: { fur: '#8d6e63', dark: '#4e342e', belly: '#e2c8a4', ear: '#ffb3c6', eye: '#a8641f', line: '#3e2a22', stripes: true, eyeRim: '#fff4dc' },
+  jimmy: { fur: '#f59a3c', dark: '#c25e12', belly: '#fff3e0', ear: '#ffb3c6', eye: '#3fbf48', line: '#8a4a12', stripes: true, paws: '#ffffff', eyeRim: '#fffbe8' },
+  rocky: { fur: '#a3a9b2', dark: '#646b75', belly: '#eceff3', ear: '#ffb3c6', eye: '#ffc93c', line: '#4a5059', stripes: true, paws: '#eceff3' },
+  mimo:  { fur: '#1f1f28', dark: '#121218', belly: '#2c2c38', ear: '#ff9fbf', eye: '#8dff4a', line: '#5a5a70', shine: true, muzzle: '#34343f', blink: '#c9ffb0', whisk: 'rgba(255,255,255,.75)', collar: true },
+  // 🤍💙 CHARLIE (Ben's design): a soft, normal WHITE cat, BLUE on the top of the head (from the middle of the eyes up),
+  // both ears, the top of the back (where you pet) and the tail. Same color pattern as Sparks, on a real furry cat.
+  charlie: { fur: '#fbfbfd', dark: '#dfe3ea', belly: '#ffffff', ear: '#ffb3c6', eye: '#5cbf4a', line: '#8790a3', cap: '#3f7fe0', eyeRim: '#ffffff' },
+};
+function catLine(c) { ctx.strokeStyle = c.line; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; }
+function drawTail(c, t, up, pose) {
+  const sw = Math.sin(t * 0.08) * (pose === 'happy' ? 16 : 9);
+  ctx.strokeStyle = c.line; ctx.lineCap = 'round'; ctx.lineWidth = 11;
+  ctx.beginPath(); ctx.moveTo(-18, -22);
+  if (up) ctx.bezierCurveTo(-34, -30, -34 + sw * 0.4, -52, -26 + sw, -62);
+  else ctx.bezierCurveTo(-36, -22, -40, -34 + sw * 0.5, -44 + sw * 0.3, -46 + sw * 0.6);
+  ctx.stroke();
+  ctx.strokeStyle = c.cap || c.fur; ctx.lineWidth = 8; ctx.stroke();
+  if (c.stripes || c.spots) { ctx.strokeStyle = c.dark; ctx.lineWidth = 8; ctx.setLineDash(c.spots ? [3, 9] : [4, 6]); ctx.stroke(); ctx.setLineDash([]); }
+}
+function drawLeg(c, x1, y1, x2, y2) {
+  ctx.strokeStyle = c.line; ctx.lineWidth = 8; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  ctx.strokeStyle = c.fur; ctx.lineWidth = 5.5; ctx.stroke();
+  circle(x2, y2, 3.8, c.paws || c.fur);
+}
+function drawLegs(c, pose, t) {
+  let a = 0, b = 0;
+  if (pose === 'walk') { a = Math.sin(t * 0.32) * 7; b = -a; }
+  if (pose === 'run') { a = Math.sin(t * 0.5) * 11; b = -a; }
+  const legs = pose === 'jump' || pose === 'karate' ? [[-12, -4, 6], [12, 4, 6], [-6, -6, 8], [16, 6, 8]]
+             : pose === 'pounce' ? [[-14, -8, 4], [-8, -10, 4], [16, 12, 0], [22, 14, 0]]
+             : [[-13, a, 0], [-7, b, 0], [11, b, 0], [17, a, 0]];
+  for (const [lx, dx, lift] of legs) drawLeg(c, lx, -16, lx + dx * 0.6, -3 - lift);
+}
+function drawHead(c, hx, hy, t, eyesShut, mouthOpen, grumpy) {
+  for (const ex of [-8, 6]) {                          // ears
+    ctx.fillStyle = c.cap || c.fur; catLine(c);
+    ctx.beginPath(); ctx.moveTo(hx + ex - 5, hy - 7); ctx.lineTo(hx + ex + 1, hy - 21); ctx.lineTo(hx + ex + 8, hy - 7); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = c.ear; ctx.beginPath(); ctx.moveTo(hx + ex - 2, hy - 8); ctx.lineTo(hx + ex + 1, hy - 16); ctx.lineTo(hx + ex + 5, hy - 8); ctx.closePath(); ctx.fill();
+  }
+  ctx.fillStyle = c.fur; catLine(c); ctx.beginPath(); ctx.ellipse(hx, hy, 14, 12.5, 0, 0, 7); ctx.fill(); ctx.stroke();
+  if (c.cap) { ctx.save(); ctx.beginPath(); ctx.ellipse(hx, hy, 14, 12.5, 0, 0, 7); ctx.clip(); ctx.fillStyle = c.cap; ctx.beginPath();   // Charlie's blue cap
+    ctx.moveTo(hx - 16, hy - 1); ctx.quadraticCurveTo(hx + 3, hy - 4, hx + 16, hy - 1); ctx.lineTo(hx + 16, hy - 16); ctx.lineTo(hx - 16, hy - 16); ctx.fill(); ctx.restore();
+    catLine(c); ctx.beginPath(); ctx.ellipse(hx, hy, 14, 12.5, 0, 0, 7); ctx.stroke(); }
+  if (c.stripes || c.fewStripes) {                     // tabby "M" on the forehead
+    ctx.strokeStyle = c.dark; ctx.lineWidth = 2.2;
+    ctx.beginPath(); ctx.moveTo(hx - 6, hy - 5); ctx.lineTo(hx - 3, hy - 10); ctx.lineTo(hx, hy - 6); ctx.lineTo(hx + 3, hy - 10); ctx.lineTo(hx + 6, hy - 5); ctx.stroke();
+  }
+  if (c.stripes) { ctx.beginPath(); ctx.moveTo(hx - 14, hy + 1); ctx.lineTo(hx - 9, hy + 1); ctx.moveTo(hx - 13, hy + 5); ctx.lineTo(hx - 9, hy + 4); ctx.stroke(); }
+  if (c.spots) { for (const [sx, sy, r] of [[-10, 2, 1.8], [-7, 6, 1.5], [-11, -4, 1.4], [-4, -10, 1.3]]) circle(hx + sx, hy + sy, r, c.dark); }
+  if (c.shine) ellipse(hx - 4, hy - 7, 6, 2.6, 'rgba(255,255,255,.22)', -0.3);
+  ellipse(hx + 7, hy + 5, 7.5, 5.5, c.muzzle || c.belly);              // muzzle
+  const blink = eyesShut || (Math.floor(t + hx * 7) % 190) < 6;
+  for (const ex of [hx - 1, hx + 8]) {
+    if (blink) { ctx.strokeStyle = c.blink || '#333'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(ex, hy - 1, 3.2, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+    else {
+      if (c.eyeRim) ellipse(ex, hy - 1, 4.4, 5.2, c.eyeRim);
+      ellipse(ex, hy - 1, 3.6, 4.4, c.eye); ellipse(ex + 0.8, hy - 0.5, 1.6, 3.2, '#111'); circle(ex - 0.6, hy - 2.6, 1.4, '#fff');
+      if (grumpy) {                                    // droopy grumpy eyelids + cross eyebrows
+        ctx.fillStyle = c.fur; ctx.beginPath(); ctx.ellipse(ex, hy - 1, 5, 5.4, 0, Math.PI, 2 * Math.PI); ctx.fill();
+        ctx.strokeStyle = c.dark; ctx.lineWidth = 2.4; ctx.beginPath(); ctx.moveTo(ex - 4, hy - 7 + (ex > hx + 3 ? 2 : -1)); ctx.lineTo(ex + 4, hy - 7 + (ex > hx + 3 ? -1 : 2)); ctx.stroke();
+      }
+    }
+  }
+  ctx.fillStyle = '#ff8fab'; ctx.beginPath(); ctx.moveTo(hx + 10, hy + 2); ctx.lineTo(hx + 15, hy + 2); ctx.lineTo(hx + 12.5, hy + 5); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = c.whisk ? '#aaa' : '#555'; ctx.lineWidth = 1.4; ctx.beginPath();
+  if (grumpy && !mouthOpen) { ctx.moveTo(hx + 8.5, hy + 9); ctx.quadraticCurveTo(hx + 12.5, hy + 5.5, hx + 16, hy + 9); }
+  else { ctx.moveTo(hx + 12.5, hy + 5); ctx.quadraticCurveTo(hx + 11, hy + 8.5, hx + 8.5, hy + 7); ctx.moveTo(hx + 12.5, hy + 5); ctx.quadraticCurveTo(hx + 14, hy + 8.5, hx + 16, hy + 7); }
+  ctx.stroke();
+  if (mouthOpen) ellipse(hx + 12.5, hy + 8.5, 2.6, 2.2, '#d94f70');
+  ctx.strokeStyle = c.whisk || 'rgba(60,60,60,.7)'; ctx.lineWidth = 1; ctx.beginPath();
+  for (const d of [-2, 1, 4]) { ctx.moveTo(hx + 15, hy + 4); ctx.lineTo(hx + 27, hy + 2 + d * 1.3); ctx.moveTo(hx + 3, hy + 4); ctx.lineTo(hx - 8, hy + 2 + d * 1.3); }
+  ctx.stroke();
+  if (c.bow) { ctx.fillStyle = '#7ec8ff'; ctx.beginPath(); ctx.moveTo(hx - 6, hy - 12); ctx.lineTo(hx - 13, hy - 17); ctx.lineTo(hx - 12, hy - 8); ctx.closePath(); ctx.moveTo(hx - 6, hy - 12); ctx.lineTo(hx + 1, hy - 17); ctx.lineTo(hx, hy - 8); ctx.closePath(); ctx.fill(); circle(hx - 6, hy - 12, 2.2, '#4aa3ff'); }
+}
+function bodyMarks(c, sp) {                            // stripes, or Tiger's polka dots (+ just a few stripes)
+  if (c.stripes) { ctx.strokeStyle = c.dark; ctx.lineWidth = 3.2; ctx.lineCap = 'round'; ctx.beginPath(); for (const [sx, sy] of sp.stripes) { ctx.moveTo(sx, sy); ctx.quadraticCurveTo(sx + 3, sy + 7, sx + 1, sy + 12); } ctx.stroke(); }
+  if (c.spots) {
+    for (const [sx, sy, r] of sp.spots) circle(sx, sy, r, c.dark);
+    ctx.strokeStyle = c.dark; ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.beginPath();
+    for (const [sx, sy] of sp.few) { ctx.moveTo(sx, sy); ctx.quadraticCurveTo(sx + 3, sy + 6, sx + 1, sy + 10); } ctx.stroke();
+  }
+}
+const MARKS_STAND = { stripes: [[-12, -34], [-4, -34], [4, -34], [12, -34]], spots: [[-10, -27, 2.8], [-1, -30, 2.6], [8, -26, 2.8], [-15, -19, 2.2], [14, -32, 2], [3, -21, 2.2], [-6, -20, 1.8]], few: [[-15, -34], [16, -33]] };
+const MARKS_SIT = { stripes: [[-15, -32], [-15, -24], [-14, -16]], spots: [[-10, -30, 2.5], [-7, -20, 2.3], [-12, -10, 2.1], [-2, -34, 1.8]], few: [[-14, -36]] };
+function drawBody(c, pose) {
+  const rx = pose === 'pounce' ? 25 : 21, ry = pose === 'pounce' ? 11 : 13;
+  ctx.fillStyle = c.fur; catLine(c); ctx.beginPath(); ctx.ellipse(2, -22, rx, ry, 0, 0, 7); ctx.fill(); ctx.stroke();
+  ellipse(4, -15, rx * 0.65, ry * 0.4, c.belly);
+  if (c.cap) { ctx.save(); ctx.beginPath(); ctx.ellipse(2, -22, rx, ry, 0, 0, 7); ctx.clip(); ellipse(0, -34, rx * 0.95, 7.5, c.cap); ctx.restore(); catLine(c); ctx.beginPath(); ctx.ellipse(2, -22, rx, ry, 0, 0, 7); ctx.stroke(); }
+  bodyMarks(c, MARKS_STAND);
+  if (c.shine) ellipse(-2, -30, 12, 3.2, 'rgba(255,255,255,.2)', -0.08);
+}
+// x, y = between the cat's feet. o = { face, pose, t, s, mouth, shut, grumpy, rot }
+function drawCat(who, x, y, o = {}) {
+  const c = CATS[who] || CATS.sammy, face = o.face || 1, s = o.s || 1, t = o.t === undefined ? frame : o.t, pose = o.pose || 'idle';
+  if (c.glow) {                                        // ⭐ Tiger's soft golden star glow
+    const p = 0.75 + Math.sin(t * 0.05) * 0.15;
+    glow(x, y - 32 * s, 95 * s, 'rgba(255,214,110,.55)', p);
+  }
+  ctx.save(); ctx.translate(x, y); ctx.scale(face * s, s);
+  if (pose !== 'flip' && pose !== 'spin') ellipse(0, 0, 24, 4.5, 'rgba(0,0,0,.18)');
+  if (pose === 'sleep') { drawSleepCat(c, t, who); ctx.restore(); twinkles(c, x, y, s, t); return; }
+  if (pose === 'sit') { drawSitCat(c, t, o, who); ctx.restore(); twinkles(c, x, y, s, t); return; }
+  let bob = 0, tilt = o.rot || 0;
+  if (pose === 'happy') bob = -Math.abs(Math.sin(t * 0.18)) * 9;
+  if (pose === 'walk') bob = -Math.abs(Math.sin(t * 0.32)) * 2;
+  if (pose === 'run') bob = -Math.abs(Math.sin(t * 0.5)) * 4;
+  if (pose === 'jump') tilt += -0.12;
+  if (pose === 'pounce') tilt += 0.12;
+  ctx.translate(0, bob);
+  if (pose === 'roll' || pose === 'spin' || pose === 'flip') { ctx.translate(0, -22); ctx.rotate(pose === 'roll' ? Math.sin(t * 0.15) * 2.6 : t * (pose === 'spin' ? 0.45 : -0.3)); ctx.translate(0, 22); }
+  ctx.rotate(tilt);
+  drawTail(c, t, pose !== 'idle' && pose !== 'pounce', pose);
+  drawLegs(c, pose, t);
+  drawBody(c, pose);
+  if (c.collar) {                                      // Mimo: pink collar + gold bell
+    ctx.strokeStyle = '#ff5ca8'; ctx.lineWidth = 3.5; ctx.beginPath(); ctx.moveTo(14, -36); ctx.lineTo(17, -24); ctx.stroke();
+    circle(19, -26, 3.2, '#ffd54f'); circle(19, -25, 1, '#a0761a');
+  }
+  if (pose === 'karate' || pose === 'spin' || pose === 'flip') drawLeg(c, 14, -26, 42, -32);      // HI-YAH! paw out
+  if (pose === 'chop') drawLeg(c, 14, -28, 24, -64);
+  const sniff = pose === 'sniff';
+  drawHead(c, sniff ? 26 : 21, sniff ? -24 : -38, t, pose === 'happy' || sniff || o.shut, o.mouth || pose === 'happy', o.grumpy);
+  ctx.restore();
+  twinkles(c, x, y, s, t);
+}
+function twinkles(c, x, y, s, t) {                    // little stars that float around Tiger
+  if (!c.glow) return;
+  for (let i = 0; i < 5; i++) {
+    const a = t * 0.02 + i * 1.256, r = 48 + Math.sin(t * 0.03 + i) * 8;
+    twinkle(x + Math.cos(a) * r * s, y - 34 * s + Math.sin(a) * r * 0.7 * s, (3 + (i % 2) * 2) * s, 0.5 + 0.5 * Math.sin(t * 0.1 + i * 2));
+  }
+}
+function drawSitCat(c, t, o, who) {
+  const sw = Math.sin(t * 0.06) * 6;
+  ctx.strokeStyle = c.line; ctx.lineWidth = 10; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(-10, -6); ctx.quadraticCurveTo(-30, -2, -32 + sw, -18); ctx.stroke();
+  ctx.strokeStyle = c.cap || c.fur; ctx.lineWidth = 7; ctx.stroke();
+  ctx.fillStyle = c.fur; catLine(c); ctx.beginPath(); ctx.ellipse(-2, -20, 15, 20, 0, 0, 7); ctx.fill(); ctx.stroke();
+  if (c.cap) { ctx.save(); ctx.beginPath(); ctx.ellipse(-2, -20, 15, 20, 0, 0, 7); ctx.clip(); ellipse(-15, -24, 7, 17, c.cap, 0.15); ctx.restore(); catLine(c); ctx.beginPath(); ctx.ellipse(-2, -20, 15, 20, 0, 0, 7); ctx.stroke(); }
+  ellipse(3, -18, 7, 12, c.belly);
+  bodyMarks(c, MARKS_SIT);
+  if (c.shine) ellipse(-7, -28, 4, 9, 'rgba(255,255,255,.18)', 0.2);
+  for (const lx of [2, 9]) { ctx.strokeStyle = c.line; ctx.lineWidth = 7; ctx.beginPath(); ctx.moveTo(lx, -14); ctx.lineTo(lx, -3); ctx.stroke(); ctx.strokeStyle = c.fur; ctx.lineWidth = 4.5; ctx.stroke(); circle(lx, -3, 3.4, c.paws || c.fur); }
+  if (c.collar) { circle(8, -33, 3, '#ffd54f'); ctx.strokeStyle = '#ff5ca8'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(-6, -36); ctx.lineTo(11, -35); ctx.stroke(); }
+  drawHead(c, 3, -44, t, o.shut, o.mouth, o.grumpy);
+}
+function drawSleepCat(c, t) {                          // curled up in a cozy donut, tail wrapped around
+  const br = Math.sin(t * 0.05) * 1.2;
+  ctx.fillStyle = c.fur; catLine(c); ctx.beginPath(); ctx.ellipse(0, -14, 26 + br, 15 + br * 0.6, 0, 0, 7); ctx.fill(); ctx.stroke();
+  if (c.cap) { ctx.save(); ctx.beginPath(); ctx.ellipse(0, -14, 26 + br, 15 + br * 0.6, 0, 0, 7); ctx.clip(); ellipse(-4, -29, 24, 8, c.cap); ctx.restore(); catLine(c); ctx.beginPath(); ctx.ellipse(0, -14, 26 + br, 15 + br * 0.6, 0, 0, 7); ctx.stroke(); }
+  if (c.stripes) { ctx.strokeStyle = c.dark; ctx.lineWidth = 3; ctx.beginPath(); for (const sx of [-14, -5, 4]) { ctx.moveTo(sx, -28); ctx.quadraticCurveTo(sx + 4, -20, sx + 2, -14); } ctx.stroke(); }
+  if (c.spots) { for (const [sx, sy, r] of [[-14, -20, 2.6], [-4, -24, 2.4], [-10, -10, 2.2], [4, -17, 2]]) circle(sx, sy, r, c.dark); }
+  if (c.shine) ellipse(-6, -24, 12, 3.5, 'rgba(255,255,255,.2)');
+  ctx.strokeStyle = c.line; ctx.lineWidth = 10; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(-24, -10); ctx.quadraticCurveTo(-10, 2, 18, -2); ctx.stroke();
+  ctx.strokeStyle = c.cap || c.fur; ctx.lineWidth = 7; ctx.stroke();
+  if (c.stripes || c.spots) { ctx.strokeStyle = c.dark; ctx.setLineDash([4, 6]); ctx.stroke(); ctx.setLineDash([]); }
+  for (const ex of [8, 20]) { ctx.fillStyle = c.cap || c.fur; catLine(c); ctx.beginPath(); ctx.moveTo(ex - 5, -22); ctx.lineTo(ex, -34); ctx.lineTo(ex + 6, -22); ctx.closePath(); ctx.fill(); ctx.stroke(); }
+  ctx.fillStyle = c.fur; catLine(c); ctx.beginPath(); ctx.ellipse(15, -16, 13, 10, 0, 0, 7); ctx.fill(); ctx.stroke();
+  if (c.cap) { ctx.save(); ctx.beginPath(); ctx.ellipse(15, -16, 13, 10, 0, 0, 7); ctx.clip(); ctx.fillStyle = c.cap; ctx.fillRect(0, -30, 30, 12); ctx.restore(); catLine(c); ctx.beginPath(); ctx.ellipse(15, -16, 13, 10, 0, 0, 7); ctx.stroke(); }
+  ctx.strokeStyle = c.blink || '#333'; ctx.lineWidth = 2;
+  for (const ex of [10, 19]) { ctx.beginPath(); ctx.arc(ex, -17, 3, 0.1 * Math.PI, 0.9 * Math.PI); ctx.stroke(); }
+  ctx.fillStyle = '#ff8fab'; ctx.beginPath(); ctx.moveTo(24, -14); ctx.lineTo(28, -14); ctx.lineTo(26, -11); ctx.closePath(); ctx.fill();
+}
+// 📖 PAGES: the orange cat from Book Cat, with a red bookmark scarf (drawing copied from Book Cat 3, normal look).
+// x, y = between the feet. o = { s, face, t, shut, sleep }
+function fluff(cx, cy, rx, ry, col, line, n, b, rot = 0) {     // a fuzzy, scalloped blob
+  const pts = []; for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2 + rot; pts.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); }
+  if (line) { for (const [px, py] of pts) circle(px, py, b + 1.6, line); ellipse(cx, cy, rx + 1.6, ry + 1.6, line); }
+  ellipse(cx, cy, rx, ry, col); for (const [px, py] of pts) circle(px, py, b, col);
+}
+// ========== ⭐ MR. WHISKERS (Ben's new cat!): a FLUFFY gray-and-white cat with BIG whiskers and a bright BLUE collar with a little gold bell ==========
+CATS.mrw = { fur: '#aab1bd', dark: '#7c8494', belly: '#ffffff', ear: '#ffb3c6', eye: '#ffb72b', line: '#565d6a', muzzle: '#ffffff', paws: '#ffffff', eyeRim: '#fffbe8' };
+const MRW_BLUE = '#1e7bff';
+function mrwExtras(t, front) {                           // in the cat's own (sitting) coordinates
+  if (!front) {                                          // fluffy fur peeking out all around the body
+    fluff(-2, -20, 16, 21, CATS.mrw.fur, CATS.mrw.line, 16, 3.6);
+    fluff(-2, -20, 16, 21, CATS.mrw.fur, null, 16, 3.6);
+    return;
+  }
+  fluff(4, -22, 6.5, 7, '#ffffff', null, 8, 2.4);                                 // white fluffy chest
+  for (const [dx, dy] of [[-13, 4], [-12, 9], [-9, 12]]) circle(3 + dx, -44 + dy, 3.4, '#f4f6fa');   // fluffy cheeks
+  ctx.strokeStyle = 'rgba(70,70,80,.8)'; ctx.lineWidth = 1.1; ctx.lineCap = 'round'; ctx.beginPath();   // BIG whiskers
+  for (const d of [-3, 0, 3, 6]) { const w = Math.sin(t * 0.07 + d) * 1.2; ctx.moveTo(18, -40); ctx.lineTo(40, -43 + d * 1.6 + w); ctx.moveTo(5, -40); ctx.lineTo(-10, -42 + d * 1.6 - w); }
+  ctx.moveTo(6, -51); ctx.lineTo(-2, -60); ctx.moveTo(10, -51); ctx.lineTo(14, -61);                  // eyebrow whiskers
+  ctx.stroke();
+  ctx.strokeStyle = '#0b4fb3'; ctx.lineWidth = 5.2; ctx.beginPath(); ctx.moveTo(-10, -31); ctx.quadraticCurveTo(3, -26, 15, -31); ctx.stroke();   // BLUE collar
+  ctx.strokeStyle = MRW_BLUE; ctx.lineWidth = 3.8; ctx.stroke();
+  const sw = Math.sin(t * 0.12) * 0.25;                                               // little gold bell
+  ctx.save(); ctx.translate(4, -27.5); ctx.rotate(sw); circle(0, 2.6, 3.4, '#a0761a'); circle(0, 2.4, 3, '#ffd54f'); circle(-1, 1.4, 1, '#fff6c4'); circle(0, 4, 0.9, '#6d4c10'); ctx.restore();
+}
+function drawMrW(x, y, o = {}) {
+  const s = o.s || 1, t = o.t === undefined ? frame : o.t;
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s); mrwExtras(t, false); ctx.restore();
+  drawCat('mrw', x, y, Object.assign({}, o, { pose: 'sit' }));
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s); mrwExtras(t, true); ctx.restore();
+}
+// ========== 👻 WHISKERWISP (the friendly ghost cat from Ghost Hunt: silvery-blue, curly tail, blue eyes, a pink heart nose) ==========
+const HEAD = { pages: [15.6, -36.4], august: [3, -46], wisp: [-20, -36], cat: [3, -44] };
+function drawAny(who, x, y, o) {                         // x, y = between the feet
+  if (who === 'pages') drawPages(x, y, o);
+  else if (who === 'august') drawAugust(x, y, o);
+  else if (who === 'wisp') drawWisp(x, y, o);
+  else if (who === 'mrw') drawMrW(x, y, o);
+  else drawCat(who, x, y, Object.assign({ pose: 'sit' }, o));
+  if (who === 'shadow' && !o.shut) {                      // Shadow's eyes softly glow
+    const s = o.s || 1; glow(x + 7.5 * s, y - 45 * s, 7 * s, 'rgba(198,255,0,.45)', 0.7 + Math.sin(frame * 0.05) * 0.2);
+  }
+}
+function catAt(who, hx, hy, s, o = {}) {                // anchor (default: the head) lands on hx, hy
+  if (who === 'shadow') s *= 0.85;                       // Shadow is a tiny kitten
+  const a = o.anchor || HEAD[who] || HEAD.cat;
+  drawAny(who, hx - a[0] * s, hy - a[1] * s, Object.assign({}, o, { s }));
+}
+// ========== 🏠 each cat's home (video call backgrounds). w, h = the size of the picture ==========
+function rect(x, y, w, h, col) { ctx.fillStyle = col; ctx.fillRect(x, y, w, h); }
+function win(x, y, w, h, sky, t, night) {
+  roundRect(x - 10, y - 10, w + 20, h + 20, 12, '#fff7ea');
+  const g = ctx.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, sky[0]); g.addColorStop(1, sky[1]); ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
+  if (night) { circle(x + w * 0.7, y + h * 0.3, w * 0.12, '#fff9c4'); for (let i = 0; i < 6; i++) twinkle(x + ((i * 97) % w), y + ((i * 53) % (h * 0.8)) + 10, 5, 0.5 + 0.5 * Math.sin(t * 0.05 + i)); }
+  else { circle(x + w * 0.75, y + h * 0.28, w * 0.13, '#ffe066'); ellipse(x + w * 0.3 + Math.sin(t * 0.004) * 20, y + h * 0.35, w * 0.18, h * 0.07, 'rgba(255,255,255,.9)'); }
+  rect(x + w / 2 - 4, y, 8, h, '#fff7ea'); rect(x, y + h / 2 - 4, w, 8, '#fff7ea');
+}
+function floor(h, y, col, col2) { rect(0, y, 2000, h - y, col); ctx.fillStyle = col2; for (let i = 0; i < 12; i++) ctx.fillRect(i * 90, y, 4, h - y); rect(0, y, 2000, 8, 'rgba(0,0,0,.12)'); }
+function homeScene(who, w, h, t) {     // (only Mr. Whiskers' room is needed here)
+  const fy = h * 0.74;
+
+      rect(0, 0, w, h, '#cfe6ff'); for (let x = 0; x < w; x += 60) rect(x, 0, 26, fy, '#bcdcff');
+      roundRect(w * 0.62, h * 0.1, 140, 100, 8, '#8d6e63'); roundRect(w * 0.62 + 10, h * 0.1 + 10, 120, 80, 4, '#b3e5fc'); text('🐟', w * 0.62 + 70, h * 0.1 + 52, 44, '#fff', 'center', false);
+      floor(h, fy, '#e8c99b', '#d9b583'); roundRect(-20, fy - 110, w * 0.45, 130, 30, '#ff8a65'); roundRect(-20, fy - 150, w * 0.42, 70, 26, '#ff7043');
+}
+const MW_ANCHOR = { nose: [15.5, -40], lick: [15.5, -40], ear: [-3, -57], tail: [-30, -15] };
+const MW_ZOOM = { nose: 30, lick: 30, ear: 40, tail: 24 };
+function squishNose(px, py, k) {                     // 👃 a GIANT nose, flattened on the glass
+  const nx = px - 10 * k, ny = py + 25 * k;
+  ellipse(nx, ny + 10 * k, 230 * k, 130 * k, 'rgba(255,190,210,.55)');
+  ctx.fillStyle = '#ff8fab'; ctx.strokeStyle = '#d9577f'; ctx.lineWidth = 9 * k; ctx.beginPath();
+  ctx.moveTo(nx - 150 * k, ny - 50 * k); ctx.quadraticCurveTo(nx, ny - 90 * k, nx + 150 * k, ny - 50 * k);
+  ctx.quadraticCurveTo(nx + 150 * k, ny + 30 * k, nx, ny + 80 * k); ctx.quadraticCurveTo(nx - 150 * k, ny + 30 * k, nx - 150 * k, ny - 50 * k); ctx.fill(); ctx.stroke();
+  ellipse(nx - 50 * k, ny + 5 * k, 26 * k, 14 * k, '#b8456a', 0.3); ellipse(nx + 50 * k, ny + 5 * k, 26 * k, 14 * k, '#b8456a', -0.3);
+  ellipse(nx - 60 * k, ny - 45 * k, 55 * k, 16 * k, 'rgba(255,255,255,.7)', -0.15);
+}
+// draw him (and his room) into a w x h picture. dist: 0 = SQUISHED on the glass ... 1 = a normal call
+function drawMrClose(w, h, dist, mode, t, o = {}) {
+  homeScene('mrw', w, h, t);
+  const k = w / 600, sN = 9.5 * k, sC = MW_ZOOM[mode] * k, s = sN * Math.pow(sC / sN, 1 - dist);
+  const a = MW_ANCHOR[mode], hd = HEAD.cat, e = Math.pow(dist, 0.7);
+  const ax = lerp(a[0], hd[0], e), ay = lerp(a[1], hd[1], e), px = w / 2, py = lerp(h * 0.42, h * 0.36, dist);
+  catAt('mrw', px, py + (o.bounce ? -Math.abs(Math.sin(t * 0.15)) * 30 * k : 0), s, { anchor: [ax, ay], t, mouth: o.mouth, shut: o.shut });
+  const sq = Math.max(0, 1 - dist / 0.22);
+  if (sq > 0 && mode !== 'tail') {                 // 🫥 pressed against the glass: a squished nose, glare and fog
+    ctx.save(); ctx.globalAlpha = sq;
+    if (mode !== "ear") { squishNose(px, py, k); }
+    const br = 0.5 + 0.5 * Math.sin(t * 0.06);
+    for (const [fx, fy, fr] of [[0, 120, 150], [-110, 170, 110], [120, 160, 120], [0, 230, 120]]) glow(px + fx * k, py + fy * k, fr * k * (0.8 + br * 0.3), 'rgba(255,255,255,.75)', 0.35 + br * 0.35);
+    ctx.restore();
+  }
+  for (const sm of o.smudges || []) { ctx.save(); ctx.globalAlpha = sm.a * 0.5; ctx.strokeStyle = '#fff'; ctx.lineWidth = 34 * k; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(sm.x * w, sm.y * h + 80 * k); ctx.lineTo(sm.x * w + 10 * k, sm.y * h - 80 * k); ctx.stroke(); ctx.restore(); }
+  if (o.lick > 0) {                               // 👅 a GIANT tongue licks the screen
+    const p = 1 - o.lick / 60, ty = h - Math.sin(p * Math.PI) * h * 0.62;
+    ctx.fillStyle = '#ff7aa2'; rrect(px - 120 * k, ty, 240 * k, h, 120 * k); ctx.fill();
+    ctx.strokeStyle = '#e0507e'; ctx.lineWidth = 10 * k; ctx.beginPath(); ctx.moveTo(px, ty + 60 * k); ctx.lineTo(px, ty + 260 * k); ctx.stroke();
+    ellipse(px - 50 * k, ty + 50 * k, 30 * k, 14 * k, 'rgba(255,255,255,.5)', -0.4);
+  }
+}
+// ========== 🎞️ drawing the video call every frame ==========
+</script>
+<script>
+// ---------- ☎️ THE PHONES (big cartoon drawings; cx, cy = middle, the bottom sits at about cy + 55 * s) ----------
+const OR = '#b5651d', OR2 = '#e8a45c', OR3 = '#6d3a12', CREAM = '#fff3e0', DARK = '#3e2723', GOLD = '#ffc94d', BRASS = '#d4a017', WOOD = '#8d5524', WOOD2 = '#6d3f19';
+let PRINTING = false;
+const shadow = (cx, cy, s, w = 80) => ellipse(cx, cy + 56 * s, w * s, 8 * s, 'rgba(0,0,0,.18)');
+function waves(x, y, s, a, col = '#fff', dir = 0) {             // little "sound" arcs
+  ctx.strokeStyle = col; ctx.lineWidth = 3 * s; ctx.lineCap = 'round';
+  for (let i = 0; i < 3; i++) { const r = (10 + i * 10 + (a * 200) % 10) * s; ctx.globalAlpha = 0.9 - i * 0.25; ctx.beginPath(); ctx.arc(x, y, r, dir - 0.7, dir + 0.7); ctx.stroke(); }
+  ctx.globalAlpha = 1;
+}
+function handset(cx, cy, s, col, col2) {                          // the old-fashioned handset lying in its cradle
+  ctx.strokeStyle = col2; ctx.lineWidth = 20 * s; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(cx - 56 * s, cy + 2 * s); ctx.quadraticCurveTo(cx, cy - 16 * s, cx + 56 * s, cy + 2 * s); ctx.stroke();
+  ctx.strokeStyle = col; ctx.lineWidth = 16 * s; ctx.stroke();
+  for (const d of [-1, 1]) { rr(cx + d * 66 * s - 21 * s, cy - 6 * s, 42 * s, 24 * s, 11 * s, col2); rr(cx + d * 66 * s - 19 * s, cy - 6 * s, 38 * s, 20 * s, 10 * s, col); }
+  ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 3 * s; ctx.beginPath(); ctx.moveTo(cx - 40 * s, cy - 4 * s); ctx.quadraticCurveTo(cx, cy - 16 * s, cx + 40 * s, cy - 4 * s); ctx.stroke();
+}
+function coil(x1, y1, x2, y2, s, col) {                           // a curly phone cord
+  ctx.strokeStyle = col; ctx.lineWidth = 2.5 * s; ctx.beginPath(); const n = 14;
+  for (let i = 0; i <= n * 6; i++) { const t = i / (n * 6), x = lerp(x1, x2, t), y = lerp(y1, y2, t) + Math.sin(t * Math.PI) * 18 * s, a = t * n * Math.PI * 2; ctx.lineTo(x + Math.cos(a) * 4 * s, y + Math.sin(a) * 4 * s); }
+  ctx.stroke();
+}
+// 1876: Bell's telephone (a wooden board, a brass "funnel" to talk into, and a battery jar)
+function drawBell(cx, cy, s, a) {
+  shadow(cx, cy, s, 90);
+  rr(cx - 88 * s, cy + 36 * s, 176 * s, 20 * s, 5 * s, WOOD2); rr(cx - 88 * s, cy + 32 * s, 176 * s, 12 * s, 5 * s, WOOD);
+  for (const x of [-76, 76]) circle(cx + x * s, cy + 38 * s, 3 * s, BRASS);
+  ctx.strokeStyle = '#b87333'; ctx.lineWidth = 2.5 * s; ctx.beginPath(); ctx.moveTo(cx + 20 * s, cy - 20 * s); ctx.bezierCurveTo(cx + 40 * s, cy + 30 * s, cx + 50 * s, cy - 10 * s, cx + 58 * s, cy - 8 * s);
+  ctx.moveTo(cx + 20 * s, cy - 32 * s); ctx.bezierCurveTo(cx + 55 * s, cy - 50 * s, cx + 60 * s, cy - 30 * s, cx + 72 * s, cy - 8 * s); ctx.stroke();
+  rr(cx + 50 * s, cy - 8 * s, 34 * s, 42 * s, 6 * s, 'rgba(178,235,242,.7)'); rr(cx + 52 * s, cy + 10 * s, 30 * s, 22 * s, 4 * s, 'rgba(77,182,172,.75)');
+  rr(cx + 52 * s, cy - 12 * s, 30 * s, 6 * s, 2 * s, '#5d4037'); circle(cx + 58 * s, cy - 12 * s, 2.5 * s, BRASS); circle(cx + 76 * s, cy - 12 * s, 2.5 * s, BRASS);
+  rr(cx + 8 * s, cy - 70 * s, 16 * s, 104 * s, 3 * s, WOOD); rr(cx + 10 * s, cy - 70 * s, 4 * s, 104 * s, 2 * s, 'rgba(255,255,255,.15)');
+  rr(cx - 32 * s, cy - 42 * s, 50 * s, 28 * s, 7 * s, '#b87333');                                        // the coil of copper wire
+  for (let i = 0; i < 8; i++) rr(cx - 30 * s + i * 6 * s, cy - 42 * s, 2 * s, 28 * s, 1, 'rgba(0,0,0,.18)');
+  rr(cx - 32 * s, cy - 44 * s, 50 * s, 5 * s, 2 * s, BRASS);
+  ctx.save(); ctx.translate(cx - 32 * s, cy - 28 * s); ctx.rotate(-2.5);                                  // the brass funnel you talk into
+  ctx.fillStyle = BRASS; ctx.beginPath(); ctx.moveTo(0, -8 * s); ctx.lineTo(62 * s, -30 * s); ctx.lineTo(62 * s, 30 * s); ctx.lineTo(0, 8 * s); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,.3)'; ctx.beginPath(); ctx.moveTo(0, -6 * s); ctx.lineTo(62 * s, -26 * s); ctx.lineTo(62 * s, -16 * s); ctx.lineTo(0, -2 * s); ctx.fill();
+  ellipse(62 * s, 0, 9 * s, 31 * s, '#a07a10'); ellipse(63 * s, 0, 6 * s, 25 * s, '#4e3a08');
+  ctx.restore();
+  if (a > 0) waves(cx - 82 * s, cy - 78 * s, s, a, '#fff', -2.5);
+}
+// the switchboard: lots of little holes (jacks), lamps, and plugs on cords
+function drawSwitch(cx, cy, s, a) {
+  shadow(cx, cy, s, 95);
+  rr(cx - 90 * s, cy - 112 * s, 180 * s, 168 * s, 8 * s, WOOD2); rr(cx - 84 * s, cy - 106 * s, 168 * s, 92 * s, 5 * s, '#24170c');
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 6; c++) { const x = cx - 65 * s + c * 26 * s, y = cy - 92 * s + r * 21 * s, lit = !PRINTING && (r * 6 + c + Math.floor(frame / 40)) % 9 === 0;
+    circle(x, y - 5 * s, 3 * s, lit ? '#ffb300' : '#5d4037'); if (lit) glow(x, y - 5 * s, 8 * s, 'rgba(255,179,0,.7)');
+    circle(x, y + 4 * s, 5 * s, BRASS); circle(x, y + 4 * s, 2.5 * s, '#000'); }
+  ctx.lineWidth = 3 * s;                                                                              // cords plugged in
+  [[-65, 1, '#c62828', 44], [-13, 3, '#212121', -20], [39, 2, '#c62828', 10]].forEach(([dx, r, col, px]) => { ctx.strokeStyle = col; ctx.beginPath(); ctx.moveTo(cx + dx * s, cy - 88 * s + r * 21 * s); ctx.quadraticCurveTo(cx + (dx + px) / 2 * s, cy + 10 * s, cx + px * s, cy - 18 * s); ctx.stroke(); });
+  rr(cx - 94 * s, cy - 16 * s, 188 * s, 16 * s, 3 * s, WOOD); rr(cx - 94 * s, cy - 16 * s, 188 * s, 4 * s, 2 * s, 'rgba(255,255,255,.2)');
+  for (let i = 0; i < 9; i++) { const x = cx - 72 * s + i * 18 * s; rr(x - 3 * s, cy - 30 * s, 6 * s, 15 * s, 2 * s, i % 2 ? '#212121' : '#c62828'); rr(x - 1.5 * s, cy - 36 * s, 3 * s, 7 * s, 1, BRASS); }
+  rr(cx - 86 * s, cy, 172 * s, 56 * s, 4 * s, WOOD); rr(cx - 76 * s, cy + 8 * s, 70 * s, 40 * s, 4 * s, 'rgba(0,0,0,.15)'); rr(cx + 6 * s, cy + 8 * s, 70 * s, 40 * s, 4 * s, 'rgba(0,0,0,.15)');
+  ctx.strokeStyle = '#424242'; ctx.lineWidth = 3 * s; ctx.beginPath(); ctx.arc(cx + 98 * s, cy - 60 * s, 13 * s, Math.PI, 0); ctx.stroke();   // the operator's headset on a hook
+  circle(cx + 85 * s, cy - 58 * s, 5 * s, '#212121'); circle(cx + 111 * s, cy - 58 * s, 5 * s, '#212121'); circle(cx + 90 * s, cy - 76 * s, 3 * s, BRASS);
+}
+// the candlestick phone (black, tall and skinny, with a brass hook)
+function drawCandle(cx, cy, s, a) {
+  shadow(cx, cy, s, 50);
+  const wig = a > 0 ? Math.sin(a * 90) * 0.06 * (1 - a) : 0;
+  ctx.save(); ctx.translate(cx, cy + 50 * s); ctx.rotate(wig); ctx.translate(-cx, -cy - 50 * s);
+  rr(cx - 40 * s, cy + 30 * s, 80 * s, 24 * s, 12 * s, '#1c1c1c'); ellipse(cx, cy + 31 * s, 36 * s, 8 * s, BRASS); ellipse(cx, cy + 31 * s, 30 * s, 6 * s, '#262626');
+  rr(cx - 7 * s, cy - 86 * s, 14 * s, 120 * s, 6 * s, '#1a1a1a'); rr(cx - 4 * s, cy - 80 * s, 3 * s, 104 * s, 2 * s, 'rgba(255,255,255,.2)');
+  rr(cx - 6 * s, cy - 100 * s, 12 * s, 18 * s, 3 * s, '#262626');
+  ctx.fillStyle = '#1c1c1c'; ctx.beginPath(); ctx.moveTo(cx - 7 * s, cy - 98 * s); ctx.lineTo(cx - 24 * s, cy - 118 * s); ctx.lineTo(cx + 24 * s, cy - 118 * s); ctx.lineTo(cx + 7 * s, cy - 98 * s); ctx.fill();
+  ellipse(cx, cy - 118 * s, 24 * s, 7 * s, BRASS); ellipse(cx, cy - 118 * s, 19 * s, 5 * s, '#000');
+  line(cx + 6 * s, cy - 62 * s, cx + 34 * s, cy - 66 * s, BRASS, 4 * s); line(cx + 34 * s, cy - 66 * s, cx + 36 * s, cy - 74 * s, BRASS, 4 * s);   // the hook
+  const ew = a > 0 ? Math.sin(a * 70) * 3 * s : 0;
+  ctx.strokeStyle = '#3e2723'; ctx.lineWidth = 3 * s; ctx.beginPath(); ctx.moveTo(cx + 34 * s + ew, cy - 14 * s); ctx.bezierCurveTo(cx + 74 * s, cy + 10 * s, cx + 66 * s, cy + 52 * s, cx + 30 * s, cy + 40 * s); ctx.stroke();
+  rr(cx + 27 * s + ew, cy - 70 * s, 14 * s, 58 * s, 6 * s, '#1a1a1a'); ellipse(cx + 34 * s + ew, cy - 70 * s, 13 * s, 5 * s, '#262626'); ellipse(cx + 34 * s + ew, cy - 70 * s, 9 * s, 3 * s, '#000');
+  ctx.restore();
+  if (a > 0) { waves(cx - 40 * s, cy - 40 * s, s, a, GOLD, Math.PI); waves(cx + 60 * s, cy - 40 * s, s, a, GOLD, 0); if (a < 0.8) text('RING! RING!', cx, cy - 136 * s, 22 * s, GOLD); }
+}
+</script>
+<script>
+// the rotary dial: hole for digit d (1..9, 0 = 10) sits at angle STOP - (d + 1) * 30°. Spin it clockwise to the finger stop.
+const DSTOP = Math.PI / 3, holeAng = d => DSTOP - (d + 1) * Math.PI / 6, DIGITS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+function drawDial(x, y, R, ang, big) {
+  circle(x, y, R * 1.08, '#9e9e9e'); circle(x, y, R * 1.04, '#eceff1');
+  circle(x, y, R, '#fffdf7');
+  DIGITS.forEach(d => { const h = holeAng(d), hx = x + Math.cos(h) * R * 0.72, hy = y + Math.sin(h) * R * 0.72;
+    if (big) text(String(d % 10), hx, hy + R * 0.06, R * 0.16, '#212121', 'center', false); else circle(hx, hy, R * 0.05, '#212121'); });
+  ctx.save(); ctx.globalAlpha = 0.28; circle(x, y, R * 0.94, '#b0bec5'); ctx.restore();                     // the clear finger wheel
+  DIGITS.forEach(d => { const h = holeAng(d) + ang, hx = x + Math.cos(h) * R * 0.72, hy = y + Math.sin(h) * R * 0.72;
+    ctx.save(); ctx.globalAlpha = 0.55; circle(hx, hy, R * 0.15, '#fffdf7'); ctx.restore();
+    ctx.strokeStyle = '#78909c'; ctx.lineWidth = Math.max(1, R * 0.025); ctx.beginPath(); ctx.arc(hx, hy, R * 0.15, 0, 7); ctx.stroke();
+    if (big) text(String(d % 10), x + Math.cos(holeAng(d)) * R * 0.72, y + Math.sin(holeAng(d)) * R * 0.72 + R * 0.06, R * 0.16, '#212121', 'center', false); });
+  circle(x, y, R * 0.36, '#fff8e1'); ctx.strokeStyle = '#b0bec5'; ctx.lineWidth = Math.max(1, R * 0.03); ctx.beginPath(); ctx.arc(x, y, R * 0.36, 0, 7); ctx.stroke();
+  if (big) { text('☎️', x, y - R * 0.04, R * 0.2, '#000', 'center', false); text('BEN\'S PHONE', x, y + R * 0.18, R * 0.08, OR3, 'center', false); } else circle(x, y, R * 0.12, '#c62828');
+  const st = DSTOP + 0.27; line(x + Math.cos(st) * R * 0.86, y + Math.sin(st) * R * 0.86, x + Math.cos(st) * R * 1.12, y + Math.sin(st) * R * 1.12, '#607d8b', Math.max(2, R * 0.07));   // finger stop
+}
+function deskPhone(cx, cy, s, col, col2) {                          // the body of a desk phone (rotary or push-button)
+  shadow(cx, cy, s, 88);
+  ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(cx - 82 * s, cy + 52 * s); ctx.lineTo(cx - 62 * s, cy - 20 * s); ctx.quadraticCurveTo(cx, cy - 34 * s, cx + 62 * s, cy - 20 * s); ctx.lineTo(cx + 82 * s, cy + 52 * s); ctx.closePath(); ctx.fill();
+  rr(cx - 84 * s, cy + 44 * s, 168 * s, 12 * s, 5 * s, col2);
+  ctx.fillStyle = 'rgba(255,255,255,.22)'; ctx.beginPath(); ctx.moveTo(cx - 70 * s, cy + 40 * s); ctx.lineTo(cx - 56 * s, cy - 14 * s); ctx.lineTo(cx - 44 * s, cy - 18 * s); ctx.lineTo(cx - 58 * s, cy + 40 * s); ctx.fill();
+  for (const d of [-1, 1]) rr(cx + d * 48 * s - 9 * s, cy - 34 * s, 18 * s, 16 * s, 5 * s, col2);
+}
+function drawRotary(cx, cy, s, a, ang = 0) {
+  coil(cx - 80 * s, cy + 30 * s, cx - 100 * s, cy - 30 * s, s * 0.8, '#8e1b1b');
+  deskPhone(cx, cy, s, '#d32f2f', '#8e1b1b');
+  handset(cx, cy - 42 * s, s, '#d32f2f', '#8e1b1b');
+  drawDial(cx, cy + 14 * s, 31 * s, ang, false);
+}
+// the push-button phone: the 12 buttons in rows and columns (each one = a LOW note + a HIGH note)
+const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#'], ROWF = [697, 770, 852, 941], COLF = [1209, 1336, 1477];
+function drawTouchtone(cx, cy, s, a, lit = -1) {
+  coil(cx - 80 * s, cy + 30 * s, cx - 100 * s, cy - 30 * s, s * 0.8, '#a1887f');
+  deskPhone(cx, cy, s, '#ece0c4', '#bfa883');
+  handset(cx, cy - 42 * s, s, '#ece0c4', '#bfa883');
+  rr(cx - 34 * s, cy - 12 * s, 68 * s, 60 * s, 6 * s, '#d7c7a3');
+  KEYS.forEach((k, i) => { const x = cx - 22 * s + (i % 3) * 22 * s, y = cy - 6 * s + Math.floor(i / 3) * 13.5 * s, on = i === lit || (a > 0 && Math.floor(a * 24) % 12 === i);
+    rr(x - 8 * s, y, 16 * s, 11 * s, 3 * s, on ? '#ffe082' : '#fffdf5'); text(k, x, y + 8.5 * s, 8 * s, '#3e2723', 'center', false); });
+}
+// a DynaTAC-style "brick" phone (tan, with a stubby antenna)
+function brickPhone(cx, cy, s, glowA = 0) {
+  rr(cx - 6 * s, cy - 108 * s, 12 * s, 52 * s, 6 * s, '#212121'); if (glowA) glow(cx, cy - 108 * s, 20 * s, 'rgba(255,214,0,.8)', glowA);
+  rr(cx - 26 * s, cy - 62 * s, 52 * s, 118 * s, 10 * s, '#a1887f'); rr(cx - 24 * s, cy - 62 * s, 46 * s, 116 * s, 9 * s, '#d7c9a7');
+  for (let i = 0; i < 4; i++) rr(cx - 12 * s, cy - 54 * s + i * 4 * s, 24 * s, 2 * s, 1, '#8d6e63');
+  rr(cx - 18 * s, cy - 36 * s, 36 * s, 13 * s, 2 * s, '#1a1a1a'); text('555', cx, cy - 26 * s, 9 * s, '#ff5252', 'center', false);
+  for (let r = 0; r < 5; r++) for (let c = 0; c < 3; c++) rr(cx - 17 * s + c * 12 * s, cy - 16 * s + r * 10 * s, 10 * s, 7 * s, 2 * s, r === 0 ? '#bcaaa4' : '#f5f0e6');
+  for (let i = 0; i < 3; i++) circle(cx - 6 * s + i * 6 * s, cy + 44 * s, 1.5 * s, '#8d6e63');
+}
+function drawBrick(cx, cy, s, a) {
+  shadow(cx, cy, s, 40); brickPhone(cx, cy, s);
+  if (a > 0) { const f = Math.min(1, a * 1.25), x = cx + 46 * s, y = cy - 40 * s;
+    rr(x - 2 * s, y - 6 * s, 10 * s, 6 * s, 2 * s, '#fff'); rr(x - 12 * s, y, 30 * s, 60 * s, 5 * s, '#fff'); rr(x - 9 * s, y + 3 * s + 54 * s * (1 - f), 24 * s, 54 * s * f, 3 * s, f < 1 ? '#ffca28' : '#66bb6a');
+    text('⚡', x + 3 * s, y + 38 * s, 18 * s, '#000', 'center', false); }
+}
+// April 3, 1973: the first handheld mobile phone call, on a street in New York City
+function drawCooper(cx, cy, s, a) {
+  shadow(cx, cy, s, 95);
+  [[-92, 70, '#90a4ae'], [-62, 104, '#78909c'], [-30, 60, '#b0bec5'], [36, 120, '#90a4ae'], [66, 84, '#78909c']].forEach(([x, h, col], i) => { rr(cx + x * s, cy + 44 * s - h * s, 28 * s, h * s, 2 * s, col);
+    for (let wy = 0; wy < h - 14; wy += 14) for (let wx = 0; wx < 2; wx++) rr(cx + (x + 5 + wx * 11) * s, cy + (52 - h + wy) * s, 7 * s, 8 * s, 1, (i + wy + wx) % 3 ? '#fff59d' : '#cfd8dc'); });
+  rr(cx - 98 * s, cy + 40 * s, 196 * s, 16 * s, 3 * s, '#9e9e9e'); rr(cx - 98 * s, cy + 40 * s, 196 * s, 4 * s, 2, '#bdbdbd');
+  rr(cx - 82 * s, cy - 92 * s, 6 * s, 134 * s, 2 * s, '#2e7d32');                                          // the street sign
+  rr(cx - 104 * s, cy - 104 * s, 72 * s, 22 * s, 4 * s, '#1b5e20'); rr(cx - 102 * s, cy - 102 * s, 68 * s, 18 * s, 3 * s, '#2e7d32'); fit('NEW YORK', cx - 68 * s, cy - 88 * s, 11 * s, 62 * s, '#fff', 'center', false);
+  rr(cx + 52 * s, cy - 106 * s, 50 * s, 46 * s, 5 * s, '#fff'); rr(cx + 52 * s, cy - 106 * s, 50 * s, 13 * s, 5 * s, '#e53935');   // the calendar page
+  text('APRIL', cx + 77 * s, cy - 96 * s, 9 * s, '#fff', 'center', false); text('3', cx + 77 * s, cy - 74 * s, 20 * s, '#212121', 'center', false); text('1973', cx + 77 * s, cy - 63 * s, 9 * s, '#555', 'center', false);
+  brickPhone(cx + 4 * s, cy - 6 * s, s * 0.9, a > 0 ? 0.6 + 0.4 * Math.sin(a * 40) : 0);
+  if (a > 0) { waves(cx + 4 * s, cy - 104 * s, s, a, '#ffd600', -Math.PI / 2); if (a > 0.3) fit('📶 It worked!', cx, cy - 128 * s, 20 * s, 200 * s, '#fff59d'); }
+}
+</script>
+<script>
+// a flip phone (silver and thin, like a RAZR). It shuts to hang up!
+function drawFlip(cx, cy, s, a) {
+  shadow(cx, cy, s, 42);
+  const c = a <= 0 ? 0 : a < 0.25 ? a / 0.25 : a < 0.6 ? 1 : a < 0.85 ? 1 - (a - 0.6) / 0.25 : 0, hy = cy - 8 * s, k = 1 - 2 * c;
+  rr(cx - 36 * s, hy, 72 * s, 64 * s, 9 * s, '#90a4ae'); rr(cx - 34 * s, hy + 2 * s, 68 * s, 58 * s, 8 * s, '#cfd8dc');
+  rr(cx - 12 * s, hy + 6 * s, 24 * s, 8 * s, 4 * s, '#eceff1');
+  for (let r = 0; r < 4; r++) for (let q = 0; q < 3; q++) rr(cx - 28 * s + q * 19.5 * s, hy + 18 * s + r * 10 * s, 17 * s, 7 * s, 1.5 * s, '#b3e5fc');
+  ctx.save(); ctx.translate(0, hy); ctx.scale(1, k === 0 ? 0.001 : k); ctx.translate(0, -hy);
+  if (k > 0) { rr(cx - 36 * s, hy - 84 * s, 72 * s, 84 * s, 9 * s, '#90a4ae'); rr(cx - 34 * s, hy - 82 * s, 68 * s, 80 * s, 8 * s, '#cfd8dc');
+    rr(cx - 10 * s, hy - 77 * s, 20 * s, 3 * s, 1.5 * s, '#546e7a'); rr(cx - 27 * s, hy - 70 * s, 54 * s, 60 * s, 4 * s, '#111');
+    const g = ctx.createLinearGradient(0, hy - 68 * s, 0, hy - 12 * s); g.addColorStop(0, '#4fc3f7'); g.addColorStop(1, '#1565c0'); rr(cx - 24 * s, hy - 67 * s, 48 * s, 54 * s, 2 * s, g);
+    text('12:00', cx, hy - 40 * s, 12 * s, '#fff', 'center', false); }
+  else { rr(cx - 36 * s, hy - 84 * s, 72 * s, 84 * s, 9 * s, '#78909c'); rr(cx - 34 * s, hy - 82 * s, 68 * s, 80 * s, 8 * s, '#b0bec5');
+    rr(cx - 16 * s, hy - 60 * s, 32 * s, 18 * s, 3 * s, '#111'); circle(cx, hy - 72 * s, 4 * s, '#263238'); }
+  ctx.restore();
+  rr(cx - 38 * s, hy - 6 * s, 76 * s, 12 * s, 6 * s, '#78909c');
+  if (c === 1) text('SNAP! Hung up!', cx, cy - 104 * s, 20 * s, '#fff59d');
+}
+// the first text message, typed the old way: press a key a few times to get each letter
+const MSG = 'MERRY CHRISTMAS', TAPS = { M: [6, 1], E: [3, 2], R: [7, 3], Y: [9, 3], ' ': [0, 1], C: [2, 3], H: [4, 2], I: [4, 3], S: [7, 4], T: [8, 1], A: [2, 1] };
+const LET = ['', '', 'ABC', 'DEF', 'GHI', 'JKL', 'MNO', 'PQRS', 'TUV', 'WXYZ'];
+const typedN = a => a <= 0 ? MSG.length : Math.min(MSG.length, Math.floor(a * 1.25 * MSG.length));
+function drawText(cx, cy, s, a) {
+  shadow(cx, cy, s, 40);
+  rr(cx - 38 * s, cy - 104 * s, 76 * s, 160 * s, 26 * s, '#1a237e'); rr(cx - 35 * s, cy - 101 * s, 70 * s, 154 * s, 24 * s, '#3949ab');
+  rr(cx - 10 * s, cy - 96 * s, 20 * s, 3 * s, 1.5 * s, '#1a237e');
+  rr(cx - 28 * s, cy - 88 * s, 56 * s, 48 * s, 6 * s, '#9e9e9e'); rr(cx - 25 * s, cy - 85 * s, 50 * s, 42 * s, 2 * s, '#a8c66c');
+  const n = typedN(a), shown = MSG.slice(0, n), cur = a > 0 && n < MSG.length ? MSG[n] : null;
+  const words = shown.split(' '); text(words[0] || '', cx - 22 * s, cy - 70 * s, 9 * s, '#1b2a0e', 'left', false); if (words.length > 1) text(words[1], cx - 22 * s, cy - 57 * s, 9 * s, '#1b2a0e', 'left', false);
+  if (a > 0 && Math.floor(a * 40) % 2) rr(cx - 22 * s + Math.min(42, (n > 5 ? n - 6 : n) * 5.6) * s, cy - (n > 5 ? 65 : 78) * s, 1.5 * s, 10 * s, 0, '#1b2a0e');
+  rr(cx - 12 * s, cy - 36 * s, 24 * s, 10 * s, 5 * s, '#c5cae9');
+  const curKey = cur ? TAPS[cur][0] : -1;
+  for (let i = 0; i < 12; i++) { const lab = i < 9 ? String(i + 1) : ['*', '0', '#'][i - 9], num = lab === '0' ? 0 : +lab, x = cx - 21 * s + (i % 3) * 21 * s, y = cy - 18 * s + Math.floor(i / 3) * 16 * s;
+    ellipse(x, y, 9 * s, 6 * s, num === curKey && lab !== '*' && lab !== '#' ? '#ffe082' : '#e8eaf6'); text(lab, x, y + 3 * s, 7 * s, '#1a237e', 'center', false); }
+}
+// BlackBerry: a tiny keyboard with a key for every letter, and a little rolling ball
+function drawBlackberry(cx, cy, s, a) {
+  shadow(cx, cy, s, 50);
+  rr(cx - 48 * s, cy - 104 * s, 96 * s, 160 * s, 16 * s, '#9e9e9e'); rr(cx - 46 * s, cy - 102 * s, 92 * s, 156 * s, 15 * s, '#212121');
+  rr(cx - 38 * s, cy - 92 * s, 76 * s, 56 * s, 4 * s, '#e3f2fd'); rr(cx - 38 * s, cy - 92 * s, 76 * s, 10 * s, 4 * s, '#1565c0'); text('Inbox', cx - 34 * s, cy - 84 * s, 7 * s, '#fff', 'left', false);
+  for (let i = 0; i < 4; i++) { const y = cy - 76 * s + i * 10 * s; rr(cx - 34 * s, y, 10 * s, 7 * s, 1, '#fff'); tri(cx - 34 * s, y, cx - 24 * s, y, cx - 29 * s, y + 4 * s, '#90caf9'); rr(cx - 20 * s, y + 2 * s, (30 + (i * 13) % 22) * s, 3 * s, 1, '#78909c'); }
+  rr(cx - 40 * s, cy - 32 * s, 14 * s, 9 * s, 4 * s, '#2e7d32'); rr(cx + 26 * s, cy - 32 * s, 14 * s, 9 * s, 4 * s, '#c62828');
+  if (a > 0) glow(cx, cy - 27 * s, 14 * s, 'rgba(255,255,255,.9)', 0.8);
+  circle(cx, cy - 27 * s, 5.5 * s, '#cfd8dc'); circle(cx - 1.5 * s, cy - 29 * s, 2 * s, '#fff');
+  for (let r = 0; r < 4; r++) for (let q = 0; q < 10; q++) { const x = cx - 38 * s + q * 7.8 * s, y = cy - 16 * s + r * 15 * s + Math.abs(q - 4.5) * 0.8 * s;
+    rr(x, y, 6.6 * s, 11 * s, 2 * s, '#424242'); circle(x + 3.3 * s, y + 4.5 * s, 1 * s, '#e0e0e0'); }
+  if (a > 0) { const t = Math.min(1, a * 1.6), ex = cx + t * 60 * s, ey = cy - 64 * s - t * 70 * s;
+    ctx.save(); ctx.globalAlpha = 1 - Math.max(0, a - 0.75) * 4; rr(ex - 16 * s, ey - 11 * s, 32 * s, 22 * s, 3 * s, '#fff'); tri(ex - 16 * s, ey - 11 * s, ex + 16 * s, ey - 11 * s, ex, ey + 2 * s, '#90caf9'); ctx.restore();
+    if (a > 0.4) text('📧 Sent!', cx, cy - 124 * s, 20 * s, '#fff59d'); }
+}
+// the first iPhone (2007): ONE button on the front, and "slide to unlock"
+const ICONS = ['#4caf50', '#2196f3', '#ff9800', '#e91e63', '#9c27b0', '#00bcd4', '#ffeb3b', '#f44336', '#8bc34a', '#3f51b5', '#ff5722', '#009688', '#795548', '#607d8b', '#cddc39', '#03a9f4'];
+function drawIphone(cx, cy, s, a) {
+  shadow(cx, cy, s, 46);
+  rr(cx - 42 * s, cy - 112 * s, 84 * s, 168 * s, 14 * s, '#b0bec5'); rr(cx - 40 * s, cy - 110 * s, 80 * s, 164 * s, 13 * s, '#111');
+  rr(cx - 9 * s, cy - 103 * s, 18 * s, 3 * s, 1.5 * s, '#424242');
+  const sx = cx - 34 * s, sy = cy - 94 * s, sw = 68 * s, sh = 112 * s, u = a > 0 ? Math.min(1, a / 0.4) : 0;
+  ctx.save(); ctx.beginPath(); ctx.rect(sx, sy, sw, sh); ctx.clip();
+  if (u < 1) { const g = ctx.createLinearGradient(0, sy, 0, sy + sh); g.addColorStop(0, '#4fc3f7'); g.addColorStop(1, '#0d47a1'); ctx.fillStyle = g; ctx.fillRect(sx, sy, sw, sh);
+    rr(sx, sy, sw, 28 * s, 0, 'rgba(0,0,0,.4)'); text('9:41', cx, sy + 20 * s, 16 * s, '#fff', 'center', false);
+    rr(sx, sy + sh - 26 * s, sw, 26 * s, 0, 'rgba(0,0,0,.5)'); rr(sx + 4 * s, sy + sh - 20 * s, sw - 8 * s, 14 * s, 5 * s, 'rgba(255,255,255,.18)');
+    text('slide to unlock', cx + 6 * s, sy + sh - 10 * s, 6.5 * s, '#cfd8dc', 'center', false);
+    const kx = sx + 5 * s + u * (sw - 28 * s); rr(kx, sy + sh - 19 * s, 18 * s, 12 * s, 4 * s, '#eceff1'); text('➜', kx + 9 * s, sy + sh - 10 * s, 9 * s, '#757575', 'center', false); }
+  else { ctx.fillStyle = '#111'; ctx.fillRect(sx, sy, sw, sh);
+    ICONS.forEach((c, i) => rr(sx + 5 * s + (i % 4) * 16 * s, sy + 6 * s + Math.floor(i / 4) * 19 * s, 12 * s, 12 * s, 3 * s, c));
+    rr(sx, sy + sh - 20 * s, sw, 20 * s, 0, 'rgba(255,255,255,.2)'); ['#4caf50', '#2196f3', '#ff9800', '#e91e63'].forEach((c, i) => rr(sx + 5 * s + i * 16 * s, sy + sh - 16 * s, 12 * s, 12 * s, 3 * s, c)); }
+  ctx.restore();
+  circle(cx, cy + 36 * s, 9 * s, '#212121'); ctx.strokeStyle = '#757575'; ctx.lineWidth = 1.2 * s; ctx.strokeRect(cx - 3.5 * s, cy + 32.5 * s, 7 * s, 7 * s);
+  if (a > 0.4 && a < 0.9) text('Unlocked!', cx, cy - 124 * s, 20 * s, '#fff59d');
+}
+</script>
+<script>
+// a smartphone today: almost all screen, with a camera
+function drawToday(cx, cy, s, a) {
+  shadow(cx, cy, s, 46);
+  rr(cx - 42 * s, cy - 112 * s, 84 * s, 168 * s, 17 * s, '#455a64'); rr(cx - 40 * s, cy - 110 * s, 80 * s, 164 * s, 16 * s, '#000');
+  const sx = cx - 37 * s, sy = cy - 107 * s, sw = 74 * s, sh = 158 * s, cam = a > 0;
+  ctx.save(); rrect(sx, sy, sw, sh, 13 * s); ctx.clip();
+  if (!cam) { const g = ctx.createLinearGradient(0, sy, 0, sy + sh); g.addColorStop(0, '#ff8a65'); g.addColorStop(0.5, '#7e57c2'); g.addColorStop(1, '#29b6f6'); ctx.fillStyle = g; ctx.fillRect(sx, sy, sw, sh);
+    text('10:30', cx, sy + 34 * s, 18 * s, '#fff', 'center', false);
+    ['#ffffff', '#43a047', '#1e88e5', '#ffb300', '#e53935', '#8e24aa', '#00acc1', '#f06292'].forEach((c, i) => rr(sx + 7 * s + (i % 4) * 16.5 * s, sy + 62 * s + Math.floor(i / 4) * 20 * s, 12 * s, 12 * s, 3.5 * s, c));
+    circle(sx + 13 * s, sy + 68 * s, 3.5 * s, '#424242');                                                   // camera app
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5 * s; ctx.beginPath(); ctx.arc(sx + 30 * s, sy + 68 * s, 3 * s, 0, 7); ctx.stroke();   // maps
+    rr(sx + 6 * s, sy + sh - 22 * s, sw - 12 * s, 16 * s, 8 * s, 'rgba(255,255,255,.3)'); }
+  else { ctx.fillStyle = '#81d4fa'; ctx.fillRect(sx, sy, sw, sh); circle(sx + sw * 0.75, sy + 30 * s, 10 * s, '#ffeb3b');
+    ellipse(cx - 20 * s, sy + 104 * s, 50 * s, 26 * s, '#66bb6a'); ellipse(cx + 26 * s, sy + 110 * s, 46 * s, 22 * s, '#43a047'); rr(cx - 2 * s, sy + 70 * s, 5 * s, 22 * s, 1, '#6d4c41'); circle(cx, sy + 66 * s, 12 * s, '#2e7d32');
+    rr(sx, sy + sh - 34 * s, sw, 34 * s, 0, 'rgba(0,0,0,.55)'); circle(cx, sy + sh - 17 * s, 10 * s, '#fff'); circle(cx, sy + sh - 17 * s, 7.5 * s, a > 0.4 && a < 0.5 ? '#bdbdbd' : '#fff');
+    ctx.strokeStyle = '#212121'; ctx.lineWidth = 1 * s; ctx.beginPath(); ctx.arc(cx, sy + sh - 17 * s, 8.5 * s, 0, 7); ctx.stroke();
+    if (a > 0.42 && a < 0.5) { ctx.fillStyle = 'rgba(255,255,255,.55)'; ctx.fillRect(sx, sy, sw, sh); } }
+  ctx.restore();
+  circle(cx, sy + 7 * s, 3.2 * s, '#000');
+  if (a > 0.45) text('📸 Click!', cx, cy - 126 * s, 20 * s, '#fff59d');
+}
+// fun phone facts on a chalkboard
+function drawFacts(cx, cy, s, a) {
+  shadow(cx, cy, s, 80);
+  line(cx - 60 * s, cy + 10 * s, cx - 74 * s, cy + 54 * s, WOOD2, 6 * s); line(cx + 60 * s, cy + 10 * s, cx + 74 * s, cy + 54 * s, WOOD2, 6 * s);
+  rr(cx - 90 * s, cy - 106 * s, 180 * s, 124 * s, 7 * s, WOOD); rr(cx - 82 * s, cy - 98 * s, 164 * s, 108 * s, 3 * s, '#2e4d3a');
+  rr(cx - 70 * s, cy + 12 * s, 140 * s, 6 * s, 2 * s, WOOD2); rr(cx - 40 * s, cy + 8 * s, 14 * s, 4 * s, 2, '#fff'); rr(cx + 22 * s, cy + 8 * s, 10 * s, 4 * s, 2, '#f8bbd0');
+  const say = a <= 0 ? 2 : a < 0.45 ? 1 : 2;
+  text('AHOY!', cx - 40 * s, cy - 66 * s, (say === 1 ? 22 : 18) * s, say === 1 ? '#fff59d' : '#e0e0e0', 'center', false);
+  if (say === 2) line(cx - 70 * s, cy - 72 * s, cx - 10 * s, cy - 72 * s, '#ef9a9a', 3 * s);
+  text('HELLO!', cx + 38 * s, cy - 66 * s, (say === 2 && a > 0 ? 22 : 18) * s, '#fff', 'center', false);
+  if (say === 2) text('✓', cx + 76 * s, cy - 82 * s, 16 * s, '#a5d6a7', 'center', false);
+  text('9-1-1', cx, cy - 24 * s, 28 * s, '#ffeb3b', 'center', false); text('first call: 1968', cx, cy - 4 * s, 11 * s, '#e0e0e0', 'center', false);
+}
+// ⭐ THE GRAND HALL: the Cat Phone (a modern phone, tipped so you can see the camera bump on its back)
+const CP_COLS = ['#ffb3d9', '#c7a6ff', '#8ec5ff'];
+let CAP = null;
+function cpDist(a) { return a <= 0 ? 1 : a < 0.15 ? 1 : a < 0.3 ? 1 - (a - 0.15) / 0.15 : a < 0.7 ? 0 : a < 0.85 ? (a - 0.7) / 0.15 : 1; }
+function drawCatPhone(cx, cy, s, a) {
+  shadow(cx, cy, s, 55);
+  ctx.save(); ctx.translate(cx, cy); ctx.rotate(-0.08); ctx.translate(-cx, -cy);
+  rr(cx - 58 * s, cy - 116 * s, 100 * s, 186 * s, 20 * s, '#37474f');                                       // the back of the phone, peeking out
+  rr(cx - 70 * s, cy - 110 * s, 38 * s, 50 * s, 12 * s, '#263238'); rr(cx - 68 * s, cy - 108 * s, 34 * s, 46 * s, 11 * s, '#455a64');   // the camera bump
+  for (const [lx, ly] of [[-60, -98], [-60, -74]]) { circle(cx + lx * s, cy + ly * s, 7 * s, '#111'); circle(cx + lx * s, cy + ly * s, 4 * s, '#1a237e'); circle(cx + (lx - 1.5) * s, cy + (ly - 1.5) * s, 1.5 * s, '#9fa8da'); }
+  circle(cx - 44 * s, cy - 86 * s, 2.5 * s, '#fff59d');
+  rr(cx - 50 * s, cy - 120 * s, 100 * s, 190 * s, 20 * s, '#cfd8dc'); rr(cx - 48 * s, cy - 118 * s, 96 * s, 186 * s, 19 * s, '#0b0b0b');
+  rr(cx + 50 * s, cy - 78 * s, 3 * s, 30 * s, 1.5 * s, '#b0bec5');                                           // side button
+  const sx = cx - 45 * s, sy = cy - 115 * s, sw = 90 * s, sh = 180 * s;
+  ctx.save(); rrect(sx, sy, sw, sh, 16 * s); ctx.clip();
+  if (a <= 0) {                                                                                             // the Cat Phone home screen
+    const g = ctx.createLinearGradient(sx, sy, sx + sw * 0.4, sy + sh); g.addColorStop(0, CP_COLS[0]); g.addColorStop(0.5, CP_COLS[1]); g.addColorStop(1, CP_COLS[2]); ctx.fillStyle = g; ctx.fillRect(sx, sy, sw, sh);
+    text('Cat Phone', cx, sy + 34 * s, 13 * s, '#fff', 'center', false);
+    rr(sx + 6 * s, sy + 46 * s, sw - 12 * s, 38 * s, 9 * s, 'rgba(255,255,255,.9)');
+    ctx.save(); ctx.beginPath(); ctx.arc(sx + 22 * s, sy + 65 * s, 12 * s, 0, 7); ctx.clip(); ctx.translate(sx + 10 * s, sy + 53 * s); ctx.scale(24 * s / 600, 24 * s / 600); drawMrClose(600, 600, 0, 'nose', 40); ctx.restore();
+    ctx.strokeStyle = '#1e88e5'; ctx.lineWidth = 2 * s; ctx.beginPath(); ctx.arc(sx + 22 * s, sy + 65 * s, 12 * s, 0, 7); ctx.stroke();
+    text('⭐ Call', sx + 38 * s, sy + 62 * s, 8 * s, '#1e5bb8', 'left', false); text('Mr. Whiskers!', sx + 38 * s, sy + 73 * s, 7.5 * s, '#1e5bb8', 'left', false);
+    ['#4caf50', '#ff5c8a', '#ffb300', '#7c3aed', '#29b6f6', '#ff7043'].forEach((c, i) => rr(sx + 12 * s + (i % 3) * 25 * s, sy + 98 * s + Math.floor(i / 3) * 26 * s, 17 * s, 17 * s, 5 * s, c));
+  } else {                                                                                                  // a video call with Mr. Whiskers
+    ctx.fillStyle = '#000'; ctx.fillRect(sx, sy, sw, sh);
+    const k2 = sw / 600; ctx.save(); ctx.translate(sx, sy); ctx.scale(k2, k2); drawMrClose(600, sh / k2, cpDist(a), 'nose', frame); ctx.restore();
+    text('Mr. Whiskers', cx, sy + 24 * s, 8 * s, '#fff');
+    const ty = sy + sh - 34 * s, g = ctx.createLinearGradient(0, ty, 0, sy + sh); g.addColorStop(0, 'rgba(25,12,50,.55)'); g.addColorStop(1, 'rgba(25,12,50,.92)'); rr(sx, ty, sw, 34 * s, 8 * s, g);
+    const bg = ctx.createLinearGradient(0, ty + 6 * s, 0, ty + 26 * s); bg.addColorStop(0, '#5aa9ff'); bg.addColorStop(1, '#1e6fe0');
+    rr(sx + 5 * s, ty + 6 * s, 54 * s, 20 * s, 7 * s, bg); text('Back up!', sx + 32 * s, ty + 19 * s, 7.5 * s, '#fff', 'center', false);
+    rr(sx + 63 * s, ty + 6 * s, 22 * s, 20 * s, 7 * s, '#e53950'); text('📞', sx + 74 * s, ty + 20 * s, 9 * s, '#fff', 'center', false);
+  }
+  ctx.restore();
+  rr(cx - 13 * s, sy + 5 * s, 26 * s, 7 * s, 3.5 * s, '#000');                                             // the little camera "island"
+  ctx.fillStyle = 'rgba(255,255,255,.1)'; ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx + sw * 0.5, sy); ctx.lineTo(sx + sw * 0.15, sy + sh); ctx.lineTo(sx, sy + sh); ctx.fill();
+  ctx.restore();
+  const kx = CAP ? CAP.x : cx, ky = CAP ? CAP.y : cy - 136 * s, ks = CAP ? 1.2 : s;               // (in the Grand Hall the words go beside the phone)
+  if (a > 0.3 && a < 0.7) text('TOO CLOSE!', kx, ky, 24 * ks, '#ff8fab');
+  if (a >= 0.85) text('Mrrow! Hi Ben!', kx, ky, 20 * ks, '#fff59d');
+}
+</script>
+<script>
+// each: [id, name, emoji, action button, when, fun facts (only TRUE ones!), draw(cx, cy, s, a), how long the action lasts]
+const CHARS = [
+  ['bell', "Bell's Telephone", '🔔', 'HEAR THE FIRST WORDS!', '1876', ['Alexander Graham Bell got a patent for the telephone on March 7, 1876.', 'On March 10, 1876, he said the first words on it: "Mr. Watson, come here, I want to see you."', '"Telephone" comes from Greek words: tele = far, phone = sound or voice.'], drawBell, 240],
+  ['switch', 'Switchboard', '🔌', 'NEW CALL!', '1878', ['The first telephone exchange (a switchboard) opened in New Haven, Connecticut, in 1878.', 'An operator asked "Number, please?" and plugged a cord into the right hole to connect your call.', 'Emma Nutt became the first woman telephone operator in 1878, in Boston.'], drawSwitch],
+  ['candle', 'Candlestick Phone', '🕯️', 'RING!', 'Early 1900s', ['It is tall and skinny, like a candlestick!', 'It was popular in the early 1900s.', 'You held the earpiece to your ear and talked into the top.', 'The earpiece hung on a hook. That is why we say "hang up"!'], drawCandle],
+  ['rotary', 'Rotary Dial Phone', '☎️', 'START OVER', 'Before push buttons', ['Put your finger in a hole and spin the dial to the finger stop.', 'When the dial spins back, it sends clicks: 3 is 3 clicks, and 0 is 10 clicks!', 'Tap a hole on the big dial to call someone!'], drawRotary],
+  ['touchtone', 'Push-Button Phone', '🔢', 'CLEAR', '1963', ['Push-button (Touch-Tone) phones came out in 1963.', 'Each button plays TWO notes at the same time!', 'Pushing buttons was much faster than spinning a dial.', 'Tap the buttons to hear them!'], drawTouchtone],
+  ['cooper', 'First Mobile Phone Call', '📶', 'MAKE THE CALL!', 'April 3, 1973', ['On April 3, 1973, Martin Cooper of Motorola made the first call on a handheld mobile phone.', 'He made the call while standing on a street in New York City!', 'No wires! The phone sent the call through the air.'], drawCooper],
+  ['brick', 'DynaTAC "The Brick"', '🧱', 'CHARGE IT!', '1983', ['The Motorola DynaTAC was approved in 1983.', 'It was so big that people called it "the brick"!', 'It could talk for about 30 minutes, then needed about 10 hours to charge.', 'It cost $3,995!'], drawBrick, 210],
+  ['flip', 'Flip Phone', '📱', 'FLIP IT SHUT!', '1996 and 2004', ['The Motorola StarTAC (1996) was one of the first flip phones small enough for a pocket.', 'The Motorola RAZR (2004) was super thin.', 'To hang up, you just closed it. SNAP!'], drawFlip],
+  ['text', 'First Text Message', '💬', 'TYPE IT!', 'December 3, 1992', ['The first text message was sent on December 3, 1992.', 'It said "Merry Christmas" and went from a computer to a phone.', 'On old phones you pressed a key a few times to get a letter.', 'A text could have up to 160 letters and spaces.'], drawText, 360],
+  ['blackberry', 'BlackBerry', '⌨️', 'SEND AN EMAIL!', 'Smartphone time!', ['BlackBerry phones were made by a company in Canada.', 'They had a tiny keyboard with a key for every letter.', 'People loved them for sending email.', 'Some had a tiny rolling ball to move around the screen!'], drawBlackberry],
+  ['iphone', 'First iPhone', '🍎', 'SLIDE TO UNLOCK!', '2007', ['Steve Jobs announced the first iPhone on January 9, 2007.', 'It went on sale on June 29, 2007.', 'It had just ONE button on the front!', 'The App Store came a year later, in 2008.'], drawIphone],
+  ['today', 'Smartphones Today', '📸', 'TAKE A PHOTO!', 'Today!', ['Smartphones have cameras, maps and video calls.', 'Many can unlock with your face or your fingerprint.', 'A smartphone has more computer power than the computers that helped astronauts land on the Moon in 1969!'], drawToday],
+  ['facts', 'Fun Phone Facts', '💡', 'SAY HELLO!', 'All through history', ['Bell wanted people to answer the phone by saying "Ahoy!"', 'But Thomas Edison\'s "Hello!" won!', 'In the USA, call 9-1-1 in an emergency.', 'The first 911 call was made in 1968.'], drawFacts],
+  ['catphone', 'The Cat Phone', '🐱', 'CALL MR. WHISKERS!', 'In Ben\'s Game Factory', ['Cat Phone is Ben\'s own game in the Game Factory! (💡 Ben\'s idea!)', 'You can video-call Mr. Whiskers, a fluffy gray-and-white cat with a blue collar and a little gold bell.', 'He squishes his face right up to the screen, so you have to tell him to back up!', 'His phone number is 555-BELL.'], drawCatPhone, 240],
+];
+const CI = {}; CHARS.forEach((c, i) => CI[c[0]] = i);
+const actLen = i => CHARS[i][7] || 150;
+function drawChar(i, cx, cy, s, a = 0) { ctx.save(); try { CHARS[i][6](cx, cy, s, a); } finally { ctx.restore(); } }
+</script>
+<script>
+// ---------- sounds (soft! everything goes through one quiet master volume) ----------
+let AC = null, MASTER = null;
+function audio() { try { if (!AC) { AC = new (window.AudioContext || window.webkitAudioContext)(); MASTER = AC.createGain(); MASTER.gain.value = 0.15; MASTER.connect(AC.destination); } if (AC.state === 'suspended') AC.resume(); } catch (_) {} return AC; }
+function beep(f, t = 0, d = 0.12, type = 'sine', v = 0.05, f2) {
+  try { const a = audio(); if (!a) return; const o = a.createOscillator(), g = a.createGain(), n = a.currentTime + t; v = Math.min(v, 0.06);
+    o.type = type; o.frequency.setValueAtTime(f, n); if (f2) o.frequency.exponentialRampToValueAtTime(f2, n + d);
+    g.gain.setValueAtTime(0.0001, n); g.gain.linearRampToValueAtTime(v, n + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, n + d); o.connect(g); g.connect(MASTER); o.start(n); o.stop(n + d + 0.03); } catch (_) {}
+}
+function softRing(t0 = 0) {                                     // a SOFT old-fashioned bell: brrring... brrring
+  for (const b of [0, 0.85]) for (let i = 0; i < 12; i++) beep(i % 2 ? 1046 : 880, t0 + b + i * 0.05, 0.07, 'sine', 0.03);
+}
+const dtmf = k => { const i = KEYS.indexOf(k); beep(ROWF[Math.floor(i / 3)], 0, 0.22, 'sine', 0.04); beep(COLF[i % 3], 0, 0.22, 'sine', 0.04); };
+const jingle = () => { for (let i = 0; i < 4; i++) beep(1568 + (i % 2) * 200, i * 0.07, 0.25, 'sine', 0.02); };   // Mr. Whiskers' little bell
+const sfx = { click: () => beep(660, 0, 0.06, 'triangle', 0.04), stamp: () => { beep(180, 0, 0.12, 'triangle', 0.05); [784, 988, 1175].forEach((f, i) => beep(f, 0.1 + i * 0.07, 0.15, 'triangle', 0.05)); },
+  whoosh: () => beep(300, 0, 0.25, 'sine', 0.04, 420), plug: () => beep(220, 0, 0.08, 'triangle', 0.05), ding: () => beep(1319, 0, 0.6, 'sine', 0.04), dialClick: () => beep(700, 0, 0.025, 'triangle', 0.04),
+  act: k => ({ bell: () => [392, 440, 494, 523, 494, 440].forEach((f, i) => beep(f, i * 0.28, 0.25, 'triangle', 0.04)),
+    candle: () => softRing(),
+    cooper: () => { for (let i = 0; i < 5; i++) beep(600 + i * 150, i * 0.12, 0.1, 'sine', 0.04); softRing(0.8); },
+    brick: () => { for (let i = 0; i < 8; i++) beep(300 + i * 60, i * 0.18, 0.12, 'sine', 0.04); },
+    flip: () => { beep(500, 0.4, 0.06, 'triangle', 0.05); beep(300, 0.43, 0.08, 'triangle', 0.05); beep(700, 1.5, 0.08, 'sine', 0.04); },
+    text: () => { for (let i = 0; i < MSG.length; i++) { const n = TAPS[MSG[i]][1]; for (let j = 0; j < n; j++) beep(1000, i * 0.32 + j * 0.06, 0.03, 'triangle', 0.03); } },
+    blackberry: () => [523, 659, 784, 1047].forEach((f, i) => beep(f, 0.3 + i * 0.07, 0.15, 'sine', 0.04)),
+    iphone: () => { beep(400, 0, 0.5, 'sine', 0.03, 800); beep(1047, 0.6, 0.2, 'sine', 0.04); },
+    today: () => { beep(1200, 0.7, 0.06, 'triangle', 0.04); beep(900, 0.76, 0.1, 'triangle', 0.04); },
+    facts: () => { beep(330, 0, 0.3, 'sine', 0.04, 260); beep(440, 0.9, 0.3, 'sine', 0.04, 660); },
+    catphone: () => { [523, 659, 523, 659].forEach((f, i) => beep(f, i * 0.12, 0.25, 'sine', 0.03)); beep(500, 0.9, 0.35, 'sine', 0.04, 220); jingle(); setTimeout(jingle, 2600); beep(300, 2.4, 0.4, 'sine', 0.04, 600); } }[k] || (() => {}))() };
+</script>
+<script>
+// ---------- the museum ----------
+const HALLS = [
+  { name: '🏛️ HALL 1: THE FIRST PHONES', ids: ['bell', 'switch', 'candle'], wall: '#f6e4c8', trim: '#7b4a1e', robo: 'These are the very FIRST phones! Tap one to see it up close!' },
+  { name: '🏛️ HALL 2: DIALS AND BUTTONS', ids: ['rotary', 'touchtone'], wall: '#fbe3d6', trim: '#b5523b', robo: 'Spin a dial and push some buttons! You can try them!' },
+  { name: '🏛️ HALL 3: PHONES GO MOBILE', ids: ['cooper', 'brick', 'flip', 'text'], wall: '#e3eef5', trim: '#3f6e8c', robo: 'Phones learned to go outside! No wires!' },
+  { name: '🏛️ HALL 4: SMARTPHONES', ids: ['blackberry', 'iphone', 'today', 'facts'], wall: '#ece4f6', trim: '#5e4b8b', robo: 'Smartphones are tiny computers! Wow!' },
+  { name: '🌟 THE GRAND HALL', ids: ['catphone'], wall: '#14213d', trim: GOLD, grand: true, robo: 'WOW! The Grand Hall! Tap the phone to call Mr. Whiskers!' },
+  { name: '🎁 THE GIFT SHOP', ids: [], wall: '#fff3e0', trim: OR, shop: true, robo: 'Every gift is FREE! Pick one to print!' },
+];
+let state = 'title', hall = 0, tap = null, sel = 0, showI = 0, actT = 0, msg = '', msgT = 0, parts = [], posterPick = false, hallAct = 0;
+const seenCount = () => CHARS.filter(c => save.seen[c[0]]).length;
+const START = { x: 330, y: 400, w: 260, h: 70 };
+const BTN_PREV = { x: 14, y: 488, w: 130, h: 44 }, BTN_NEXT = { x: 816, y: 488, w: 130, h: 44 }, BTN_PASS = { x: 160, y: 488, w: 300, h: 44 }, BTN_SHOP = { x: 476, y: 488, w: 324, h: 44 };
+const BTN_BACK = { x: 14, y: 12, w: 110, h: 42 }, BTN_ACT = { x: 580, y: 400, w: 350, h: 64 };
+const LEFT = 130, GX = W / 2 + 50, GY = 240, GS = 1.2, BTN_GFACTS = { x: 762, y: 420, w: 186, h: 52 };
+function exhibitPos(h, k) { const n = HALLS[h].ids.length, sw = (W - LEFT) / n; return HALLS[h].grand ? { x: GX, y: GY, s: GS } : { x: LEFT + (k + 0.5) * sw, y: 262, s: n > 3 ? 0.85 : n === 2 ? 1.15 : 1.0 }; }
+function exhibitRect(h, k) { const p = exhibitPos(h, k); if (HALLS[h].grand) return { x: p.x - 90, y: 90, w: 180, h: 240 }; const w = (W - LEFT) / HALLS[h].ids.length - 14; return { x: p.x - w / 2, y: 90, w, h: 380 }; }
+function say(s) { msg = s; msgT = 150; }
+function confetti(x, y, n = 40) { for (let i = 0; i < n; i++) parts.push({ x, y, vx: (Math.random() - 0.5) * 9, vy: -Math.random() * 8 - 2, c: [OR, GOLD, CREAM, OR2, '#fff'][i % 5], life: 70 + Math.random() * 40 }); }
+function markSeen(id) {
+  if (save.seen[id]) return;
+  save.seen[id] = 1; writeSave(); sfx.stamp(); say('📘 NEW STAMP in your Museum Passport!'); confetti(W / 2, 120, 30);
+  if (seenCount() === CHARS.length && !save.allDone) { save.allDone = 1; writeSave(); trophy('phoneMuseum'); setTimeout(() => { say('🏆 You saw EVERY phone! Museum Master!'); confetti(W / 2, 200, 120); }, 600); }
+}
+function openExhibit(id) {
+  showI = CI[id]; state = 'close'; actT = 0; sfx.whoosh(); hallAct = 0;
+  if (id === 'switch') { sw = null; newCall(); }
+  if (id === 'rotary') resetDial();
+  if (id === 'touchtone') tt = { digits: '', lit: -1, litT: 0 };
+  markSeen(id);
+}
+function goHall(h) { hall = (h + HALLS.length) % HALLS.length; sel = 0; posterPick = false; hallAct = 0; sfx.whoosh(); }
+// ---------- 🔌 be a switchboard operator ----------
+const JACKS = [['🏠', 'Grandma'], ['🍕', 'Pizza Shop'], ['🚒', 'Fire Station'], ['🏫', 'School'], ['🐄', 'Farm'], ['🧁', 'Bakery']];
+const jackPos = i => ({ x: 120 + (i % 3) * 170, y: 215 + Math.floor(i / 3) * 130 });
+let sw = null;
+function newCall() { const c = Math.floor(Math.random() * 6); let t = c; while (t === c) t = Math.floor(Math.random() * 6); sw = { caller: c, target: t, step: 0, t: 0, done: sw ? sw.done : 0 }; }
+function switchTap(t) {
+  JACKS.forEach((j, i) => { const p = jackPos(i); if (!(t.x > p.x - 75 && t.x < p.x + 75 && t.y > p.y - 60 && t.y < p.y + 66)) return;
+    if (sw.step === 0 && i === sw.caller) { sw.step = 1; sw.t = 0; sfx.plug(); }
+    else if (sw.step === 1 && i === sw.target) { sw.step = 2; sw.t = 0; sfx.plug(); sfx.ding(); sw.done++;
+      if (sw.done === 3) { say('🌟 SUPER OPERATOR! 3 calls connected!'); confetti(290, 200, 60); } }
+    else if (sw.step === 1 && i !== sw.caller) { say(`Hmm, that is the ${j[0]} ${j[1]}! Find the ${JACKS[sw.target][0]} ${JACKS[sw.target][1]}!`); sfx.click(); }
+    else if (sw.step === 0) { say('👆 Tap the BLINKING light first!'); sfx.click(); } });
+}
+function updateSwitch() { if (!sw) return; sw.t++; if (sw.step === 2 && sw.t > 110) newCall(); }
+// ---------- ☎️ spin the rotary dial ----------
+const DX = 290, DY = 285, DR = 160;
+let rd = null;
+function resetDial() { rd = { ang: 0, phase: 0, d: 0, digits: '', clicks: 0, ringT: 0 }; }
+function dialTap(t) {
+  if (rd.phase !== 0) return;
+  DIGITS.forEach(d => { const h = holeAng(d), hx = DX + Math.cos(h) * DR * 0.72, hy = DY + Math.sin(h) * DR * 0.72;
+    if (Math.hypot(t.x - hx, t.y - hy) < DR * 0.18) { rd.d = d; rd.phase = 1; rd.clicks = 0; sfx.click(); } });
+}
+function updateDial() {
+  if (!rd) return; const full = (rd.d + 1) * Math.PI / 6, step = Math.PI / 6;
+  if (rd.phase === 1) { rd.ang += 0.1; if (rd.ang >= full) { rd.ang = full; rd.phase = 2; } }
+  else if (rd.phase === 2) { rd.ang -= step / 5; if (Math.floor((full - rd.ang) / step) > rd.clicks && rd.clicks < rd.d) { rd.clicks++; sfx.dialClick(); }
+    if (rd.ang <= 0) { rd.ang = 0; rd.phase = 0; rd.digits += String(rd.d % 10); if (rd.digits.length === 3) { rd.phase = 3; rd.ringT = 0; softRing(0.3); } } }
+  else if (rd.phase === 3) { rd.ringT++; if (rd.ringT === 110) { [523, 659, 784].forEach((f, i) => beep(f, i * 0.1, 0.2, 'sine', 0.04)); confetti(110, 380, 20); } if (rd.ringT > 330) { rd.phase = 0; rd.digits = ''; } }
+}
+// ---------- 🔢 push the buttons ----------
+let tt = { digits: '', lit: -1, litT: 0 };
+const keyRect = i => ({ x: 170 + (i % 3) * 120 - 52, y: 180 + Math.floor(i / 3) * 78 - 31, w: 104, h: 62 });
+function keyTap(t) { KEYS.forEach((k, i) => { if (inBox(t, keyRect(i))) { tt.lit = i; tt.litT = 16; tt.digits = (tt.digits + k).slice(-12); dtmf(k); } }); }
+</script>
+<script>
+// ---------- 🎁 souvenirs ----------
+const SOUV = [
+  { k: 'one', icon: '🖼️', name: 'Phone Poster', tip: 'Pick ANY phone!' },
+  { k: 'all', icon: '🏛️', name: 'Museum Poster', tip: 'Every phone!' },
+  { k: 'cards', icon: '💌', name: 'Postcards', tip: 'Mail them to family!' },
+  { k: 'pass', icon: '📘', name: 'Museum Passport', tip: 'With your stamps!' },
+];
+const souvRect = i => ({ x: 180 + i * 192, y: 140, w: 176, h: 210 });
+let pickKind = 'one';
+const pickRect = i => ({ x: 18 + (i % 7) * 134, y: 74 + Math.floor(i / 7) * 206, w: 126, h: 196 });
+// ---------- input ----------
+C.addEventListener('mousedown', e => { const r = C.getBoundingClientRect(); tap = { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height }; audio(); });
+const press = {};
+addEventListener('keydown', e => { press[e.key] = true; });
+function update() {
+  frame++; if (msgT > 0) msgT--;
+  if (actT > 0) { actT++; if (actT > actLen(showI)) actT = 0; }
+  if (hallAct > 0) { hallAct++; if (hallAct > actLen(CI.catphone)) hallAct = 0; }
+  if (tt.litT > 0) tt.litT--;
+  if (state === 'close') { const id = CHARS[showI][0]; if (id === 'switch') updateSwitch(); if (id === 'rotary') updateDial(); }
+  for (const p of parts) { p.x += p.vx; p.y += p.vy; p.vy += 0.2; p.life--; } parts = parts.filter(p => p.life > 0);
+  const t = tap, k = Object.assign({}, press); tap = null; for (const key in press) delete press[key];
+  const ok = k.Enter || k[' '], esc = k.Escape;
+  if (state === 'title') { if (ok || inBox(t, START)) { state = 'hall'; sfx.click(); } return; }
+  if (state === 'close') {
+    const id = CHARS[showI][0];
+    if (esc || inBox(t, BTN_BACK)) { state = 'hall'; sfx.click(); return; }
+    if (ok || inBox(t, BTN_ACT)) { sfx.click();
+      if (id === 'switch') { newCall(); } else if (id === 'rotary') resetDial(); else if (id === 'touchtone') tt.digits = '';
+      else { actT = 1; sfx.act(id); } return; }
+    if (t && t.x < 560) { if (id === 'switch') switchTap(t); else if (id === 'rotary') dialTap(t); else if (id === 'touchtone') keyTap(t); else if (!actT) { actT = 1; sfx.act(id); } }
+    return;
+  }
+  if (state === 'pass') { if (esc || ok || inBox(t, BTN_BACK)) { state = 'hall'; sfx.click(); } return; }
+  const H0 = HALLS[hall];
+  if (k.ArrowRight) { if (!H0.shop && sel < H0.ids.length - 1) sel++; else goHall(hall + 1); }
+  if (k.ArrowLeft) { if (!H0.shop && sel > 0) sel--; else { goHall(hall - 1); sel = Math.max(0, HALLS[hall].ids.length - 1); } }
+  if (esc && posterPick) { posterPick = false; return; }
+  if (ok && !H0.shop && H0.ids[sel]) { if (H0.grand) grandTap(); else openExhibit(H0.ids[sel]); return; }
+  if (!t) return;
+  if (posterPick) {
+    if (inBox(t, BTN_BACK)) { posterPick = false; sfx.click(); return; }
+    CHARS.forEach((c, i) => { if (inBox(t, pickRect(i))) { sfx.click(); openPrint(pickKind, i); } });
+    return;
+  }
+  if (inBox(t, BTN_PREV)) { goHall(hall - 1); return; }
+  if (inBox(t, BTN_NEXT)) { goHall(hall + 1); return; }
+  if (inBox(t, BTN_PASS)) { state = 'pass'; sfx.click(); return; }
+  if (inBox(t, BTN_SHOP)) { goHall(HALLS.length - 1); return; }
+  if (H0.shop) { SOUV.forEach((sv, i) => { if (inBox(t, souvRect(i))) { sfx.click(); if (sv.k === 'one') { posterPick = true; pickKind = sv.k; } else openPrint(sv.k); } }); return; }
+  if (H0.grand) { if (inBox(t, BTN_GFACTS)) openExhibit('catphone'); else if (inBox(t, exhibitRect(hall, 0))) grandTap(); return; }
+  H0.ids.forEach((id, i) => { if (inBox(t, exhibitRect(hall, i))) { sel = i; openExhibit(id); } });
+}
+function grandTap() { if (hallAct) return; hallAct = 1; sfx.act('catphone'); markSeen('catphone'); }   // 📞 call Mr. Whiskers right here in the hall
+// ---------- drawing ----------
+function drawGuide(str, x = 66, y = 466, s = 2.2, by = 168) {      // 🤖 Robo the museum guide, with a speech bubble
+  const bh = bubble(str, x, by, 124, 15); tri(x - 10, by + bh - 1, x + 10, by + bh - 1, x + 4, by + bh + 22, '#fff');
+  drawRobo(x, y, { s, pose: 'idle', wave: true });
+}
+function drawHall() {
+  const H0 = HALLS[hall];
+  ctx.fillStyle = H0.wall; ctx.fillRect(0, 0, W, 420);
+  ctx.fillStyle = H0.trim; ctx.fillRect(0, 70, W, 6); ctx.fillRect(0, 410, W, 10);
+  ctx.fillStyle = H0.grand ? '#0d1b2a' : '#a1887f'; ctx.fillRect(0, 420, W, 62); ctx.fillStyle = 'rgba(0,0,0,.08)'; for (let x = 0; x < W; x += 60) ctx.fillRect(x, 420, 2, 62);
+  fit(H0.name, W / 2, 50, 32, 760, H0.grand ? GOLD : '#fff');
+  drawGuide(H0.robo);
+  if (H0.shop) return drawShop();
+  if (H0.grand) return drawGrand();
+  H0.ids.forEach((id, k) => {
+    const p = exhibitPos(hall, k), seen = save.seen[id], selk = k === sel;
+    rr(p.x - 92, 92, 184, 212, 14, 'rgba(0,0,0,.07)');
+    if (selk) { const g = ctx.createRadialGradient(p.x, p.y, 10, p.x, p.y, 120); g.addColorStop(0, 'rgba(255,224,178,.9)'); g.addColorStop(1, 'rgba(255,224,178,0)'); ctx.fillStyle = g; ctx.fillRect(p.x - 120, p.y - 120, 240, 240); }
+    rr(p.x - 60, 312, 120, 98, 6, '#f5f5f5'); rr(p.x - 70, 300, 140, 16, 4, '#e0e0e0'); ctx.fillStyle = '#eeeeee'; ctx.fillRect(p.x - 40, 322, 6, 80); ctx.fillRect(p.x + 34, 322, 6, 80);
+    drawChar(CI[id], p.x, p.y - 20 + Math.sin(frame * 0.04 + k) * 2, p.s);
+    const pw = Math.min(190, (W - LEFT) / H0.ids.length - 14); rr(p.x - pw / 2, 424, pw, 46, 8, H0.trim); fit(CHARS[CI[id]][1], p.x, 446, 17, pw - 10, '#fff', 'center', false); text(seen ? '✅ visited' : '👆 tap me!', p.x, 464, 13, '#fff', 'center', false);
+  });
+}
+function drawGrand() {
+  const g = ctx.createRadialGradient(GX, 230, 20, GX, 230, 280); g.addColorStop(0, 'rgba(255,236,179,.4)'); g.addColorStop(1, 'rgba(255,236,179,0)'); ctx.fillStyle = g; ctx.fillRect(LEFT, 76, W - LEFT, 334);
+  ctx.save(); ctx.globalAlpha = 0.16 + 0.04 * Math.sin(frame * 0.03); ctx.fillStyle = '#fff8e1'; ctx.beginPath(); ctx.moveTo(GX - 30, 76); ctx.lineTo(GX + 30, 76); ctx.lineTo(GX + 150, 410); ctx.lineTo(GX - 150, 410); ctx.fill(); ctx.restore();   // spotlight
+  rr(GX - 18, 76, 36, 14, 4, '#455a64');
+  ctx.fillStyle = '#b71c1c'; ctx.beginPath(); ctx.moveTo(GX - 100, 420); ctx.lineTo(GX + 100, 420); ctx.lineTo(GX + 170, 482); ctx.lineTo(GX - 170, 482); ctx.fill();   // red carpet
+  ctx.strokeStyle = GOLD; ctx.lineWidth = 10; ctx.strokeRect(GX - 160, 92, 320, 236); ctx.strokeStyle = '#ffe082'; ctx.lineWidth = 2; ctx.strokeRect(GX - 150, 102, 300, 216);
+  rr(GX - 96, 326, 192, 16, 4, '#eceff1'); rr(GX - 84, 340, 168, 70, 4, '#f5f5f5');                                   // the marble pedestal
+  ctx.strokeStyle = 'rgba(120,144,156,.45)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(GX - 70, 346); ctx.quadraticCurveTo(GX - 30, 370, GX - 50, 404); ctx.moveTo(GX + 20, 344); ctx.quadraticCurveTo(GX + 50, 372, GX + 30, 406); ctx.stroke();
+  rr(GX - 96, 402, 192, 10, 3, '#cfd8dc');
+  CAP = { x: GX + 262, y: 200 }; drawChar(CI.catphone, GX, GY, GS, hallAct > 0 ? hallAct / actLen(CI.catphone) : 0); CAP = null;
+  for (const x of [GX - 230, GX + 230]) { rr(x - 6, 300, 12, 116, 4, GOLD); circle(x, 296, 12, GOLD); }                // velvet ropes
+  ctx.strokeStyle = '#c62828'; ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(GX - 230, 316); ctx.quadraticCurveTo(GX - 160, 380, GX - 100, 350); ctx.moveTo(GX + 230, 316); ctx.quadraticCurveTo(GX + 160, 380, GX + 100, 350); ctx.stroke();
+  rr(GX - 232, 422, 450, 52, 10, GOLD); fit('The Cat Phone: where you can call Mr. Whiskers!', GX - 7, 445, 20, 430, '#14213d', 'center', false);
+  text('🐱 From Ben\'s game Cat Phone  ' + (save.seen.catphone ? '✅' : '👆 Tap the phone!'), GX - 7, 466, 14, '#14213d', 'center', false);
+  button(BTN_GFACTS, '📖 FACTS', '#5c6bc0', 22);
+}
+function drawShop() {
+  if (posterPick) {
+    ctx.fillStyle = '#ffe9cc'; ctx.fillRect(0, 0, W, H); text('🖼️ Which poster do you want?', W / 2, 48, 30, OR3, 'center', false);
+    CHARS.forEach((c, i) => { const b = pickRect(i); rr(b.x, b.y, b.w, b.h, 16, '#fff'); drawChar(i, b.x + b.w / 2, b.y + 104, 0.6); const ln = wrap(c[1], 15, b.w - 12).slice(0, 2); ln.forEach((l, j) => fit(l, b.x + b.w / 2, b.y + b.h - 10 - (ln.length - 1 - j) * 17, 15, b.w - 10, OR3, 'center', false)); });
+    button(BTN_BACK, '⬅ BACK', '#5d4037', 18); return;
+  }
+  SOUV.forEach((sv, i) => { const b = souvRect(i); rr(b.x, b.y + 5, b.w, b.h, 16, 'rgba(0,0,0,.2)'); rr(b.x, b.y, b.w, b.h, 16, '#fff');
+    emoji(sv.icon, b.x + b.w / 2, b.y + 74, 56); fit(sv.name, b.x + b.w / 2, b.y + 118, 19, b.w - 12, OR3, 'center', false);
+    fit(sv.tip, b.x + b.w / 2, b.y + 150, 14, b.w - 10, '#5d4037', 'center', false); text('🖨️ PRINT', b.x + b.w / 2, b.y + 186, 17, '#43a047', 'center', false); });
+  text('Every gift is FREE! Tip: turn on color printing!', W / 2 + 60, 112, 20, OR3, 'center', false);
+  drawChar(CI.rotary, 300, 424, 0.48); drawChar(CI.candle, 560, 424, 0.48); drawChar(CI.catphone, 820, 420, 0.4);
+}
+function drawBar() {
+  rr(0, 482, W, 58, 0, 'rgba(62,39,35,.94)');
+  button(BTN_PREV, '◀ BACK', '#8d6e63', 20); button(BTN_NEXT, 'NEXT ▶', '#8d6e63', 20);
+  button(BTN_PASS, `📘 PASSPORT  ${seenCount()}/${CHARS.length}`, '#5c6bc0', 20); button(BTN_SHOP, '🎁 GIFT SHOP', '#00897b', 22);
+}
+</script>
+<script>
+function drawSwitchBoard() {
+  rr(30, 70, 520, 390, 16, WOOD2); rr(44, 84, 492, 334, 10, '#24170c');
+  const tipText = sw.step === 0 ? '📞 A light is blinking! Tap it to answer the call!' : sw.step === 1 ? `"Number, please?"  "Connect me to the ${JACKS[sw.target][0]} ${JACKS[sw.target][1]}!"` : sw.done >= 3 ? '🌟 Connected! You are a SUPER operator!' : '✅ Connected! Great job, operator!';
+  bubble(tipText, 290, 92, 480, 17);
+  JACKS.forEach((j, i) => { const p = jackPos(i), caller = i === sw.caller, target = i === sw.target;
+    const lit = (caller && (sw.step > 0 || frame % 30 < 18)) || (target && sw.step === 2), hint = target && sw.step === 1 && sw.t > 240;
+    if (lit || hint) glow(p.x, p.y - 34, 30, hint && !lit ? 'rgba(255,255,255,.5)' : 'rgba(255,179,0,.85)');
+    circle(p.x, p.y - 34, 12, lit ? '#ffb300' : '#5d4037'); circle(p.x - 4, p.y - 38, 3.5, 'rgba(255,255,255,.4)');
+    circle(p.x, p.y, 20, BRASS); circle(p.x, p.y, 10, '#000');
+    rr(p.x - 72, p.y + 28, 144, 32, 8, CREAM); fit(j[0] + ' ' + j[1], p.x, p.y + 51, 18, 136, OR3, 'center', false); });
+  rr(36, 420, 508, 30, 4, WOOD); rr(36, 420, 508, 6, 3, 'rgba(255,255,255,.2)');
+  const cords = []; if (sw.step >= 1) cords.push([sw.caller, 250, '#c62828']); if (sw.step === 2) cords.push([sw.target, 330, '#212121']);
+  for (const [i, x0, col] of cords) { const p = jackPos(i); ctx.strokeStyle = col; ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(x0, 430); ctx.quadraticCurveTo((x0 + p.x) / 2, Math.max(p.y, 430) + 30, p.x, p.y); ctx.stroke(); rr(p.x - 7, p.y - 7, 14, 22, 4, col); circle(p.x, p.y, 5, BRASS); }
+  for (let i = 0; i < 6; i++) { const x = 190 + i * 40; if ((x === 250 && sw.step >= 1) || (x === 330 && sw.step === 2)) continue; rr(x - 6, 428, 12, 18, 3, i % 2 ? '#212121' : '#c62828'); rr(x - 3, 422, 6, 8, 2, BRASS); }
+  fit(`Calls connected: ${sw.done}`, 290, 476, 18, 400, '#fff');
+}
+function drawBigDial() {
+  rr(70, 66, 440, 44, 12, 'rgba(255,255,255,.12)');
+  const shown = rd.digits.padEnd(3, '_').split('').join(' ');
+  fit('Dialing: ' + shown, 290, 98, 26, 420, '#fff59d');
+  drawDial(DX, DY, DR, rd.ang, true);
+  if (rd.phase === 0 && !rd.digits) fit('👆 Tap a number hole!', 290, 476, 20, 420, '#fff');
+  if (rd.phase === 3) {
+    if (rd.ringT < 110) { fit('🔔 Ring... ring...', 290, 476, 22, 420, GOLD); waves(DX - DR - 10, DY, 1.4, rd.ringT / 100, GOLD, Math.PI); waves(DX + DR + 10, DY, 1.4, rd.ringT / 100, GOLD, 0); }
+    else { const bh = bubble('Hello, Ben! It\'s Robo! 👋', 64, 312, 118, 17); tri(56, 312 + bh - 1, 74, 312 + bh - 1, 66, 312 + bh + 16, '#fff'); drawRobo(66, 472, { s: 1.5, pose: 'happy' }); }
+  }
+}
+function drawKeypad() {
+  rr(80, 58, 420, 412, 30, '#bfa883'); rr(86, 62, 408, 402, 28, '#ece0c4');
+  rr(110, 72, 360, 64, 10, '#1b2a0e'); fit(tt.digits || 'Push a button!', 290, 108, 28, 340, '#a8e6a1');
+  if (tt.lit >= 0) fit(`Two notes: ${ROWF[Math.floor(tt.lit / 3)]} + ${COLF[tt.lit % 3]}`, 290, 128, 13, 340, '#c5e1a5');
+  KEYS.forEach((k, i) => { const b = keyRect(i), on = i === tt.lit && tt.litT > 0;
+    rr(b.x, b.y + 5, b.w, b.h, 14, '#bfa883'); rr(b.x, b.y + (on ? 4 : 0), b.w, b.h, 14, on ? '#ffe082' : '#fffdf5');
+    text(k, b.x + b.w / 2, b.y + (on ? 4 : 0) + 44, 34, '#3e2723', 'center', false); });
+}
+function drawClose() {
+  const c = CHARS[showI], id = c[0], a = actT > 0 ? actT / actLen(showI) : 0;
+  ctx.fillStyle = '#21140d'; ctx.fillRect(0, 0, W, H);
+  const g = ctx.createRadialGradient(290, 260, 20, 290, 260, 300); g.addColorStop(0, 'rgba(255,224,178,.4)'); g.addColorStop(1, 'rgba(255,224,178,0)'); ctx.fillStyle = g; ctx.fillRect(0, 0, 600, H);
+  if (id === 'switch') drawSwitchBoard(); else if (id === 'rotary') drawBigDial(); else if (id === 'touchtone') drawKeypad();
+  else {
+    drawChar(showI, 290, 300, id === 'catphone' ? 1.45 : id === 'switch' || id === 'cooper' || id === 'facts' ? 1.7 : 1.6, a);
+    if (!a) fit('👆 Tap it!', 290, 470, 18, 300, '#ffe0b2');
+    if (id === 'bell' && a > 0.1) bubble('"Mr. Watson, come here, I want to see you."', 290, 62, 440, 22);
+    if (id === 'text' && a > 0) { const n = typedN(a), ch = MSG[n];
+      if (ch && ch !== ' ') { const [key, times] = TAPS[ch]; fit(`Press ${key} ${['', 'one time', 'two times', 'three times', 'four times'][times]} = ${ch}`, 290, 474, 24, 500, '#fff59d'); }
+      else if (!ch) fit('Merry Christmas! 🎄', 290, 474, 24, 500, '#fff59d'); }
+    if (id === 'brick' && a > 0) fit(a < 0.5 ? '🔌 About 10 hours to charge...' : '📞 ...for about 30 minutes of talking!', 290, 474, 22, 520, '#fff59d');
+  }
+  rr(560, 60, 380, 420, 20, '#fffaf2'); rr(570, 70, 360, 66, 14, OR);
+  fit(c[2] + ' ' + c[1], 750, 113, 30, 340, '#fff'); fit('📅 When: ' + c[4], 750, 162, 16, 350, '#5d4037', 'center', false);
+  let size = 17, lines = c[5].map(f => wrap('• ' + f, size, 340)); if (lines.flat().length * 22 + c[5].length * 6 > 196) { size = 15; lines = c[5].map(f => wrap('• ' + f, size, 344)); }
+  let y = 196; for (const ls of lines) { for (const ln of ls) { text(ln, 580, y, size, '#3e2723', 'left', false); y += size + 4; } y += 5; }
+  button(BTN_ACT, (id === 'switch' || id === 'rotary' || id === 'touchtone' ? '🔄 ' : '✨ ') + c[3], '#43a047', 24);
+  button(BTN_BACK, '⬅ BACK', '#5d4037', 18);
+  if (msgT > 0) { rr(130, 8, 420, 40, 12, 'rgba(0,0,0,.75)'); fit(msg, 340, 35, 18, 400, '#fff59d'); }
+}
+function drawPass() {
+  ctx.fillStyle = '#4e342e'; ctx.fillRect(0, 0, W, H); rr(40, 64, W - 80, 410, 20, '#fffaf2');
+  text('📘 MY MUSEUM PASSPORT', W / 2, 48, 30, '#fff');
+  CHARS.forEach((c, i) => { const x = 120 + (i % 7) * 120, y = 160 + Math.floor(i / 7) * 196, seen = save.seen[c[0]];
+    ctx.strokeStyle = seen ? '#c62828' : '#bdbdbd'; ctx.lineWidth = 4; ctx.setLineDash(seen ? [] : [8, 6]); ctx.beginPath(); ctx.arc(x, y, 52, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+    if (seen) drawChar(i, x, y + 4, 0.36); else text('?', x, y + 12, 32, '#bdbdbd', 'center', false);
+    const ln = wrap(c[1], 14, 112).slice(0, 2); ln.forEach((l, j) => fit(l, x, y + 74 + j * 16, 14, 116, '#3e2723', 'center', false)); });
+  button(BTN_BACK, '⬅ BACK', '#5d4037', 18);
+}
+function drawTitle() {
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#fff3e0'); g.addColorStop(1, '#e8c9a0'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  for (let i = 0; i < 6; i++) rr(70 + i * 150, 130, 24, 300, 6, '#fffaf2');
+  tri(30, 130, W - 30, 130, W / 2, 30, '#8d5524'); rr(30, 124, W - 60, 16, 4, '#6d3f19'); rr(30, 430, W - 60, 20, 4, '#6d3f19');
+  text('☎️', W / 2, 108, 44, '#000', 'center', false);
+  text('THE PHONE MUSEUM', W / 2 - 40, 200, 58, OR);
+  text('💡 Ben\'s idea!', W / 2 - 40, 240, 24, OR3, 'center', false);
+  ['bell', 'candle', 'rotary', 'brick', 'iphone'].forEach((id, i) => drawChar(CI[id], 110 + i * 150, 330 + Math.sin(frame * 0.05 + i) * 4, 0.62));
+  button(START, '▶ COME IN!', '#43a047', 30);
+  const bh = bubble('Hi! I\'m Robo, your museum guide!', 868, 210, 150, 16); tri(858, 210 + bh - 1, 878, 210 + bh - 1, 870, 210 + bh + 20, '#fff');
+  drawRobo(870, 440, { s: 2.0, pose: 'idle', wave: true });
+  text('Tap the phones • play with them • collect stamps • print souvenirs!', W / 2, 500, 18, OR3, 'center', false);
+}
+function draw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
+  if (state === 'title') drawTitle();
+  else if (state === 'close') drawClose();
+  else if (state === 'pass') drawPass();
+  else { drawHall(); if (!posterPick) drawBar(); if (msgT > 0 && !posterPick) { rr(W / 2 - 300, 84, 600, 40, 12, 'rgba(0,0,0,.65)'); fit(msg, W / 2, 111, 19, 580, '#fff59d'); } }
+  for (const p of parts) { ctx.globalAlpha = Math.min(1, p.life / 20); ctx.fillStyle = p.c; ctx.fillRect(p.x - 4, p.y - 4, 8, 8); }
+  ctx.globalAlpha = 1;
+}
+let last = performance.now(), acc = 0;
+function loop(now) { acc += Math.min(100, now - last); last = now; while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; } draw(); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+</script>
+<script>
+// ---------- 🖨️ printing the souvenirs ----------
+const PW = 850, PH = 1100, PAST = ['#fff3e0', '#fce4ec', '#e8eaf6', '#e0f2f1', '#fff8e1', '#f3e5f5', '#e1f5fe', '#fbe9e7', '#ede7f6', '#fffde7'];
+function makePage(fn) {
+  const cv = document.createElement('canvas'); cv.width = PW; cv.height = PH;
+  const old = ctx; ctx = cv.getContext('2d'); PRINTING = true;
+  try { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, PW, PH); fn(); } finally { ctx = old; PRINTING = false; }
+  return cv;
+}
+const ptext = (s, x, y, size, color = '#222', align = 'center') => text(s, x, y, size, color, align, false);
+function cutBox(x, y, w, h, r = 18) { ctx.save(); ctx.setLineDash([10, 7]); ctx.strokeStyle = '#9e9e9e'; ctx.lineWidth = 2; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); ctx.stroke(); ctx.restore(); }
+function bigTitle(str, x, y, size, fill, edge, maxW = PW - 80) {
+  ctx.save(); ctx.font = `bold ${size}px "Trebuchet MS", Arial`; const mw = ctx.measureText(str).width; if (mw > maxW) { size = Math.floor(size * maxW / mw); ctx.font = `bold ${size}px "Trebuchet MS", Arial`; }
+  ctx.textAlign = 'center'; ctx.lineJoin = 'round'; ctx.strokeStyle = edge; ctx.lineWidth = size / 6; ctx.strokeText(str, x, y); ctx.fillStyle = fill; ctx.fillText(str, x, y); ctx.restore();
+}
+function pageOne(i) {
+  const c = CHARS[i];
+  return makePage(() => {
+    const grand = c[0] === 'catphone', g = ctx.createLinearGradient(0, 0, 0, PH); g.addColorStop(0, grand ? '#14213d' : '#fff3e0'); g.addColorStop(1, grand ? '#3949ab' : '#f0c890'); ctx.fillStyle = g; ctx.fillRect(0, 0, PW, PH);
+    ctx.strokeStyle = grand ? GOLD : OR; ctx.lineWidth = 10; ctx.strokeRect(14, 14, PW - 28, PH - 28);
+    for (let k = 0; k < 14; k++) star((k * 211) % PW, 180 + (k * 137) % 600, 10 + (k % 3) * 4, grand ? 'rgba(255,201,77,.45)' : 'rgba(181,101,29,.2)', k);
+    bigTitle(c[1].toUpperCase() + '!', PW / 2, 110, 70, grand ? GOLD : '#fff', grand ? '#0d1b2a' : OR3);
+    ptext('THE PHONE MUSEUM  •  SOUVENIR POSTER  •  ' + c[4], PW / 2, 160, 22, grand ? CREAM : OR3);
+    drawChar(i, PW / 2, 510, 2.9);
+    rr(70, 750, PW - 140, 300, 26, 'rgba(255,255,255,.92)');
+    let y = 800; for (const f of c[5]) { for (const ln of wrap('• ' + f, 24, PW - 200)) { ptext(ln, 100, y, 24, '#3e2723', 'left'); y += 31; } y += 6; }
+  });
+}
+function pageAll() {
+  return makePage(() => {
+    ctx.strokeStyle = OR; ctx.lineWidth = 10; ctx.strokeRect(14, 14, PW - 28, PH - 28);
+    bigTitle('THE PHONE MUSEUM', PW / 2, 90, 60, '#fff', OR3); ptext('💡 A museum invented by Ben', PW / 2, 132, 22, OR3);
+    CHARS.forEach((c, i) => { const n = CHARS.length, row = Math.floor(i / 4), inRow = row === Math.floor((n - 1) / 4) ? n - row * 4 : 4, x = 32 + (i % 4) * 198 + (4 - inRow) * 99, y = 152 + row * 232, w = 190, h = 222;
+      rr(x, y, w, h, 16, PAST[i % PAST.length]); drawChar(i, x + w / 2, y + 120, 0.72); fit(c[1], x + w / 2, y + 206, 18, w - 14, OR3, 'center', false); });
+  });
+}
+function pagesCards() {
+  const pages = [];
+  for (let pg = 0; pg < Math.ceil(CHARS.length / 4); pg++) pages.push(makePage(() => {
+    ptext(`✂️ PHONE MUSEUM POSTCARDS (page ${pg + 1})  Cut on the dotted lines!`, PW / 2, 30, 18, '#555');
+    CHARS.slice(pg * 4, pg * 4 + 4).forEach((c, k) => { const i = pg * 4 + k, x = 25 + (k % 2) * 405, y = 48 + Math.floor(k / 2) * 525, w = 395, h = 510;
+      rr(x, y, w, h, 14, PAST[i % PAST.length]); rr(x + 12, y + 12, w - 24, 260, 10, '#fff'); drawChar(i, x + w / 2, y + 160, 1.1);
+      ptext('Greetings from', x + w / 2, y + 304, 20, '#5d4037'); fit('THE PHONE MUSEUM!', x + w / 2, y + 338, 28, w - 30, OR3, 'center', false); fit('Starring: ' + c[1], x + w / 2, y + 368, 18, w - 30, '#5d4037', 'center', false);
+      ['To: ______________________', 'Hi! ______________________', '__________________________', 'From: ____________________'].forEach((ln, j) => ptext(ln, x + 24, y + 406 + j * 28, 18, '#555', 'left'));
+      cutBox(x - 4, y - 4, w + 8, h + 8, 16); });
+  }));
+  return pages;
+}
+function pagePass() {
+  return makePage(() => {
+    ctx.fillStyle = '#4e342e'; ctx.fillRect(0, 0, PW, PH); rr(30, 30, PW - 60, PH - 60, 24, '#fffaf2');
+    bigTitle('MUSEUM PASSPORT', PW / 2, 110, 58, GOLD, '#4e342e'); ptext('THE PHONE MUSEUM  •  Name: Ben', PW / 2, 156, 24, '#4e342e');
+    CHARS.forEach((c, i) => { const row = Math.floor(i / 4), inRow = row === 3 ? CHARS.length - 12 : 4, x = 130 + (i % 4) * 197 + (4 - inRow) * 98, y = 260 + row * 205, seen = save.seen[c[0]];
+      ctx.strokeStyle = seen ? '#c62828' : '#bdbdbd'; ctx.lineWidth = 4; ctx.setLineDash(seen ? [] : [10, 7]); ctx.beginPath(); ctx.arc(x, y, 64, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+      if (seen) { drawChar(i, x, y + 4, 0.42); ptext('VISITED!', x, y + 58, 14, '#c62828'); } else ptext('stamp here', x, y + 6, 16, '#bdbdbd');
+      fit(c[1], x, y + 90, 17, 190, '#4e342e', 'center', false); });
+  });
+}
+let printBox = null;
+function openPrint(k, i) {
+  const pages = k === 'one' ? [pageOne(i)] : k === 'all' ? [pageAll()] : k === 'cards' ? pagesCards() : [pagePass()];
+  const name = k === 'one' ? CHARS[i][1] + ' Poster' : SOUV.find(s => s.k === k).name;
+  printBox = document.createElement('div'); printBox.id = 'printBox';
+  const bar = document.createElement('div'); bar.className = 'pbBar';
+  const back = document.createElement('button'); back.className = 'pbBack'; back.textContent = '⬅ BACK';
+  const pr = document.createElement('button'); pr.className = 'pbPrint'; pr.textContent = pages.length > 1 ? `🖨️ PRINT (${pages.length} pages)` : '🖨️ PRINT';
+  back.onclick = () => { if (printBox) { printBox.remove(); printBox = null; } sfx.click(); };
+  pr.onclick = () => { try { window.print(); } catch (_) {} };
+  bar.append(back, pr); printBox.appendChild(bar);
+  const tip = document.createElement('div'); tip.className = 'pbTip'; tip.textContent = '🎁 ' + name + '  •  Tip: turn on color printing!'; printBox.appendChild(tip);
+  for (const cv of pages) { const img = new Image(); img.className = 'pbPage'; img.alt = name; img.src = cv.toDataURL('image/png'); printBox.appendChild(img); }
+  document.body.appendChild(printBox);
+}
+</script>

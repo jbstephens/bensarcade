@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>📱 The Tablet Museum</title>
+<script src="touchpad.js?v=10"></script>
+<style>
+  html, body { height: 100%; }
+  body { margin: 0; background: #141b24; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  canvas { width: min(100vw, calc(100vh * 960 / 540)); height: auto; display: block; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
+  #printBox { position: fixed; inset: 0; overflow: auto; -webkit-overflow-scrolling: touch; background: #e8f1fb; z-index: 99999; text-align: center; padding: 12px 12px 40px; box-sizing: border-box; font-family: "Trebuchet MS", Arial, sans-serif; }
+  #printBox .pbBar { position: sticky; top: 0; display: flex; gap: 14px; justify-content: center; padding: 8px; background: #e8f1fb; z-index: 2; }
+  #printBox button { font: bold 26px "Trebuchet MS", Arial, sans-serif; border: 0; border-radius: 16px; padding: 14px 30px; color: #fff; cursor: pointer; box-shadow: 0 5px 0 rgba(0,0,0,.25); }
+  #printBox .pbPrint { background: #43a047; } #printBox .pbBack { background: #455a64; }
+  #printBox .pbTip { font-size: 20px; color: #1a4f8f; margin: 6px 0 4px; }
+  #printBox .pbPage { display: block; width: min(94vw, 720px); margin: 16px auto; background: #fff; box-shadow: 0 6px 20px rgba(0,0,0,.25); border-radius: 6px; }
+  @media print {
+    @page { size: letter portrait; margin: 0.3in; }
+    html, body { display: block !important; height: auto !important; overflow: visible !important; background: #fff !important; }
+    body > *:not(#printBox) { display: none !important; }
+    #printBox { position: static; overflow: visible; background: #fff; padding: 0; }
+    #printBox .pbBar, #printBox .pbTip { display: none !important; }
+    #printBox .pbPage { width: 100%; margin: 0; box-shadow: none; border-radius: 0; break-after: page; page-break-after: always; }
+    #printBox .pbPage:last-child { break-after: auto; page-break-after: auto; }
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+<canvas id="game" width="960" height="540"></canvas>
+<script>
+// 📱 THE TABLET MUSEUM — Ben's idea! The history of tablets: clay tablets, school slates, pen computers,
+// the iPads, Android tablets and Surface. In THE GRAND HALL: Ben's own iPad in its black case, where the Game Factory lives!
+// Tap an exhibit to see it up close (and make it do its thing), collect a 📘 passport stamp for each one,
+// then visit the 🎁 Gift Shop to print souvenirs. Robo is the museum guide.
+const C = document.getElementById('game');
+let ctx = C.getContext('2d');
+const W = 960, H = 540;
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }
+let save = { seen: {} };
+try { const s = JSON.parse(localStorage.getItem('tabletMuseum') || 'null'); if (s && s.seen) save = s; } catch (_) {}
+function writeSave() { try { localStorage.setItem('tabletMuseum', JSON.stringify(save)); } catch (_) {} }
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+let frame = 0;
+
+// ---------- drawing helpers ----------
+function rr(x, y, w, h, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(x, y, Math.max(0, w), Math.max(0, h), r); else ctx.rect(x, y, w, h); ctx.fill(); }
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, 7); ctx.fill(); }
+function tri(a, b, c, d, e, f, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.lineTo(e, f); ctx.closePath(); ctx.fill(); }
+function text(str, x, y, size, color = '#fff', align = 'center', outline = true) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; ctx.textAlign = align; ctx.lineJoin = 'round';
+  if (outline) { ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = Math.max(3, size / 6); ctx.strokeText(str, x, y); }
+  ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function fit(str, x, y, size, maxW, color, align, outline) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; const w = ctx.measureText(str).width || 0;
+  text(str, x, y, w > maxW ? Math.max(9, Math.floor(size * maxW / w)) : size, color, align, outline);
+}
+function emoji(e, x, y, size) { ctx.font = `${size}px Arial`; ctx.textAlign = 'center'; ctx.fillStyle = '#000'; ctx.fillText(e, x, y); }
+function star(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, q = i % 2 ? r * 0.45 : r; ctx.lineTo(x + Math.cos(a) * q, y + Math.sin(a) * q); } ctx.closePath(); ctx.fill(); }
+function wrap(str, size, maxW) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; const out = []; let line = '';
+  for (const wd of String(str).split(' ')) { const t = line ? line + ' ' + wd : wd; if (line && ctx.measureText(t).width > maxW) { out.push(line); line = wd; } else line = t; }
+  if (line) out.push(line); return out;
+}
+function button(b, label, fill, size = 22) {
+  rr(b.x, b.y + 4, b.w, b.h, 14, 'rgba(0,0,0,.35)'); rr(b.x, b.y, b.w, b.h, 14, fill);
+  fit(label, b.x + b.w / 2, b.y + b.h / 2 + size * 0.36, size, b.w - 12);
+}
+const inBox = (t, b) => t && t.x >= b.x && t.x <= b.x + b.w && t.y >= b.y && t.y <= b.y + b.h;
+</script>
+<script>
+// ---------- 🤖 ROBO, the museum guide (copied from robomovie.html so he looks EXACTLY like himself) ----------
+function rrect(x, y, w, h, r) {
+  ctx.beginPath();
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function roundRect(x, y, w, h, r, fill) { ctx.fillStyle = fill; rrect(x, y, Math.max(0, w), Math.max(0, h), r); ctx.fill(); }
+function ellipse(x, y, rx, ry, fill, rot = 0) { ctx.fillStyle = fill; ctx.beginPath(); ctx.ellipse(x, y, Math.max(0, rx), Math.max(0, ry), rot, 0, 7); ctx.fill(); }
+function glow(x, y, r, col, a = 1) {                  // soft round light (radial gradient, no ctx.filter)
+  r = Math.max(1, r);
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.save(); ctx.globalAlpha = clamp(a, 0, 1); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); ctx.restore();
+}
+const ROBO = { head: '#ffffff', body: '#f5f7ff', visor: '#111827', eye: '#40c4ff', legs: '#3d5afe', pod: '#2979ff', edge: '#9fa8da' };
+// o = { s, face, t, pose (idle/off/walk/run/wobble/jump/happy/fall/sit/wave), eyes 0..1, mouth, parts (bitmask: 1 body+legs, 2 head+visor, 4 ear pods, 8 antenna), dizzy }
+function drawRobo(x, y, o = {}) {
+  const s = o.s || 2.6, f = o.face || 1, t = o.t || frame, pose = o.pose || 'idle', parts = o.parts === undefined ? 15 : o.parts;
+  const eyes = o.eyes === undefined ? 1 : o.eyes;
+  let tilt = o.tilt || 0, bob = 0, lA = 0, lB = 0, sq = 1;
+  if (pose === 'walk' || pose === 'run') { const k = t * (pose === 'run' ? 0.5 : 0.3); lA = Math.max(0, Math.sin(k)) * 4; lB = Math.max(0, -Math.sin(k)) * 4; bob = -Math.abs(Math.sin(k)) * 1.5; }
+  else if (pose === 'wobble') { const k = t * 0.16; tilt += Math.sin(k) * 0.22; lA = Math.max(0, Math.sin(k)) * 5; lB = Math.max(0, -Math.sin(k)) * 5; }
+  else if (pose === 'jump') { lA = lB = 4; sq = 1.06; }
+  else if (pose === 'happy') { bob = -Math.abs(Math.sin(t * 0.25)) * 4; tilt += Math.sin(t * 0.25) * 0.08; }
+  else if (pose === 'fall') { tilt += -0.5; bob = 3; }
+  else if (pose === 'sit') { lA = lB = 3; bob = 3; }
+  else if (pose !== 'off') bob = Math.sin(t * 0.06) * 0.6;
+  ctx.save(); ctx.translate(x, y); ctx.rotate(tilt * f); ctx.scale(s * f, s * sq); ctx.translate(0, bob);
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  if (parts & 1) {
+    ctx.fillStyle = ROBO.legs; ctx.fillRect(-11, -7 - lA, 8, 7); ctx.fillRect(3, -7 - lB, 8, 7);
+    roundRect(-13, -21, 26, 17, 6, ROBO.body);
+    ctx.strokeStyle = ROBO.edge; ctx.lineWidth = 0.8; rrect(-13, -21, 26, 17, 6); ctx.stroke();
+    circle(0, -12, 3, ROBO.pod); circle(-0.8, -12.8, 1, 'rgba(255,255,255,.7)');
+  }
+  if (parts & 8) {                                     // 📡 the little antenna (wiggles when he moves)
+    const tip = Math.sin(t * 0.12) * (pose === 'idle' || pose === 'off' ? 0.6 : 2);
+    ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 1.4; ctx.beginPath(); ctx.moveTo(0, -40); ctx.quadraticCurveTo(tip * 0.4, -45, tip, -49); ctx.stroke();
+    const lit = pose === 'off' ? 0.25 : 0.6 + (o.mouth ? 0.4 * Math.abs(Math.sin(t * 0.4)) : 0);
+    if (pose !== 'off') glow(tip, -50, 7, 'rgba(64,196,255,.8)', lit);
+    circle(tip, -50, 2.6, ROBO.pod); circle(tip - 0.8, -50.8, 0.8, 'rgba(255,255,255,.8)');
+  }
+  if (parts & 4) { roundRect(-20, -31, 6, 9, 3, ROBO.pod); roundRect(14, -31, 6, 9, 3, ROBO.pod); }
+  if (parts & 2) {
+    roundRect(-17, -40, 34, 22, 12, ROBO.head);
+    ctx.strokeStyle = ROBO.edge; ctx.lineWidth = 0.8; rrect(-17, -40, 34, 22, 12); ctx.stroke();
+    roundRect(-13, -36, 26, 13, 9, ROBO.visor);
+    ellipse(-7, -34, 4, 1.2, 'rgba(255,255,255,.18)', -0.2);
+    if (eyes > 0.01) {
+      ctx.save(); ctx.globalAlpha *= clamp(eyes, 0, 1);
+      glow(3, -29.5, 16, 'rgba(64,196,255,.45)', eyes);
+      const ey = -29.5;
+      if (o.dizzy) {                                   // 💫 swirly dizzy eyes
+        ctx.strokeStyle = ROBO.eye; ctx.lineWidth = 1.1;
+        for (const ex of [-3, 9]) { ctx.beginPath(); for (let a = 0; a < 12; a += 0.4) ctx.lineTo(ex + Math.cos(a + t * 0.2) * a * 0.3, ey + Math.sin(a + t * 0.2) * a * 0.3); ctx.stroke(); }
+      } else if (pose === 'happy' || o.happy) {        // ^ ^ happy eyes
+        ctx.strokeStyle = ROBO.eye; ctx.lineWidth = 1.8;
+        for (const ex of [-3, 9]) { ctx.beginPath(); ctx.arc(ex, ey + 2, 3.2, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+      } else {
+        const blink = (t % 200) < 6 ? 0.6 : 5, talk = o.mouth ? 0.85 + 0.15 * Math.sin(t * 0.6) : 1;
+        ctx.fillStyle = ROBO.eye; ctx.beginPath();
+        ctx.ellipse(-3, ey, 3.5, Math.max(0.5, blink * talk), 0, 0, 7); ctx.ellipse(9, ey, 3.5, Math.max(0.5, blink * talk), 0, 0, 7); ctx.fill();
+        if (blink > 1) { circle(-2, ey - 2, 1, 'rgba(255,255,255,.85)'); circle(10, ey - 2, 1, 'rgba(255,255,255,.85)'); }
+      }
+      if (o.mouth) { ctx.strokeStyle = ROBO.eye; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(1, -25); ctx.lineTo(1 + 2 + Math.abs(Math.sin(t * 0.5)) * 3, -25); ctx.stroke(); }
+      ctx.restore();
+    }
+  }
+  if (o.wave) {                                        // 👋 a little waving hand
+    const a = Math.sin(t * 0.3) * 0.5;
+    ctx.save(); ctx.translate(13, -16); ctx.rotate(-1.2 + a); roundRect(-2, -14, 4, 14, 2, ROBO.pod); circle(0, -15, 3.4, ROBO.head); ctx.restore();
+  }
+  ctx.restore();
+  if (o.dizzy) for (let i = 0; i < 3; i++) { const a = t * 0.08 + i * 2.1; star(x + Math.cos(a) * 22 * s / 2.6, y - 118 * s / 2.6 + Math.sin(a) * 6, 7, '#ffd54f', a); }
+}
+// 🧹 DUSTY: a tiny cleaning bot. Teal dome, an orange stripe, one big green eye on a little screen,
+</script>
+<script>
+// ---------- THE TABLETS (cartoon drawings) ----------
+const OR = '#7e57c2', OR2 = '#b39ddb', OR3 = '#4527a0', CREAM = '#f3eefc', DARK = '#263238', GOLD = '#ffc94d', SIL = '#c9d1d9', SIL2 = '#eef2f6';
+let PRINTING = false;
+function sparkle(cx, cy, r, col, rot = 0, lw) {               // a twinkle: 8 rounded rays
+  ctx.save(); ctx.strokeStyle = col; ctx.lineCap = 'round'; ctx.lineWidth = lw || Math.max(1.5, r * 0.28); ctx.beginPath();
+  for (let i = 0; i < 8; i++) { const a = rot + i * Math.PI / 4, q = i % 2 ? 0.7 : 1; ctx.moveTo(cx + Math.cos(a) * r * 0.25, cy + Math.sin(a) * r * 0.25); ctx.lineTo(cx + Math.cos(a) * r * q, cy + Math.sin(a) * r * q); }
+  ctx.stroke(); ctx.restore();
+}
+function eyes(cx, cy, s, gap = 12, size = 6, col = DARK) {
+  const bl = !PRINTING && frame % 220 < 6 ? 0.15 : 1;
+  for (const d of [-1, 1]) { ctx.fillStyle = col; ctx.beginPath(); ctx.ellipse(cx + d * gap * s, cy, size * s * 0.8, size * s * bl, 0, 0, 7); ctx.fill(); }
+}
+function smile(cx, cy, s, w = 7, col = DARK, open = 0) {
+  ctx.strokeStyle = col; ctx.lineWidth = 2.4 * s; ctx.lineCap = 'round'; ctx.beginPath(); ctx.arc(cx, cy, w * s, 0.2, Math.PI - 0.2); ctx.stroke(); ctx.lineCap = 'butt';
+  if (open > 0) { ctx.fillStyle = '#c62828'; ctx.beginPath(); ctx.ellipse(cx, cy + w * 0.6 * s, w * 0.8 * s, w * 0.7 * open * s, 0, 0, 7); ctx.fill(); }
+}
+function screenFace(x, y, w, h, s, col = '#fff', open = 0) { eyes(x + w / 2, y + h * 0.42, s, 12, 5, col); smile(x + w / 2, y + h * 0.55, s, 8, col, open); }
+function grad(y0, y1, c0, c1) { const g = ctx.createLinearGradient(0, y0, 0, y1); g.addColorStop(0, c0); g.addColorStop(1, c1); return g; }
+function line(pts, col, lw) { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.stroke(); }
+// a tablet standing up, centered on (cx, cy). o: { w, h, body, edge, bezel (px), R, scr: [top, bottom], btn (home button), cam, draw(x, y, w, h), stand }
+function tab(cx, cy, s, o) {
+  const w = (o.w || 100) * s, h = (o.h || 136) * s, x = cx - w / 2, y = cy - h / 2, R = (o.R || 10) * s, bz = (o.bezel || 10) * s;
+  if (o.stand !== false) { tri(cx - w * 0.28, y + h + 14 * s, cx + w * 0.28, y + h + 14 * s, cx, y + h - 30 * s, '#9e9e9e'); rr(cx - w * 0.36, y + h + 10 * s, w * 0.72, 8 * s, 4 * s, '#757575'); }
+  rr(x - 2 * s, y - 2 * s, w + 4 * s, h + 4 * s, R + 2 * s, o.edge || '#9aa3ad');
+  rr(x, y, w, h, R, o.body || '#1b1b1b');
+  const sx = x + bz * (o.side || 1), sy = y + bz, sw = w - bz * 2 * (o.side || 1), sh = h - bz * 2;
+  rr(sx, sy, sw, sh, (o.sR || 2) * s, Array.isArray(o.scr) ? grad(sy, sy + sh, o.scr[0], o.scr[1]) : (o.scr || '#4fc3f7'));
+  if (o.btn) { const bx = o.w > o.h ? x + w - bz / 2 : cx, by = o.w > o.h ? cy : y + h - bz / 2; circle(bx, by, Math.min(bz * 0.34, 6 * s), o.btnCol || '#333'); ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(bx, by, Math.min(bz * 0.34, 6 * s), 0, 7); ctx.stroke(); }
+  if (o.cam) { const kx = o.w > o.h ? x + bz / 2 : cx, ky = o.w > o.h ? cy : y + bz / 2; circle(kx, ky, 1.8 * s, '#444'); }
+  ctx.save(); ctx.beginPath(); ctx.rect(sx, sy, sw, sh); ctx.clip();
+  if (o.draw) o.draw(sx, sy, sw, sh); else screenFace(sx, sy, sw, sh, s);
+  if (!o.noShine) { ctx.fillStyle = 'rgba(255,255,255,.13)'; ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx + sw * 0.5, sy); ctx.lineTo(sx + sw * 0.15, sy + sh); ctx.lineTo(sx, sy + sh); ctx.fill(); }
+  ctx.restore();
+  return { x: sx, y: sy, w: sw, h: sh };
+}
+// app icons on a home screen
+const APP_COLS = ['#ef5350', '#ffa726', '#ffee58', '#66bb6a', '#29b6f6', '#5c6bc0', '#ab47bc', '#ec407a', '#26a69a', '#8d6e63', '#78909c', '#d4e157'];
+function homeScreen(x, y, w, h, s, n = 16, cols = 4, upTo = 1) {
+  const g = w / cols, ic = g * 0.62;
+  for (let i = 0; i < n * upTo; i++) { const c = i % cols, r = Math.floor(i / cols), ix = x + c * g + (g - ic) / 2, iy = y + 8 * s + r * (ic + 7 * s); if (iy + ic > y + h - 4 * s) break; rr(ix, iy, ic, ic, ic * 0.24, APP_COLS[i % APP_COLS.length]); circle(ix + ic / 2, iy + ic / 2, ic * 0.2, 'rgba(255,255,255,.7)'); }
+}
+// 🎮 BEN'S GAME FACTORY on a screen: the book's purple night look, the open book, and game icons
+const SLIDES = [['🤖', 'Robo Jump', '#3949ab', '#0d1b4d'], ['👾', 'Robo Jump 2', '#d500f9', '#12002a'], ['🌌', 'Robo Jump 3', '#2e7d32', '#1a237e'], ['🔮', 'Robo Jump 4', '#4a148c', '#000000'],
+  ['🐶', 'Sparks!', '#ffb300', '#e65100'], ['🏎️', 'Turbo Racers', '#e53935', '#8e0000'], ['🥊', 'Brawl Buddies', '#ff7043', '#6a1b9a'], ['🧟', 'Zombie Maze', '#7cb342', '#263238'],
+  ['🎵', 'Beat Party', '#7c4dff', '#ff4f6d'], ['💻', 'The MacBook Museum', '#eceff1', '#5c6bc0']];
+function gfScreen(x, y, w, h, show = -1, bright = 1) {
+  const u = w / 300;                                           // 1 unit = the screen is 300 wide
+  const g = ctx.createRadialGradient(x + w / 2, y, 10 * u, x + w / 2, y + h * 0.3, w * 0.75); g.addColorStop(0, '#4a3480'); g.addColorStop(1, '#14102a'); ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
+  for (let i = 0; i < 14; i++) circle(x + ((i * 83) % 300) * u, y + ((i * 47) % 60 + 6) * u, (i % 3 ? 0.9 : 1.5) * u, 'rgba(255,255,255,.6)');
+  fit("⭐ BEN'S GAME FACTORY ⭐", x + w / 2, y + 22 * u, 17 * u, 280 * u, GOLD);
+  // the open book
+  const bx = x + 40 * u, by = y + 34 * u, bw = 220 * u, bh = 112 * u;
+  rr(bx - 5 * u, by - 4 * u, bw + 10 * u, bh + 8 * u, 7 * u, '#2e7d32');
+  rr(bx, by, bw / 2, bh, 4 * u, '#fffaf0'); rr(bx + bw / 2, by, bw / 2, bh, 4 * u, '#fffaf0');
+  ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.fillRect(bx + bw / 2 - 1.5 * u, by, 3 * u, bh);
+  const k = show >= 0 ? show % SLIDES.length : 0, sl = SLIDES[k];
+  ctx.save(); ctx.beginPath(); ctx.rect(bx + 6 * u, by + 6 * u, bw / 2 - 12 * u, bh * 0.62); ctx.clip();
+  rr(bx + 6 * u, by + 6 * u, bw / 2 - 12 * u, bh * 0.62, 8 * u, grad(by, by + bh * 0.62, sl[2], sl[3])); ctx.restore();
+  emoji(sl[0], bx + bw / 4, by + bh * 0.47, 34 * u);
+  fit(sl[1], bx + bw / 4, by + bh * 0.84, 13 * u, bw / 2 - 14 * u, '#4527a0', 'center', false);
+  rr(bx + bw / 2 + 20 * u, by + 14 * u, bw / 2 - 40 * u, 20 * u, 10 * u, sl[2]); text('▶ PLAY', bx + bw * 0.75, by + 28 * u, 11 * u, '#fff', 'center', false);
+  for (let j = 0; j < 4; j++) rr(bx + bw / 2 + 14 * u, by + 46 * u + j * 13 * u, (bw / 2 - 28 * u) * (j === 3 ? 0.6 : 1), 5 * u, 2.5 * u, '#d7ccc8');
+  // a row of game icons under the book
+  const row = SLIDES.slice(0, 7); row.forEach((r, i) => { const ix = x + 26 * u + i * 36 * u, iy = y + 156 * u, on = show >= 0 && i === k % 7;
+    rr(ix, iy, 30 * u, 30 * u, 8 * u, grad(iy, iy + 30 * u, r[2], r[3])); if (on) { ctx.strokeStyle = GOLD; ctx.lineWidth = 2.5 * u; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(ix, iy, 30 * u, 30 * u, 8 * u) : ctx.rect(ix, iy, 30 * u, 30 * u); ctx.stroke(); } emoji(r[0], ix + 15 * u, iy + 22 * u, 18 * u); });
+  if (bright < 1) { ctx.fillStyle = `rgba(0,0,0,${1 - bright})`; ctx.fillRect(x, y, w, h); }
+}
+</script>
+<script>
+// each: [id, name, emoji, action button, where it was "found", fun facts (only TRUE ones!), draw(cx, cy, s, a)]  (a = 0..1 while it does its thing)
+function wedge(x, y, s, rot = 0) { ctx.save(); ctx.translate(x, y); ctx.rotate(rot); tri(-3 * s, -2.5 * s, 3 * s, -2.5 * s, 0, 3 * s, 'rgba(70,35,15,.75)'); ctx.fillStyle = 'rgba(70,35,15,.55)'; ctx.fillRect(-0.6 * s, 2 * s, 1.2 * s, 6 * s); ctx.restore(); }
+function stylus(x, y, s, col = '#c8a26a', rot = 0.6) { ctx.save(); ctx.translate(x, y); ctx.rotate(rot); rr(-2.5 * s, -70 * s, 5 * s, 66 * s, 2 * s, col); tri(-2.5 * s, -4 * s, 2.5 * s, -4 * s, 0, 4 * s, '#5d4037'); ctx.restore(); }
+function scribble(pts, k, col, lw) { const n = Math.floor(pts.length * clamp(k, 0, 1)); if (n > 1) line(pts.slice(0, n), col, lw); return pts[Math.max(0, n - 1)]; }
+const HI = (x, y, w, h) => [[.1, .2], [.1, .8], [.1, .5], [.3, .5], [.3, .2], [.3, .8], [.45, .8], [.45, .45], [.6, .3], [.75, .45], [.9, .2], [.75, .8]].map(p => [x + p[0] * w, y + p[1] * h]);
+const CHARS = [
+  ['clay', 'Clay Tablet', '🏺', 'PRESS THE STYLUS!', 'Mesopotamia (now Iraq), over 5,000 years ago', ['The very first tablets were made of wet CLAY!', 'People pressed a pointy reed into the clay to make little wedge marks. This writing is called cuneiform (say: kyoo-NEE-uh-form).', 'Clay tablets that dried hard lasted so long that we can still read some of them today!'],
+    (cx, cy, s, a) => { rr(cx - 58 * s, cy - 66 * s, 116 * s, 128 * s, 26 * s, '#a1673a'); rr(cx - 54 * s, cy - 62 * s, 108 * s, 120 * s, 24 * s, '#c48a55');
+      ctx.fillStyle = 'rgba(255,255,255,.12)'; ctx.beginPath(); ctx.ellipse(cx - 20 * s, cy - 40 * s, 24 * s, 10 * s, -0.3, 0, 7); ctx.fill();
+      const n = a > 0 ? Math.floor(a * 1.4 * 40) : 40;
+      for (let i = 0; i < Math.min(40, n); i++) { const r = Math.floor(i / 8), c = i % 8; wedge(cx - 40 * s + c * 11.5 * s + (r % 2) * 3 * s, cy - 44 * s + r * 22 * s, s * (i % 3 ? 1 : 1.3), (i % 4) * 0.5 - 0.6); }
+      for (let r = 1; r < 5; r++) { ctx.fillStyle = 'rgba(90,50,20,.25)'; ctx.fillRect(cx - 46 * s, cy - 54 * s + r * 22 * s, 92 * s, 1.5 * s); }
+      if (a > 0 && a < 0.72) { const i = Math.min(39, n), r = Math.floor(i / 8), c = i % 8; stylus(cx - 40 * s + c * 11.5 * s, cy - 44 * s + r * 22 * s - Math.abs(Math.sin(a * 60)) * 6 * s, s); }
+      if (a > 0.72) text('Wedge marks!', cx, cy - 80 * s, 20 * s, '#fff'); }],
+  ['wax', 'Wax Tablet', '🕯️', 'WRITE & SMOOTH!', 'A school in Ancient Rome', ['Long ago in Ancient Greece and Rome, kids wrote on wooden boards filled with wax.', 'They scratched letters into the wax with a pointy stick called a stylus.', 'To erase, they smoothed the wax flat with the stylus\'s other, flat end. Then they could write again!'],
+    (cx, cy, s, a) => { for (const d of [-1, 1]) { const x = cx + (d < 0 ? -62 : 2) * s; rr(x, cy - 62 * s, 60 * s, 118 * s, 6 * s, '#8d5a2b'); rr(x + 7 * s, cy - 55 * s, 46 * s, 104 * s, 3 * s, '#3b2f2a'); ctx.fillStyle = 'rgba(255,255,255,.08)'; ctx.fillRect(x + 9 * s, cy - 53 * s, 10 * s, 100 * s); }
+      for (const yy of [-30, 30]) { circle(cx, cy + yy * s, 4 * s, '#c8a26a'); }
+      const wr = a > 0 ? clamp(a * 2.2, 0, 1) : 1, sm = a > 0.6 ? clamp((a - 0.6) * 3, 0, 1) : 0;
+      ctx.save(); ctx.beginPath(); ctx.rect(cx + 9 * s, cy - 55 * s + sm * 104 * s, 46 * s, 104 * s); ctx.clip();
+      ctx.save(); ctx.beginPath(); ctx.rect(cx + 9 * s, cy - 50 * s, 46 * s * wr, 24 * s); ctx.clip(); ctx.font = `${15 * s}px Georgia, serif`; ctx.textAlign = 'left'; ctx.fillStyle = '#e0c9a6'; ctx.fillText('ABC', cx + 12 * s, cy - 31 * s); ctx.restore();
+      const tip = [cx + 12 * s + 36 * s * wr, cy - 34 * s]; for (let k = 0; k < 4; k++) line([[cx + 14 * s, cy + (-12 + k * 14) * s], [cx + 46 * s, cy + (-12 + k * 14) * s]], 'rgba(224,201,166,.6)', 1.6 * s); ctx.restore();
+      if (a > 0 && a < 0.6) stylus(tip[0], tip[1], s, '#e0e0e0');
+      if (sm > 0 && sm < 1) { ctx.save(); ctx.translate(cx + 32 * s, cy - 55 * s + sm * 104 * s); rr(-24 * s, -3 * s, 48 * s, 6 * s, 3 * s, '#e0e0e0'); ctx.restore(); }
+      if (sm >= 1) text('All smooth!', cx, cy - 76 * s, 20 * s, '#fff'); }],
+  ['slate', 'School Slate', '✏️', 'WRITE & WIPE!', 'A one-room schoolhouse, in the 1800s', ['In the 1800s, many school kids wrote on a little board made of a dark stone called slate.', 'Paper cost a lot back then, and a slate could be used again and again.', 'They wrote with a slate pencil or chalk, then wiped it clean with a cloth.'],
+    (cx, cy, s, a) => { rr(cx - 70 * s, cy - 58 * s, 140 * s, 112 * s, 6 * s, '#b07a43'); rr(cx - 60 * s, cy - 48 * s, 120 * s, 92 * s, 3 * s, '#37474f');
+      circle(cx, cy - 64 * s, 4 * s, '#795548'); line([[cx, cy - 64 * s], [cx - 40 * s, cy - 58 * s]], '#a1887f', 1.5 * s); line([[cx, cy - 64 * s], [cx + 40 * s, cy - 58 * s]], '#a1887f', 1.5 * s);
+      const w = a > 0.6 ? clamp((a - 0.6) * 3, 0, 1) : 0, k = a > 0 ? clamp(a * 2, 0, 1) : 1;
+      ctx.save(); ctx.beginPath(); ctx.rect(cx - 60 * s + w * 120 * s, cy - 48 * s, 120 * s, 92 * s); ctx.clip();
+      const str = '1+1=2'; ctx.font = `bold ${30 * s}px "Comic Sans MS", "Trebuchet MS", sans-serif`; ctx.textAlign = 'left'; ctx.fillStyle = '#eceff1';
+      ctx.fillText(str.slice(0, Math.ceil(str.length * k)), cx - 44 * s, cy - 2 * s); ctx.font = `bold ${20 * s}px "Comic Sans MS", "Trebuchet MS", sans-serif`; if (k >= 1) ctx.fillText('ABC', cx - 22 * s, cy + 30 * s); ctx.restore();
+      if (w > 0 && w < 1) rr(cx - 66 * s + w * 120 * s, cy - 40 * s, 22 * s, 76 * s, 6 * s, '#e57373');
+      if (w >= 1) text('Clean again!', cx, cy - 76 * s, 20 * s, '#fff'); }],
+  ['grid', 'GRiDPad', '🖊️', 'WRITE WITH THE PEN!', 'A busy office, in 1989', ['The GRiDPad came out in 1989. It was one of the very first tablet computers!', 'You wrote right on its black-and-white screen with a pen on a cord.', 'Jeff Hawkins worked on it, and later he helped invent the Palm Pilot!'],
+    (cx, cy, s, a) => { const r = tab(cx, cy, s, { w: 112, h: 136, body: '#3a3d42', edge: '#24262a', bezel: 14, R: 6, scr: ['#c5cbb5', '#a9b39a'], noShine: true,
+        draw: (x, y, w, h) => { for (let i = 0; i < 4; i++) { ctx.fillStyle = 'rgba(30,40,30,.5)'; ctx.fillRect(x + 8 * s, y + 10 * s + i * 14 * s, w * 0.4, 3 * s); ctx.strokeStyle = 'rgba(30,40,30,.5)'; ctx.lineWidth = 1; ctx.strokeRect(x + w * 0.55, y + 8 * s + i * 14 * s, w * 0.38, 9 * s); }
+          if (a > 0) scribble(HI(x + 10 * s, y + h * 0.62, w - 20 * s, h * 0.3), a * 1.8, '#1b2a1b', 2.4 * s); } });
+      for (let i = 0; i < 3; i++) rr(cx + 40 * s, cy - 60 * s + i * 7 * s, 8 * s, 3 * s, 1.5 * s, '#5f646b');
+      const pts = HI(r.x + 10 * s, r.y + r.h * 0.62, r.w - 20 * s, r.h * 0.3), tip = a > 0 ? pts[Math.min(pts.length - 1, Math.floor(pts.length * clamp(a * 1.8, 0, 1)))] : [cx + 66 * s, cy + 30 * s];
+      ctx.strokeStyle = '#111'; ctx.lineWidth = 1.5 * s; ctx.beginPath(); ctx.moveTo(cx + 56 * s, cy + 50 * s); ctx.quadraticCurveTo(cx + 90 * s, cy + 70 * s, tip[0] + 10 * s, tip[1] - 30 * s); ctx.stroke();
+      stylus(tip[0], tip[1], s, '#212121', 0.35); if (a > 0.6) text('Hi!', cx, cy - 82 * s, 22 * s, '#fff'); }],
+  ['newton', 'Apple Newton MessagePad', '📝', 'WRITE "HELLO"!', 'A scientist\'s pocket, in 1993', ['The Newton MessagePad came out in 1993.', 'It tried to read your handwriting and turn it into typed words. At first it made some funny mistakes, and people joked about it!', 'It was one of the first gadgets called a PDA. That stands for Personal Digital Assistant.'],
+    (cx, cy, s, a) => { tab(cx, cy, s, { w: 98, h: 140, body: '#33393a', edge: '#1d2122', bezel: 11, R: 10, scr: ['#c8d6b9', '#a8bb98'], noShine: true,
+        draw: (x, y, w, h) => { ctx.fillStyle = 'rgba(20,40,20,.55)'; ctx.fillRect(x, y, w, 10 * s); fit('Notes', x + w / 2, y + 8 * s, 8 * s, w, '#c8d6b9', 'center', false);
+          for (let i = 0; i < 6; i++) { ctx.fillStyle = 'rgba(20,40,20,.18)'; ctx.fillRect(x + 4 * s, y + 26 * s + i * 14 * s, w - 8 * s, 1 * s); }
+          if (a > 0 && a < 0.55) scribble([[.1, .5], [.15, .1], [.15, .9], [.15, .55], [.25, .5], [.27, .9], [.35, .7], [.45, .6], [.38, .5], [.35, .8], [.45, .9], [.52, .1], [.52, .9], [.6, .1], [.6, .9], [.72, .6], [.8, .8], [.72, .95], [.65, .75], [.72, .6]].map(p => [x + 6 * s + p[0] * (w - 12 * s), y + 30 * s + p[1] * 30 * s]), a * 2, '#1b2a1b', 2.4 * s);
+          if (a >= 0.55) { text('hello', x + w / 2, y + 52 * s, 16 * s, '#1b2a1b', 'center', false); if (a > 0.75) text('Got it!', x + w / 2, y + 80 * s, 12 * s, '#2e7d32', 'center', false); }
+          ctx.fillStyle = 'rgba(20,40,20,.55)'; ctx.fillRect(x, y + h - 12 * s, w, 12 * s); } });
+      if (a > 0 && a < 0.55) stylus(cx - 30 * s + a * 100 * s, cy - 10 * s, s, '#424242', 0.4); }],
+  ['palm', 'Palm Pilot', '🌴', 'HOTSYNC!', 'A shirt pocket, in 1996', ['The Palm Pilot came out in 1996. It was small enough for a shirt pocket!', 'You wrote letters with a pen in a special simple alphabet called Graffiti.', 'You set it in a little stand called a cradle and pressed ONE button to copy your stuff to the computer. That was called HotSync.'],
+    (cx, cy, s, a) => { const up = a > 0 ? Math.sin(Math.min(1, a * 3) * Math.PI / 2) : 0;
+      if (a > 0) { rr(cx - 48 * s, cy + 40 * s, 96 * s, 26 * s, 8 * s, '#616161'); rr(cx + 22 * s, cy + 48 * s, 14 * s, 8 * s, 3 * s, '#9e9e9e'); }
+      tab(cx, cy - up * 8 * s, s * 0.95, { w: 84, h: 140, body: '#9ea4a8', edge: '#6f767b', bezel: 9, R: 12, scr: ['#c9d8a8', '#a7bb84'], noShine: true, stand: a <= 0,
+        draw: (x, y, w, h) => { if (a > 0.2) { const rot = a * 20; ctx.save(); ctx.translate(x + w / 2, y + 40 * s); ctx.rotate(rot); ctx.strokeStyle = '#33402a'; ctx.lineWidth = 3 * s; ctx.beginPath(); ctx.arc(0, 0, 14 * s, 0.2, 2.8); ctx.stroke(); ctx.beginPath(); ctx.arc(0, 0, 14 * s, 3.3, 5.9); ctx.stroke(); ctx.restore(); fit(a > 0.85 ? 'Done!' : 'HotSync...', x + w / 2, y + 74 * s, 11 * s, w, '#33402a', 'center', false); }
+          else { for (let i = 0; i < 5; i++) { ctx.fillStyle = 'rgba(40,50,30,.5)'; ctx.fillRect(x + 6 * s, y + 8 * s + i * 13 * s, w * (0.5 + (i % 3) * 0.15), 4 * s); } }
+          ctx.fillStyle = 'rgba(40,50,30,.25)'; ctx.fillRect(x, y + h - 26 * s, w, 26 * s); ctx.strokeStyle = 'rgba(40,50,30,.6)'; ctx.lineWidth = 1; ctx.strokeRect(x + 4 * s, y + h - 23 * s, w / 2 - 6 * s, 20 * s); ctx.strokeRect(x + w / 2 + 2 * s, y + h - 23 * s, w / 2 - 6 * s, 20 * s); } });
+      const by = cy - up * 8 * s + 60 * s; for (let i = 0; i < 4; i++) circle(cx - 28 * s + i * 18.6 * s, by, 4 * s, '#5f676d'); }],
+  ['tabletpc', 'Microsoft Tablet PC', '🔄', 'SWIVEL!', 'A classroom, in 2002', ['Tablet PCs with a special Windows for pens came out in 2002.', 'Many were laptops whose screen could SPIN around and fold down flat over the keyboard.', 'Then you could write on the screen with a pen, like a notepad!'],
+    (cx, cy, s, a) => { const hy = cy + 20 * s, w = 150 * s, bd = 34 * s, bw = w * 1.14;
+      ctx.fillStyle = '#4a4f55'; ctx.beginPath(); ctx.moveTo(cx - w / 2, hy); ctx.lineTo(cx + w / 2, hy); ctx.lineTo(cx + bw / 2, hy + bd); ctx.lineTo(cx - bw / 2, hy + bd); ctx.closePath(); ctx.fill();
+      rr(cx - bw / 2, hy + bd - 2 * s, bw, 6 * s, 3 * s, '#2f3337');
+      for (let r = 0; r < 3; r++) for (let k = 0; k < 11; k++) rr(cx - 62 * s + k * 11.4 * s + r * 1.5 * s, hy + 5 * s + r * 8 * s, 8.5 * s, 5 * s, 1.5 * s, '#25282c');
+      const spin = a > 0 ? clamp(a * 2.5, 0, 1) : 0, fold = a > 0.45 ? clamp((a - 0.45) * 3, 0, 1) : 0;
+      if (fold < 1) { const sh = 92 * s * (1 - fold * 0.98), sx = Math.abs(Math.cos(spin * Math.PI)) * 1;
+        ctx.save(); ctx.translate(cx, hy); ctx.scale(Math.max(0.04, sx), sh / (92 * s)); rr(-w / 2, -92 * s, w, 92 * s, 6 * s, '#4a4f55'); rr(-w / 2 + 7 * s, -85 * s, w - 14 * s, 76 * s, 3 * s, spin > 0.5 ? '#3d4247' : grad(-85 * s, -9 * s, '#64b5f6', '#1565c0')); ctx.restore();
+        rr(cx - 8 * s, hy - 4 * s, 16 * s, 6 * s, 3 * s, '#2f3337'); }
+      else { ctx.fillStyle = '#4a4f55'; ctx.beginPath(); ctx.moveTo(cx - w / 2, hy - 2 * s); ctx.lineTo(cx + w / 2, hy - 2 * s); ctx.lineTo(cx + bw / 2, hy + bd - 4 * s); ctx.lineTo(cx - bw / 2, hy + bd - 4 * s); ctx.fill();
+        ctx.fillStyle = '#f5f5f5'; ctx.beginPath(); ctx.moveTo(cx - w / 2 + 8 * s, hy + 2 * s); ctx.lineTo(cx + w / 2 - 8 * s, hy + 2 * s); ctx.lineTo(cx + bw / 2 - 10 * s, hy + bd - 8 * s); ctx.lineTo(cx - bw / 2 + 10 * s, hy + bd - 8 * s); ctx.fill();
+        const tip = scribble(HI(cx - 50 * s, hy + 6 * s, 100 * s, 20 * s), (a - 0.8) * 5, '#1565c0', 2 * s); stylus(tip[0], tip[1], s, '#212121', 0.4); }
+      if (spin === 0) screenFace(cx - 68 * s, hy - 85 * s, 136 * s, 76 * s, s); }],
+  ['ipad1', 'The First iPad', '🍎', 'TURN IT ON!', 'A big stage in California, in 2010', ['Steve Jobs showed off the very first iPad on January 27, 2010.', 'It went on sale on April 3, 2010. Over 300,000 were sold on the very first day!', 'Its screen was 9.7 inches, and it had NO camera at all.'],
+    (cx, cy, s, a) => { const on = a <= 0 || a > 0.15;
+      tab(cx, cy, s, { w: 102, h: 136, body: '#111', edge: '#b9c0c7', bezel: 13, R: 12, btn: true, scr: on ? ['#5c6bc0', '#26c6da'] : '#050505', noShine: !on,
+        draw: (x, y, w, h) => { if (!on) return; if (a > 0) homeScreen(x + 2 * s, y + 2 * s, w - 4 * s, h, s, 20, 4, clamp((a - 0.15) * 2, 0, 1)); else screenFace(x, y, w, h, s); } });
+      if (a > 0.6) text('It\'s ON!', cx, cy - 84 * s, 22 * s, '#fff'); }],
+  ['ipad2', 'iPad 2', '📸', 'SAY CHEESE!', 'A video call with Grandma, in 2011', ['The iPad 2 came out in 2011. It was thinner than the first iPad.', 'It was the first iPad with cameras: one on the front and one on the back!', 'With the front camera you could make FaceTime video calls. It came in black or white.'],
+    (cx, cy, s, a) => { tab(cx, cy, s, { w: 102, h: 136, body: '#f7f7f7', edge: '#c3c9cf', bezel: 12, R: 13, btn: true, btnCol: '#e0e0e0', cam: true, scr: a > 0.3 ? ['#fff3e0', '#ffe0b2'] : ['#26a69a', '#00695c'],
+        draw: (x, y, w, h) => { if (a > 0.3) { drawRobo(x + w / 2, y + h * 0.82, { s: 1.9, pose: 'happy', t: frame }); text('CHEESE!', x + w / 2, y + 18 * s, 13 * s, '#e65100', 'center', false); } else screenFace(x, y, w, h, s); } });
+      if (a > 0.25 && a < 0.42) { ctx.fillStyle = `rgba(255,255,255,${1 - (a - 0.25) / 0.17})`; ctx.fillRect(cx - 120 * s, cy - 110 * s, 240 * s, 220 * s); }
+      if (a > 0.45) text('📸 Click!', cx, cy - 84 * s, 22 * s, '#fff'); }],
+  ['mini', 'iPad mini', '🤏', 'COMPARE THE SIZE!', 'A comfy reading nook, in 2012', ['The iPad mini came out in 2012.', 'Its screen was 7.9 inches, smaller than the big iPad\'s 9.7 inches.', 'It was small enough to hold in ONE hand!'],
+    (cx, cy, s, a) => { if (a > 0) { const k = clamp(a * 3, 0, 1); ctx.save(); ctx.globalAlpha = 0.45 * k; tab(cx, cy - 6 * s, s, { w: 102, h: 136, body: '#ffffff', edge: '#fff', bezel: 0, R: 12, scr: 'rgba(255,255,255,.4)', stand: false, draw: () => {} }); ctx.restore(); }
+      tab(cx, cy + 8 * s, s, { w: 78, h: 106, body: '#111', edge: '#9aa3ad', bezel: 8, side: 0.7, R: 9, btn: true, cam: true, scr: ['#ff8a65', '#f06292'] });
+      if (a > 0.35) { fit('big iPad', cx, cy - 64 * s, 13 * s, 100 * s, '#fff'); fit('iPad mini!', cx, cy + 74 * s, 16 * s, 120 * s, '#fff59d'); } }],
+  ['air', 'iPad Air', '🪶', 'SO LIGHT!', 'Floating on a breeze, in 2013', ['The iPad Air came out in 2013.', 'It weighed only about ONE pound. That is about as heavy as a loaf of bread!', 'It had thinner edges around the screen than the iPads before it.'],
+    (cx, cy, s, a) => { const fl = a > 0 ? Math.sin(a * Math.PI) * 30 * s : 0, wob = a > 0 ? Math.sin(a * 18) * 0.06 : 0;
+      ctx.save(); ctx.translate(cx, cy - fl); ctx.rotate(wob); tab(0, 0, s, { w: 102, h: 136, body: '#e8eaed', edge: '#c3c9cf', bezel: 9, side: 0.6, R: 12, btn: true, btnCol: '#d5d9de', cam: true, scr: ['#b3e5fc', '#81d4fa'], stand: a <= 0 }); ctx.restore();
+      if (a > 0) for (let i = 0; i < 3; i++) { const t = (a * 1.5 + i * 0.33) % 1; ctx.save(); ctx.translate(cx - 70 * s + i * 70 * s, cy + 40 * s - t * 120 * s); ctx.rotate(Math.sin(t * 9) * 0.5); ctx.fillStyle = 'rgba(255,255,255,.9)'; ctx.beginPath(); ctx.ellipse(0, 0, 5 * s, 14 * s, 0.3, 0, 7); ctx.fill(); line([[0, 14 * s], [0, -14 * s]], '#bdbdbd', 1.2 * s); ctx.restore(); }
+      if (a > 0.4) text('Light as a feather!', cx, cy - 92 * s, 18 * s, '#fff'); }],
+  ['pro', 'iPad Pro + Apple Pencil', '✏️', 'DRAW WITH THE PENCIL!', 'An artist\'s studio, in 2015', ['The first iPad Pro came out in 2015, with a BIG 12.9-inch screen.', 'The Apple Pencil came out with it, for drawing and writing on the screen.', 'The harder you press the Pencil, the thicker the line gets, just like a real pencil!'],
+    (cx, cy, s, a) => { const r = tab(cx, cy - 6 * s, s, { w: 116, h: 152, body: '#1b1b1b', edge: '#8a939c', bezel: 8, side: 0.75, R: 12, btn: true, cam: true, scr: a > 0 ? ['#fffde7', '#fff8e1'] : ['#7e57c2', '#311b92'],
+        draw: (x, y, w, h) => { if (a <= 0) return screenFace(x, y, w, h, s);
+          const cols = ['#e53935', '#fb8c00', '#fdd835', '#43a047', '#1e88e5', '#8e24aa'];
+          cols.forEach((c, i) => { const k = clamp(a * 1.6 - i * 0.08, 0, 1), R = (44 - i * 6) * s; if (k > 0) { ctx.strokeStyle = c; ctx.lineWidth = 6 * s; ctx.lineCap = 'round'; ctx.beginPath(); ctx.arc(x + w / 2, y + h * 0.62, R, Math.PI, Math.PI + Math.PI * k); ctx.stroke(); } });
+          if (a > 0.7) { star(x + w / 2, y + h * 0.25, 12 * s, GOLD); } } });
+      const k = clamp(a * 1.6, 0, 1), an = Math.PI + Math.PI * k, px = a > 0 ? r.x + r.w / 2 + Math.cos(an) * 44 * s : cx + 66 * s, py = a > 0 ? r.y + r.h * 0.62 + Math.sin(an) * 44 * s : cy + 20 * s;
+      ctx.save(); ctx.translate(px, py); ctx.rotate(0.5); rr(-3.5 * s, -80 * s, 7 * s, 74 * s, 3.5 * s, '#fafafa'); tri(-3.5 * s, -6 * s, 3.5 * s, -6 * s, 0, 2 * s, '#bdbdbd'); ctx.restore();
+      if (a > 0.75) text('A rainbow!', cx, cy - 92 * s, 20 * s, '#fff'); }],
+  ['kindle', 'Kindle Fire', '🔥', 'READ A BOOK!', 'A cozy bedtime, in 2011', ['Amazon\'s Kindle Fire came out in 2011.', 'It had a 7-inch screen and cost $199.', 'You could read books, watch videos and play games on it. It ran a special version of Android.'],
+    (cx, cy, s, a) => { tab(cx, cy, s, { w: 86, h: 134, body: '#141414', edge: '#3a3a3a', bezel: 10, R: 9, scr: a > 0 ? '#fffaf0' : ['#ff7043', '#bf360c'],
+        draw: (x, y, w, h) => { if (a <= 0) { screenFace(x, y, w, h, s); return; }
+          for (let i = 0; i < 9; i++) { ctx.fillStyle = '#9e9e9e'; ctx.fillRect(x + 7 * s, y + 12 * s + i * 11 * s, (w - 14 * s) * (i === 8 ? 0.5 : 1), 3 * s); }
+          const f = (a * 3) % 1; if (a < 0.9) { ctx.fillStyle = '#efe6d2'; ctx.beginPath(); ctx.moveTo(x + w, y); ctx.lineTo(x + w - w * f, y); ctx.quadraticCurveTo(x + w - w * f * 0.8, y + h / 2, x + w - w * f, y + h); ctx.lineTo(x + w, y + h); ctx.fill(); }
+          fit('Page ' + (1 + Math.floor(a * 3)), x + w / 2, y + h - 6 * s, 9 * s, w, '#795548', 'center', false); } });
+      if (a > 0) text('Flip!', cx, cy - 84 * s, 20 * s, '#fff'); }],
+  ['galaxy', 'Android Tablets', '🧁', 'DESSERT PARTY!', 'A bakery, in 2010', ['Samsung\'s Galaxy Tab came out in 2010. It ran Android, made by Google.', 'Android versions had yummy dessert names, like Cupcake, Donut and KitKat!', 'Android 3.0, called Honeycomb, came out in 2011 and was made just for tablets.'],
+    (cx, cy, s, a) => { tab(cx, cy, s, { w: 90, h: 136, body: '#1c1c1c', edge: '#5f6670', bezel: 10, R: 12, cam: true, scr: ['#69f0ae', '#00897b'],
+        draw: (x, y, w, h) => { if (a > 0) homeScreen(x + 2 * s, y + 2 * s, w - 4 * s, h, s, 16, 4, 1); else screenFace(x, y, w, h, s); } });
+      for (let i = 0; i < 3; i++) circle(cx - 18 * s + i * 18 * s, cy + 61 * s, 2.5 * s, '#555');
+      if (a > 0) ['🧁', '🍩', '🍫', '🍯', '🍭'].forEach((e, i) => { const t = (a * 1.6 + i * 0.2) % 1, an = i * 1.256 + a * 3; emoji(e, cx + Math.cos(an) * (60 + t * 30) * s, cy - 10 * s + Math.sin(an) * 50 * s - t * 30 * s, 24 * s); }); }],
+  ['surface', 'Microsoft Surface', '🧲', 'SNAP & STAND!', 'A busy desk, in 2012', ['The Microsoft Surface came out in 2012.', 'It had a kickstand built right into its back, so it could stand up by itself.', 'Its thin keyboard cover clicked on with MAGNETS, and also covered the screen.'],
+    (cx, cy, s, a) => { const k = a > 0 ? clamp(a * 2, 0, 1) : 1, w = 150 * s, h = 92 * s, x = cx - w / 2, y = cy - 62 * s;
+      if (a > 0.55) { const kk = clamp((a - 0.55) * 4, 0, 1); ctx.fillStyle = '#5f6670'; ctx.beginPath(); ctx.moveTo(x + 14 * s, y + h); ctx.lineTo(x + 14 * s - kk * 18 * s, y + h + 22 * s); ctx.lineTo(x + w - 14 * s + kk * 18 * s, y + h + 22 * s); ctx.lineTo(x + w - 14 * s, y + h); ctx.fill(); }
+      rr(x - 2 * s, y - 2 * s, w + 4 * s, h + 4 * s, 6 * s, '#7c838c'); rr(x, y, w, h, 5 * s, '#151515'); const sx = x + 9 * s, sy = y + 8 * s;
+      rr(sx, sy, w - 18 * s, h - 16 * s, 2 * s, grad(sy, sy + h, '#29b6f6', '#283593'));
+      for (let i = 0; i < 6; i++) rr(sx + 8 * s + (i % 3) * 34 * s, sy + 8 * s + Math.floor(i / 3) * 30 * s, 30 * s, 24 * s, 1, ['#e53935', '#43a047', '#fb8c00', '#8e24aa', '#00acc1', '#fdd835'][i]);
+      const ky = y + h + 4 * s + (1 - k) * 50 * s; ctx.save(); ctx.globalAlpha = a > 0 ? k : 1; ctx.fillStyle = '#1e88e5'; ctx.beginPath(); ctx.moveTo(x + 4 * s, ky); ctx.lineTo(x + w - 4 * s, ky); ctx.lineTo(x + w + 10 * s, ky + 26 * s); ctx.lineTo(x - 10 * s, ky + 26 * s); ctx.fill();
+      for (let r = 0; r < 3; r++) for (let c = 0; c < 12; c++) rr(x + 4 * s + c * 12 * s - r * 1.5 * s, ky + 4 * s + r * 7 * s, 9 * s, 4.5 * s, 1, 'rgba(255,255,255,.35)'); ctx.restore();
+      if (a > 0.45 && a < 0.7) text('CLICK! 🧲', cx, y - 14 * s, 20 * s, '#fff'); if (a >= 0.7) text('It stands up!', cx, y - 14 * s, 20 * s, '#fff'); }],
+  ['touch', 'Touchscreen Magic', '👆', 'PINCH TO ZOOM!', 'Your own fingertips!', ['Most tablet screens can feel the tiny bit of electricity your finger carries. That is how they know where you touch!', 'That is why regular gloves don\'t work on them, but special touchscreen gloves do.', 'A tablet can feel two fingers at once, so you can pinch to zoom in and out!', 'The first finger touchscreen was invented in England in the 1960s.'],
+    (cx, cy, s, a) => { const z = a > 0 ? 1 + Math.sin(clamp(a * 1.4, 0, 1) * Math.PI / 2) * 1.2 : 1;
+      tab(cx, cy, s, { w: 102, h: 136, body: '#111', edge: '#9aa3ad', bezel: 9, side: 0.6, R: 12, cam: true, scr: ['#80deea', '#26c6da'],
+        draw: (x, y, w, h) => { ctx.save(); ctx.translate(x + w / 2, y + h / 2); ctx.scale(z, z); star(0, 0, 22 * s, GOLD); eyes(0, -2 * s, s * 0.5, 9, 4, DARK); smile(0, 4 * s, s * 0.5, 7, DARK); ctx.restore();
+          if (a <= 0) for (let i = 0; i < 3; i++) { const t = ((frame * 0.015) + i / 3) % 1; ctx.strokeStyle = `rgba(255,255,255,${1 - t})`; ctx.lineWidth = 2 * s; ctx.beginPath(); ctx.arc(x + w / 2, y + h * 0.8, t * 24 * s, 0, 7); ctx.stroke(); } } });
+      if (a > 0) { const d = 10 * s + (z - 1) * 26 * s; for (const sg of [-1, 1]) { circle(cx + sg * d, cy + sg * d, 9 * s, 'rgba(255,224,178,.9)'); circle(cx + sg * d, cy + sg * d, 13 * s, 'rgba(255,255,255,.25)'); } if (a > 0.5) text('ZOOM!', cx, cy - 86 * s, 22 * s, '#fff'); } }],
+  ['ben', 'Ben\'s iPad', '⭐', 'LIGHT IT UP!', 'The Grand Hall (💡 Ben\'s own iPad!)', ['Ben\'s iPad, where the Game Factory lives!', 'Ben plays his Game Factory games on it, with touch buttons right on the screen.', 'It wears a black case to keep it safe. The cover folds back to make a stand!', 'New games get made on Ben\'s laptop, then hop over to the iPad in a minute or two.'],
+    (cx, cy, s, a) => benIpad(cx, cy, s, a > 0 ? Math.floor(a * 150 / 28) : -1, a > 0 ? 1 : 0.6, a)],
+];
+// ⭐ BEN'S iPAD: a modern iPad (thin edges, round corners) in a black folio case, standing on its folded-back cover
+function benIpad(cx, cy, s, show = -1, bright = 1, glowA = 0) {
+  const w = 196 * s, h = 136 * s, x = cx - w / 2, y = cy - h / 2 - 14 * s;
+  // the folded cover behind it makes a stand (a dark triangle peeking out underneath)
+  ctx.fillStyle = '#0c0c0c'; ctx.beginPath(); ctx.moveTo(x + 24 * s, y + h); ctx.lineTo(x + w - 24 * s, y + h); ctx.lineTo(x + w - 8 * s, y + h + 26 * s); ctx.lineTo(x + 8 * s, y + h + 26 * s); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.12)'; ctx.lineWidth = 1.5 * s; for (const f of [0.33, 0.66]) { ctx.beginPath(); ctx.moveTo(x + 24 * s + (w - 48 * s) * f, y + h); ctx.lineTo(x + 8 * s + (w - 16 * s) * f, y + h + 26 * s); ctx.stroke(); }
+  if (bright >= 1 && !PRINTING) glow(cx, y + h / 2, w * 0.75, 'rgba(179,157,219,.55)', 1);
+  rr(x - 7 * s, y - 7 * s, w + 14 * s, h + 14 * s, 20 * s, '#151515');                     // the black case
+  ctx.strokeStyle = '#2a2a2a'; ctx.lineWidth = 2 * s; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x - 4 * s, y - 4 * s, w + 8 * s, h + 8 * s, 17 * s) : ctx.rect(x - 4 * s, y - 4 * s, w + 8 * s, h + 8 * s); ctx.stroke();
+  rr(x - 1 * s, y - 1 * s, w + 2 * s, h + 2 * s, 15 * s, '#8a939c');                       // a thin metal edge
+  rr(x, y, w, h, 14 * s, '#0a0a0a');                                                       // thin black border
+  circle(cx, y + 4 * s, 1.6 * s, '#3a3a3a');                                               // the camera, on the long top edge
+  const sx = x + 7 * s, sy = y + 7 * s, sw = w - 14 * s, sh = h - 14 * s;
+  ctx.save(); ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(sx, sy, sw, sh, 9 * s); else ctx.rect(sx, sy, sw, sh); ctx.clip();
+  gfScreen(sx, sy, sw, sh, show, bright);
+  ctx.fillStyle = 'rgba(255,255,255,.09)'; ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx + sw * 0.4, sy); ctx.lineTo(sx + sw * 0.15, sy + sh); ctx.lineTo(sx, sy + sh); ctx.fill();
+  ctx.restore();
+  rr(x - 9 * s, y + 26 * s, 3 * s, 16 * s, 1.5 * s, '#333'); rr(x + w * 0.72, y - 9 * s, 20 * s, 3 * s, 1.5 * s, '#333');   // little case button covers
+  if (glowA > 0) for (let i = 0; i < 6; i++) sparkle(cx + Math.cos(i * 1.05 + frame * 0.03) * w * 0.62, y + h / 2 + Math.sin(i * 1.05 + frame * 0.03) * h * 0.62, 9 * s, GOLD, i);
+}
+const CI = {}; CHARS.forEach((c, i) => CI[c[0]] = i);
+function drawChar(i, cx, cy, s, a = 0) { ctx.save(); try { CHARS[i][6](cx, cy, s, a); } finally { ctx.restore(); } }
+</script>
+<script>
+// ---------- sounds (soft! everything goes through a quiet master volume) ----------
+let AC = null, MASTER = null;
+function beep(f, t = 0, d = 0.12, type = 'square', v = 0.05) {
+  try { if (!AC) { AC = new (window.AudioContext || window.webkitAudioContext)(); MASTER = AC.createGain(); MASTER.gain.value = 0.15; MASTER.connect(AC.destination); }
+    v = Math.min(v, 0.06); const o = AC.createOscillator(), g = AC.createGain(), n = AC.currentTime + t;
+    o.type = type; o.frequency.value = f; g.gain.setValueAtTime(0.0001, n); g.gain.linearRampToValueAtTime(v * 4, n + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, n + d); o.connect(g); g.connect(MASTER); o.start(n); o.stop(n + d + 0.03); } catch (_) {}
+}
+const chime = () => [262, 330, 392, 523].forEach(f => beep(f, 0.35, 1.2, 'triangle', 0.05));
+const sfx = { click: () => beep(660, 0, 0.06, 'triangle'), stamp: () => { beep(180, 0, 0.12, 'triangle', 0.06); [784, 988, 1175].forEach((f, i) => beep(f, 0.1 + i * 0.07, 0.15, 'triangle', 0.05)); },
+  whoosh: () => beep(300, 0, 0.25, 'sine', 0.05),
+  act: k => ({ clay: () => { for (let i = 0; i < 12; i++) beep(140 + (i % 3) * 20, i * 0.09, 0.06, 'triangle', 0.05); },
+    wax: () => { for (let i = 0; i < 10; i++) beep(900 + (i % 2) * 300, i * 0.07, 0.04, 'sine', 0.025); beep(220, 1, 0.5, 'sine', 0.03); },
+    slate: () => { for (let i = 0; i < 8; i++) beep(1200 + (i % 3) * 200, i * 0.1, 0.05, 'sine', 0.02); beep(300, 1.1, 0.4, 'sine', 0.03); },
+    grid: () => [392, 440, 494].forEach((f, i) => beep(f, i * 0.2, 0.15, 'square', 0.025)),
+    newton: () => { beep(523, 1, 0.15, 'triangle'); beep(784, 1.15, 0.25, 'triangle'); },
+    palm: () => { [523, 659, 784].forEach((f, i) => beep(f, i * 0.12, 0.12, 'sine')); [784, 659, 1047].forEach((f, i) => beep(f, 1.5 + i * 0.12, 0.15, 'sine')); },
+    tabletpc: () => { for (let i = 0; i < 6; i++) beep(300 + i * 60, i * 0.08, 0.08, 'sine', 0.04); beep(200, 1.1, 0.1, 'triangle'); },
+    ipad1: chime,
+    ipad2: () => { beep(2000, 0.38, 0.05, 'square', 0.03); beep(1200, 0.44, 0.08, 'square', 0.03); },
+    mini: () => [784, 659, 523].forEach((f, i) => beep(f, i * 0.12, 0.15, 'triangle')),
+    air: () => [1047, 1175, 1319, 1568, 1760].forEach((f, i) => beep(f, i * 0.15, 0.3, 'sine', 0.03)),
+    pro: () => [523, 587, 659, 698, 784, 880].forEach((f, i) => beep(f, i * 0.13, 0.2, 'triangle', 0.04)),
+    kindle: () => [0, 1, 2].forEach(i => beep(500, i * 0.85 + 0.2, 0.12, 'sine', 0.03)),
+    galaxy: () => [659, 784, 880, 1047, 880, 1047].forEach((f, i) => beep(f, i * 0.11, 0.12, 'triangle')),
+    surface: () => { beep(160, 0.5, 0.1, 'square', 0.04); beep(1200, 0.52, 0.05, 'triangle'); beep(500, 1.3, 0.15, 'triangle'); },
+    touch: () => { for (let i = 0; i < 8; i++) beep(400 + i * 80, i * 0.06, 0.1, 'sine', 0.04); },
+    ben: () => { chime(); [523, 659, 784, 1047, 1319].forEach((f, i) => beep(f, 1.3 + i * 0.08, 0.2, 'triangle', 0.04)); } }[k] || (() => {}))() };
+
+// ---------- the museum ----------
+const HALLS = [
+  { name: '🏛️ HALL 1: LONG, LONG AGO', ids: ['clay', 'wax', 'slate'], wall: '#efe3cf', trim: '#8d5a2b', guide: 'Hi, I\'m Robo, your guide! The first tablets were made of CLAY!' },
+  { name: '🏛️ HALL 2: PEN COMPUTERS', ids: ['grid', 'newton', 'palm', 'tabletpc'], wall: '#e3eaf2', trim: '#546e7a', guide: 'Beep! On these tablets, you wrote with a PEN!' },
+  { name: '🏛️ HALL 3: THE iPAD FAMILY', ids: ['ipad1', 'ipad2', 'mini', 'air', 'pro'], wall: '#ede7f6', trim: '#5e35b1', guide: 'Here comes the iPad family! Tap one to see it up close!' },
+  { name: '🏛️ HALL 4: MORE TABLETS + TOUCH', ids: ['kindle', 'galaxy', 'surface', 'touch'], wall: '#e0f2f1', trim: '#00796b', guide: 'More tablets! And how does a touchscreen feel your finger?' },
+  { name: '🌟 THE GRAND HALL', ids: ['ben'], wall: '#14213d', trim: GOLD, grand: true, guide: 'WOW! It\'s BEN\'S iPAD! Tap it to light it up!' },
+  { name: '🎁 THE GIFT SHOP', ids: [], wall: '#f3eefc', trim: OR, shop: true, guide: 'Pick a souvenir to print. They\'re all FREE!' },
+];
+let state = 'title', hall = 0, tap = null, sel = 0, showI = 0, actT = 0, msg = '', msgT = 0, parts = [], posterPick = false, benOn = 0;
+const seenCount = () => CHARS.filter(c => save.seen[c[0]]).length;
+const START = { x: 360, y: 400, w: 240, h: 70 };
+const BTN_PREV = { x: 14, y: 488, w: 130, h: 44 }, BTN_NEXT = { x: 816, y: 488, w: 130, h: 44 }, BTN_PASS = { x: 160, y: 488, w: 300, h: 44 }, BTN_SHOP = { x: 476, y: 488, w: 324, h: 44 };
+const BTN_BACK = { x: 14, y: 12, w: 110, h: 42 }, BTN_ACT = { x: 580, y: 400, w: 350, h: 64 };
+const BEN_PAD = { x: W / 2 - 160, y: 96, w: 320, h: 236 }, BEN_PLAQUE = { x: W / 2 - 170, y: 340, w: 340, h: 74 };
+function exhibitPos(h, k) { const n = HALLS[h].ids.length; return HALLS[h].grand ? { x: W / 2, y: 240, s: 1.4 } : { x: (k + 0.5) * W / n, y: 262, s: n > 4 ? 0.85 : 1.0 }; }
+function exhibitRect(h, k) { const p = exhibitPos(h, k), w = W / HALLS[h].ids.length - 14; return { x: p.x - w / 2, y: 90, w, h: 380 }; }
+function say(s) { msg = s; msgT = 150; }
+function confetti(x, y, n = 40) { for (let i = 0; i < n; i++) parts.push({ x, y, vx: (Math.random() - 0.5) * 9, vy: -Math.random() * 8 - 2, c: [OR, GOLD, CREAM, OR2, '#fff'][i % 5], life: 70 + Math.random() * 40 }); }
+function markSeen(id) {
+  if (save.seen[id]) return; save.seen[id] = 1; writeSave(); sfx.stamp(); say('📘 NEW STAMP in your Museum Passport!'); confetti(W / 2, 120, 30);
+  if (seenCount() === CHARS.length && !save.allDone) { save.allDone = 1; writeSave(); trophy('tabletMuseum'); setTimeout(() => { say('🏆 You saw EVERY tablet! Museum Master!'); confetti(W / 2, 200, 120); }, 600); }
+}
+function openExhibit(id) { showI = CI[id]; state = 'close'; actT = 0; sfx.whoosh(); markSeen(id); }
+function goHall(h) { hall = (h + HALLS.length) % HALLS.length; sel = 0; posterPick = false; benOn = 0; sfx.whoosh(); }
+</script>
+<script>
+// ---------- 🎁 souvenirs ----------
+const SOUV = [
+  { k: 'one', icon: '🖼️', name: 'Tablet Poster', tip: 'Pick ANY tablet!' },
+  { k: 'all', icon: '🏛️', name: 'Museum Poster', tip: 'Every tablet!' },
+  { k: 'cards', icon: '💌', name: 'Postcards', tip: 'Mail them to family!' },
+  { k: 'stickers', icon: '⭐', name: 'Sticker Sheet', tip: 'Cut them out!' },
+  { k: 'pass', icon: '📘', name: 'Museum Passport', tip: 'With your stamps!' },
+];
+const souvRect = i => ({ x: 52 + i * 174, y: 150, w: 160, h: 166 });
+let pickKind = 'one';
+const pickRect = i => ({ x: 18 + (i % 6) * 155, y: 70 + Math.floor(i / 6) * 140, w: 146, h: 132 });
+// ---------- input ----------
+C.addEventListener('mousedown', e => { const r = C.getBoundingClientRect(); tap = { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height }; });
+const press = {};
+addEventListener('keydown', e => { press[e.key] = true; });
+function update() {
+  frame++; if (msgT > 0) msgT--; if (actT > 0) { actT++; if (actT > 150) actT = 0; }
+  for (const p of parts) { p.x += p.vx; p.y += p.vy; p.vy += 0.2; p.life--; } parts = parts.filter(p => p.life > 0);
+  const t = tap, k = Object.assign({}, press); tap = null; for (const key in press) delete press[key];
+  const ok = k.Enter || k[' '], esc = k.Escape;
+  if (state === 'title') { if (ok || inBox(t, START)) { state = 'hall'; sfx.click(); } return; }
+  if (state === 'close') { if (esc || inBox(t, BTN_BACK)) { state = 'hall'; sfx.click(); } else if (ok || inBox(t, BTN_ACT)) { actT = 1; sfx.act(CHARS[showI][0]); } return; }
+  if (state === 'pass') { if (esc || ok || inBox(t, BTN_BACK)) { state = 'hall'; sfx.click(); } return; }
+  const H0 = HALLS[hall];
+  if (k.ArrowRight) { if (!H0.shop && sel < H0.ids.length - 1) sel++; else goHall(hall + 1); }
+  if (k.ArrowLeft) { if (!H0.shop && sel > 0) sel--; else { goHall(hall - 1); sel = Math.max(0, HALLS[hall].ids.length - 1); } }
+  if (esc && posterPick) { posterPick = false; return; }
+  if (ok && !H0.shop && H0.ids[sel]) { openExhibit(H0.ids[sel]); return; }
+  if (k.ArrowLeft || k.ArrowRight) benOn = 0;
+  if (!t) return;
+  if (posterPick) {
+    if (inBox(t, BTN_BACK)) { posterPick = false; sfx.click(); return; }
+    CHARS.forEach((c, i) => { if (inBox(t, pickRect(i))) { sfx.click(); openPrint(pickKind, i); } });
+    return;
+  }
+  if (inBox(t, BTN_PREV)) { goHall(hall - 1); return; }
+  if (inBox(t, BTN_NEXT)) { goHall(hall + 1); return; }
+  if (inBox(t, BTN_PASS)) { state = 'pass'; sfx.click(); return; }
+  if (inBox(t, BTN_SHOP)) { goHall(HALLS.length - 1); return; }
+  if (H0.shop) { SOUV.forEach((sv, i) => { if (inBox(t, souvRect(i))) { sfx.click(); if (sv.k === 'one' || sv.k === 'color') { posterPick = true; pickKind = sv.k; } else openPrint(sv.k); } }); return; }
+  if (H0.grand) { if (inBox(t, BEN_PLAQUE)) openExhibit('ben'); else if (inBox(t, BEN_PAD)) { benOn = benOn ? 0 : frame; if (benOn) { sfx.act('ben'); confetti(W / 2, 200, 24); } else sfx.click(); markSeen('ben'); } return; }
+  H0.ids.forEach((id, i) => { if (inBox(t, exhibitRect(hall, i))) { sel = i; openExhibit(id); } });
+}
+// ---------- drawing ----------
+function guide(line) {                                         // 🤖 Robo, the museum guide, with a speech bubble
+  drawRobo(52, 74, { s: 1.25, pose: 'idle', wave: true, t: frame, mouth: msgT <= 0 && frame % 240 < 90 });
+  const w = Math.min(W - 120, (ctx.font = 'bold 16px "Trebuchet MS", Arial', ctx.measureText(line).width) + 30);
+  rr(92, 44, w, 28, 14, 'rgba(255,255,255,.95)'); tri(92, 54, 80, 62, 96, 64, 'rgba(255,255,255,.95)'); fit(line, 92 + w / 2, 64, 16, w - 16, '#37474f', 'center', false);
+}
+function drawGrand() {
+  ctx.fillStyle = '#0d1b2a'; ctx.fillRect(0, 76, W, 334);
+  for (let x = 40; x < W; x += 120) { rr(x - 14, 90, 28, 320, 6, '#1d2d50'); rr(x - 18, 86, 36, 10, 3, GOLD); rr(x - 18, 400, 36, 10, 3, GOLD); }   // columns
+  for (let i = 0; i < 26; i++) { const tw = 0.4 + 0.6 * Math.abs(Math.sin(frame * 0.03 + i)); circle((i * 137) % W, 92 + (i * 53) % 60, 1.5, `rgba(255,236,179,${tw})`); }
+  // the spotlight: a soft cone of light from the ceiling onto the pedestal
+  ctx.fillStyle = 'rgba(255,248,225,.13)'; ctx.beginPath(); ctx.moveTo(W / 2 - 30, 76); ctx.lineTo(W / 2 + 30, 76); ctx.lineTo(W / 2 + 230, 420); ctx.lineTo(W / 2 - 230, 420); ctx.fill();
+  ctx.fillStyle = 'rgba(255,248,225,.1)'; ctx.beginPath(); ctx.moveTo(W / 2 - 14, 76); ctx.lineTo(W / 2 + 14, 76); ctx.lineTo(W / 2 + 150, 420); ctx.lineTo(W / 2 - 150, 420); ctx.fill();
+  rr(W / 2 - 40, 70, 80, 14, 5, '#37474f'); circle(W / 2, 84, 10, '#fff8e1');
+  ctx.fillStyle = '#b71c1c'; ctx.beginPath(); ctx.moveTo(W / 2 - 110, 420); ctx.lineTo(W / 2 + 110, 420); ctx.lineTo(W / 2 + 170, 482); ctx.lineTo(W / 2 - 170, 482); ctx.fill();   // red carpet
+  // marble pedestal
+  rr(W / 2 - 190, 326, 380, 16, 4, '#eceff1'); rr(W / 2 - 176, 340, 352, 74, 4, '#f5f5f5'); rr(W / 2 - 196, 410, 392, 12, 4, '#cfd8dc');
+  ctx.strokeStyle = 'rgba(176,190,197,.6)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(W / 2 - 160, 350); ctx.quadraticCurveTo(W / 2 - 100, 380, W / 2 - 120, 410); ctx.moveTo(W / 2 + 120, 344); ctx.quadraticCurveTo(W / 2 + 150, 372, W / 2 + 130, 410); ctx.stroke();
+  // velvet ropes on gold posts
+  for (const x of [130, W - 130]) { rr(x - 6, 320, 12, 100, 4, GOLD); circle(x, 316, 12, GOLD); }
+  ctx.strokeStyle = '#c62828'; ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(130, 330); ctx.quadraticCurveTo(195, 380, W / 2 - 200, 336); ctx.moveTo(W - 130, 330); ctx.quadraticCurveTo(W - 195, 380, W / 2 + 200, 336); ctx.stroke();
+  const on = benOn > 0, t = frame - benOn;
+  benIpad(W / 2, 215, 1.4, on ? Math.floor(t / 70) : -1, on ? Math.min(1, 0.6 + t / 20) : 0.6, on ? 1 : 0);
+  if (!on) { const p = 0.5 + 0.5 * Math.sin(frame * 0.08); text('👆 Tap the iPad!', W / 2, 466 + p * 3, 20, '#fff59d'); }
+  // the gold plaque
+  rr(W / 2 - 160, 346, 320, 62, 10, '#b8860b'); rr(W / 2 - 154, 350, 308, 54, 8, GOLD);
+  for (const [dx, dy] of [[-146, 358], [146, 358], [-146, 396], [146, 396]]) circle(W / 2 + dx, dy, 2.5, '#b8860b');
+  fit('Ben\'s iPad, where the', W / 2, 372, 19, 290, '#14213d', 'center', false); fit('Game Factory lives!', W / 2, 394, 19, 290, '#14213d', 'center', false);
+  rr(W / 2 + 120, 410, 80, 26, 13, '#00897b'); text('📜 READ', W / 2 + 160, 428, 13, '#fff', 'center', false);
+  text(save.seen.ben ? '✅ visited' : '', W / 2 - 160, 430, 14, '#fff', 'center', false);
+}
+function drawHall() {
+  const H0 = HALLS[hall];
+  ctx.fillStyle = H0.wall; ctx.fillRect(0, 0, W, 420);
+  ctx.fillStyle = H0.trim; ctx.fillRect(0, 76, W, 6); ctx.fillRect(0, 410, W, 10);
+  ctx.fillStyle = H0.grand ? '#0d1b2a' : '#90a4ae'; ctx.fillRect(0, 420, W, 62); ctx.fillStyle = 'rgba(0,0,0,.08)'; for (let x = 0; x < W; x += 60) ctx.fillRect(x, 420, 2, 62);
+  if (H0.shop) { fit(H0.name, W / 2, 34, 28, 700, '#fff'); guide(H0.guide); return drawShop(); }
+  if (H0.grand) drawGrand();
+  else H0.ids.forEach((id, k) => {
+    const p = exhibitPos(hall, k), seen = save.seen[id], selk = k === sel;
+    rr(p.x - 84, 92, 168, 212, 14, 'rgba(0,0,0,.07)');
+    if (selk) { const g = ctx.createRadialGradient(p.x, p.y, 10, p.x, p.y, 110); g.addColorStop(0, 'rgba(209,196,233,.9)'); g.addColorStop(1, 'rgba(209,196,233,0)'); ctx.fillStyle = g; ctx.fillRect(p.x - 110, p.y - 110, 220, 220); }
+    rr(p.x - 60, 312, 120, 98, 6, '#f5f5f5'); rr(p.x - 70, 300, 140, 16, 4, '#e0e0e0'); ctx.fillStyle = '#eeeeee'; ctx.fillRect(p.x - 40, 322, 6, 80); ctx.fillRect(p.x + 34, 322, 6, 80);
+    drawChar(CI[id], p.x, p.y - 20 + Math.sin(frame * 0.04 + k) * 2, p.s);
+    const pw = Math.min(176, W / H0.ids.length - 14); rr(p.x - pw / 2, 424, pw, 46, 8, H0.trim); fit(CHARS[CI[id]][1], p.x, 446, 17, pw - 10, '#fff', 'center', false); text(seen ? '✅ visited' : '👆 tap me!', p.x, 464, 13, '#fff', 'center', false);
+  });
+  fit(H0.name, W / 2 + 40, 32, 28, 760, H0.grand ? GOLD : '#fff');
+  guide(H0.guide);
+}
+function drawShop() {
+  if (posterPick) {
+    ctx.fillStyle = '#d6e6f7'; ctx.fillRect(0, 0, W, H); text('🖼️ Which poster do you want?', W / 2, 52, 28, OR3, 'center', false);
+    CHARS.forEach((c, i) => { const b = pickRect(i); rr(b.x, b.y, b.w, b.h, 16, '#fff'); drawChar(i, b.x + b.w / 2, b.y + 56, c[0] === 'ben' ? 0.42 : 0.6); fit(c[1], b.x + b.w / 2, b.y + b.h - 10, 15, b.w - 10, OR3, 'center', false); });
+    button(BTN_BACK, '⬅ BACK', '#455a64', 18); return;
+  }
+  SOUV.forEach((sv, i) => { const b = souvRect(i); rr(b.x, b.y + 5, b.w, b.h, 16, 'rgba(0,0,0,.2)'); rr(b.x, b.y, b.w, b.h, 16, sv.special ? '#fff59d' : '#fff');
+    if (sv.special) { rr(b.x + 6, b.y - 10, b.w - 12, 20, 10, '#e91e63'); text('⭐ SPECIAL!', b.x + b.w / 2, b.y + 5, 12, '#fff', 'center', false); }
+    emoji(sv.icon, b.x + b.w / 2, b.y + 62, 46); const ln = wrap(sv.name, 15, b.w - 12).slice(0, 2); ln.forEach((l, j) => fit(l, b.x + b.w / 2, b.y + 96 + j * 17 - (ln.length - 1) * 4, 15, b.w - 10, OR3, 'center', false));
+    fit(sv.tip, b.x + b.w / 2, b.y + 136, 12, b.w - 10, '#455a64', 'center', false); text('🖨️ PRINT', b.x + b.w / 2, b.y + 156, 13, '#43a047', 'center', false); });
+  text('Every gift is FREE! Tip: turn on color printing!', W / 2, 106, 18, OR3, 'center', false);
+}
+function drawBar() {
+  rr(0, 482, W, 58, 0, 'rgba(20,33,61,.92)');
+  button(BTN_PREV, '◀ BACK', '#607d8b', 20); button(BTN_NEXT, 'NEXT ▶', '#607d8b', 20);
+  button(BTN_PASS, `📘 PASSPORT  ${seenCount()}/${CHARS.length}`, '#5c6bc0', 20); button(BTN_SHOP, '🎁 GIFT SHOP', '#00897b', 22);
+}
+function drawClose() {
+  const c = CHARS[showI], a = actT > 0 ? actT / 150 : 0;
+  ctx.fillStyle = '#0f1722'; ctx.fillRect(0, 0, W, H);
+  const g = ctx.createRadialGradient(290, 260, 20, 290, 260, 280); g.addColorStop(0, 'rgba(209,196,233,.45)'); g.addColorStop(1, 'rgba(209,196,233,0)'); ctx.fillStyle = g; ctx.fillRect(0, 0, 600, H);
+  drawChar(showI, 290, 280, c[0] === 'ben' ? 1.25 : 1.6, a);
+  rr(560, 60, 380, 420, 20, '#f5f9ff'); rr(570, 70, 360, 66, 14, c[0] === 'ben' ? '#14213d' : OR);
+  fit(c[2] + ' ' + c[1], 750, 113, 30, 340, '#fff'); fit('📍 Found: ' + c[4], 750, 162, 16, 350, '#455a64', 'center', false);
+  let fs = 17; while (fs > 12 && c[5].reduce((n, f) => n + wrap('• ' + f, fs, 340).length * (fs + 5) + 6, 0) > 206) fs--;
+  let y = 194; for (const f of c[5]) { for (const ln of wrap('• ' + f, fs, 340)) { text(ln, 580, y, fs, '#263238', 'left', false); y += fs + 5; } y += 6; }
+  button(BTN_ACT, '✨ ' + c[3], '#43a047', 24);
+  button(BTN_BACK, '⬅ BACK', '#455a64', 18);
+  if (msgT > 0) { rr(140, 8, 400, 40, 12, 'rgba(0,0,0,.6)'); fit(msg, 340, 35, 18, 380, '#fff59d'); }
+}
+function drawPass() {
+  ctx.fillStyle = '#4527a0'; ctx.fillRect(0, 0, W, H); rr(40, 64, W - 80, 444, 20, '#f5f9ff');
+  text('📘 MY MUSEUM PASSPORT', W / 2, 46, 30, '#fff');
+  CHARS.forEach((c, i) => { const x = 120 + (i % 6) * 144, y = 128 + Math.floor(i / 6) * 124, seen = save.seen[c[0]];
+    ctx.strokeStyle = seen ? '#c62828' : '#bdbdbd'; ctx.lineWidth = 4; ctx.setLineDash(seen ? [] : [8, 6]); ctx.beginPath(); ctx.arc(x, y, 44, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+    if (seen) drawChar(i, x, y + 4, c[0] === 'ben' ? 0.26 : 0.36); else text('?', x, y + 12, 32, '#bdbdbd', 'center', false);
+    fit(c[1], x, y + 62, 14, 138, '#263238', 'center', false); });
+  button(BTN_BACK, '⬅ BACK', '#455a64', 18);
+}
+function drawTitle() {
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#ede7f6'); g.addColorStop(1, '#c5b8e0'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  for (let i = 0; i < 6; i++) { rr(70 + i * 150, 130, 24, 300, 6, '#f5f8fb'); }
+  tri(30, 130, W - 30, 130, W / 2, 30, '#5e35b1'); rr(30, 124, W - 60, 16, 4, '#4527a0'); rr(30, 430, W - 60, 20, 4, '#4527a0');
+  sparkle(W / 2, 86, 26, GOLD, frame * 0.02);
+  text('📱 THE TABLET MUSEUM', W / 2, 196, 56, OR);
+  text('💡 Ben\'s idea!  From clay tablets to Ben\'s iPad!', W / 2, 234, 22, OR3, 'center', false);
+  ['clay', 'palm', 'ipad1', 'pro', 'ben'].forEach((id, i) => drawChar(CI[id], 120 + i * 150 + (i === 4 ? 30 : 0), 330 + Math.sin(frame * 0.05 + i) * 4, id === 'ben' ? 0.62 : 0.66));
+  drawRobo(900, 420, { s: 1.6, pose: 'happy', t: frame });
+  button(START, '▶ COME IN!', '#43a047', 30);
+  text('Tap the tablets • collect stamps • print souvenirs!', W / 2, 500, 18, OR3, 'center', false);
+}
+function draw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
+  if (state === 'title') drawTitle();
+  else if (state === 'close') drawClose();
+  else if (state === 'pass') drawPass();
+  else { drawHall(); if (!posterPick) drawBar(); if (msgT > 0 && !posterPick) { rr(W / 2 - 300, 84, 600, 40, 12, 'rgba(0,0,0,.6)'); fit(msg, W / 2, 111, 19, 580, '#fff59d'); } }
+  for (const p of parts) { ctx.globalAlpha = Math.min(1, p.life / 20); ctx.fillStyle = p.c; ctx.fillRect(p.x - 4, p.y - 4, 8, 8); }
+  ctx.globalAlpha = 1;
+}
+let last = performance.now(), acc = 0;
+function loop(now) { acc += Math.min(100, now - last); last = now; while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; } draw(); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+</script>
+<script>
+// ---------- 🖨️ printing the souvenirs ----------
+const PW = 850, PH = 1100, PAST = ['#e3f2fd', '#fce4ec', '#e8eaf6', '#e0f2f1', '#fff8e1', '#f3e5f5', '#e1f5fe', '#fbe9e7', '#ede7f6', '#fffde7'];
+function makePage(fn) {
+  const cv = document.createElement('canvas'); cv.width = PW; cv.height = PH;
+  const old = ctx; ctx = cv.getContext('2d'); PRINTING = true;
+  try { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, PW, PH); fn(); } finally { ctx = old; PRINTING = false; }
+  return cv;
+}
+const ptext = (s, x, y, size, color = '#222', align = 'center') => text(s, x, y, size, color, align, false);
+function cutBox(x, y, w, h, r = 18) { ctx.save(); ctx.setLineDash([10, 7]); ctx.strokeStyle = '#9e9e9e'; ctx.lineWidth = 2; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); ctx.stroke(); ctx.restore(); }
+function bigTitle(str, x, y, size, fill, edge, maxW = PW - 80) {
+  ctx.save(); ctx.font = `bold ${size}px "Trebuchet MS", Arial`; const mw = ctx.measureText(str).width; if (mw > maxW) { size = Math.floor(size * maxW / mw); ctx.font = `bold ${size}px "Trebuchet MS", Arial`; }
+  ctx.textAlign = 'center'; ctx.lineJoin = 'round'; ctx.strokeStyle = edge; ctx.lineWidth = size / 6; ctx.strokeText(str, x, y); ctx.fillStyle = fill; ctx.fillText(str, x, y); ctx.restore();
+}
+const scaleFor = (i, base) => CHARS[i][0] === 'ben' ? base * 0.75 : base;
+const EXTRA_PRINT = {};
+const cyFor = (i, cy, s) => cy;
+function pageOne(i) {
+  const c = CHARS[i];
+  return makePage(() => {
+    const neo = c[0] === 'ben', g = ctx.createLinearGradient(0, 0, 0, PH); g.addColorStop(0, neo ? '#14213d' : '#ede7f6'); g.addColorStop(1, neo ? '#3949ab' : '#c5b8e0'); ctx.fillStyle = g; ctx.fillRect(0, 0, PW, PH);
+    ctx.strokeStyle = neo ? GOLD : OR; ctx.lineWidth = 10; ctx.strokeRect(14, 14, PW - 28, PH - 28);
+    for (let k = 0; k < 14; k++) sparkle((k * 211) % PW, 180 + (k * 137) % 600, 10 + (k % 3) * 4, neo ? 'rgba(255,201,77,.45)' : 'rgba(126,87,194,.25)', k);
+    bigTitle(c[1].toUpperCase().replace(/IPAD/g, 'iPAD') + '!', PW / 2, 110, 74, neo ? GOLD : '#fff', neo ? '#0d1b2a' : OR3);
+    ptext('THE TABLET MUSEUM  •  SOUVENIR POSTER', PW / 2, 160, 22, neo ? CREAM : OR3);
+    drawChar(i, PW / 2, cyFor(i, 490, 3), scaleFor(i, 3.2));
+    rr(70, 790, PW - 140, 250, 26, 'rgba(255,255,255,.92)');
+    let y = 840; for (const f of c[5].slice(0, 3)) { for (const ln of wrap('• ' + f, 24, PW - 200)) { ptext(ln, 100, y, 24, '#263238', 'left'); y += 32; } y += 6; }
+  });
+}
+function pageAll() {
+  return makePage(() => {
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, PW, PH); ctx.strokeStyle = OR; ctx.lineWidth = 10; ctx.strokeRect(14, 14, PW - 28, PH - 28);
+    bigTitle('THE TABLET MUSEUM', PW / 2, 90, 60, '#fff', OR3); ptext('💡 A museum invented by Ben', PW / 2, 132, 22, OR3);
+    CHARS.forEach((c, i) => { const n = CHARS.length, last = i === n - 1 && n % 4 === 1, x = last ? 36 + 1.5 * 196 : 36 + (i % 4) * 196, y = 152 + Math.floor(i / 4) * 186, w = 188, h = 178;
+      rr(x, y, w, h, 16, PAST[i % PAST.length]); drawChar(i, x + w / 2, y + 80, scaleFor(i, 0.72)); fit(c[1], x + w / 2, y + 166, 18, w - 14, OR3, 'center', false); });
+  });
+}
+function pagesCards() {
+  const pages = [];
+  for (let pg = 0; pg < Math.ceil(CHARS.length / 4); pg++) pages.push(makePage(() => {
+    ptext(`✂️ TABLET MUSEUM POSTCARDS (page ${pg + 1})  Cut on the dotted lines!`, PW / 2, 30, 18, '#555');
+    CHARS.slice(pg * 4, pg * 4 + 4).forEach((c, k) => { const i = pg * 4 + k, x = 25 + (k % 2) * 405, y = 48 + Math.floor(k / 2) * 525, w = 395, h = 510;
+      rr(x, y, w, h, 14, PAST[i % PAST.length]); rr(x + 12, y + 12, w - 24, 250, 10, '#fff'); drawChar(i, x + w / 2, cyFor(i, y + 140, 1.05), scaleFor(i, 1.1));
+      ptext('Greetings from', x + w / 2, y + 300, 20, '#455a64'); fit('THE TABLET MUSEUM!', x + w / 2, y + 334, 28, w - 30, OR3, 'center', false); fit('Starring: ' + c[1], x + w / 2, y + 364, 18, w - 30, '#455a64', 'center', false);
+      ['To: ______________________', 'Hi! ______________________', '__________________________', 'From: ____________________'].forEach((ln, j) => ptext(ln, x + 24, y + 404 + j * 28, 18, '#555', 'left'));
+      cutBox(x - 4, y - 4, w + 8, h + 8, 16); });
+  }));
+  return pages;
+}
+function pagesStickers() {
+  const all = CHARS.map((c, i) => i).concat(['logo', 'master']), pages = [];
+  for (let pg = 0; pg < Math.ceil(all.length / 12); pg++) pages.push(makePage(() => {
+    ptext(`⭐ TABLET MUSEUM STICKERS (page ${pg + 1})  Cut them out and stick them with tape!`, PW / 2, 34, 20, '#555');
+    all.slice(pg * 12, pg * 12 + 12).forEach((it, k) => { const x = 150 + (k % 3) * 275, y = 170 + Math.floor(k / 3) * 250, r = 110;
+      circle(x, y, r, typeof it === 'number' ? PAST[it % PAST.length] : '#d1c4e9'); ctx.strokeStyle = OR; ctx.lineWidth = 6; ctx.beginPath(); ctx.arc(x, y, r - 4, 0, 7); ctx.stroke();
+      if (it === 'logo') { drawChar(CI.ipad1, x, y - 16, 0.6); ptext('TABLET MUSEUM', x, y + 66, 19, OR3); }
+      else if (it === 'master') { ptext('🏆', x, y + 8, 60); ptext('MUSEUM MASTER', x, y + 60, 19, OR3); }
+      else { drawChar(it, x, cyFor(it, y - 16, 0.7), scaleFor(it, 0.7)); const ln = wrap(CHARS[it][1], 18, 136); ln.forEach((l, j) => fit(l, x, y + 56 + j * 21, 18, 136, OR3, 'center', false)); }
+      ctx.save(); ctx.setLineDash([9, 6]); ctx.strokeStyle = '#9e9e9e'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 8, 0, 7); ctx.stroke(); ctx.restore(); });
+  }));
+  return pages;
+}
+function pagePass() {
+  return makePage(() => {
+    ctx.fillStyle = '#4527a0'; ctx.fillRect(0, 0, PW, PH); rr(30, 30, PW - 60, PH - 60, 24, '#f5f9ff');
+    bigTitle('MUSEUM PASSPORT', PW / 2, 110, 58, GOLD, '#283593'); ptext('THE TABLET MUSEUM  •  Name: Ben', PW / 2, 156, 24, '#4527a0');
+    CHARS.forEach((c, i) => { const n = CHARS.length, last = i === n - 1 && n % 4 === 1, x = last ? 425 : 135 + (i % 4) * 193, y = 250 + Math.floor(i / 4) * 178, seen = save.seen[c[0]];
+      ctx.strokeStyle = seen ? '#c62828' : '#bdbdbd'; ctx.lineWidth = 4; ctx.setLineDash(seen ? [] : [10, 7]); ctx.beginPath(); ctx.arc(x, y, 60, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+      if (seen) { drawChar(i, x, y - 4, scaleFor(i, 0.46)); ptext('VISITED!', x, y + 52, 14, '#c62828'); } else ptext('stamp here', x, y + 6, 16, '#bdbdbd');
+      fit(c[1], x, y + 82, 17, 185, '#4527a0', 'center', false); });
+  });
+}
+let printBox = null;
+function openPrint(k, i) {
+  const pages = k === 'one' ? [pageOne(i)] : k === 'color' ? [pageColor(i)] : EXTRA_PRINT[k] ? EXTRA_PRINT[k]() : k === 'all' ? [pageAll()] : k === 'cards' ? pagesCards() : k === 'stickers' ? pagesStickers() : [pagePass()];
+  const name = k === 'one' ? CHARS[i][1] + ' Poster' : k === 'color' ? CHARS[i][1] + ' Coloring Page' : SOUV.find(s => s.k === k).name;
+  printBox = document.createElement('div'); printBox.id = 'printBox';
+  const bar = document.createElement('div'); bar.className = 'pbBar';
+  const back = document.createElement('button'); back.className = 'pbBack'; back.textContent = '⬅ BACK';
+  const pr = document.createElement('button'); pr.className = 'pbPrint'; pr.textContent = pages.length > 1 ? `🖨️ PRINT (${pages.length} pages)` : '🖨️ PRINT';
+  back.onclick = () => { if (printBox) { printBox.remove(); printBox = null; } sfx.click(); };
+  pr.onclick = () => { try { window.print(); } catch (_) {} };
+  bar.append(back, pr); printBox.appendChild(bar);
+  const tip = document.createElement('div'); tip.className = 'pbTip'; tip.textContent = '🎁 ' + name + '  •  Tip: turn on color printing!'; printBox.appendChild(tip);
+  for (const cv of pages) { const img = new Image(); img.className = 'pbPage'; img.alt = name; img.src = cv.toDataURL('image/png'); printBox.appendChild(img); }
+  document.body.appendChild(printBox);
+}
+</script>

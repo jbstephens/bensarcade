@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>The Space Museum</title>
+<script src="touchpad.js?v=10"></script>
+<style>
+  html, body { height: 100%; }
+  body { margin: 0; background: #05081c; display: flex; align-items: center; justify-content: center; overflow: hidden; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  canvas { width: min(100vw, calc(100vh * 960 / 540)); height: auto; display: block; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,.5); touch-action: none; }
+</style>
+<canvas id="game" width="960" height="540"></canvas>
+<script>
+// 🚀 THE SPACE MUSEUM: Ben's idea! Real rockets in a giant hall (drawn to the same scale as each other),
+// a moon rock, spacesuits Robo can try on, Hubble, the ISS, a Mars rover, Voyager 1 and the planets wall.
+// Only TRUE facts on the cards. Guide: Robo (drawn with the same code as Robo's Movie).
+// ---------- shared core: helpers, Robo (copied from robomovie.html), sounds ----------
+const C = document.getElementById('game');
+let ctx = C.getContext('2d');
+const W = 960, H = 540;
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+let frame = 0;
+function rrect(x, y, w, h, r) {
+  ctx.beginPath();
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function roundRect(x, y, w, h, r, fill) { ctx.fillStyle = fill; rrect(x, y, Math.max(0, w), Math.max(0, h), r); ctx.fill(); }
+function rr(x, y, w, h, r, fill, stroke, lw = 3) {
+  rrect(x, y, Math.max(0, w), Math.max(0, h), r);
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw; ctx.stroke(); }
+}
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, 7); ctx.fill(); }
+const dot = circle;
+function ellipse(x, y, rx, ry, fill, rot = 0) { ctx.fillStyle = fill; ctx.beginPath(); ctx.ellipse(x, y, Math.max(0, rx), Math.max(0, ry), rot, 0, 7); ctx.fill(); }
+const ell = (x, y, rx, ry, c, rot = 0) => ellipse(x, y, Math.max(0.1, rx), Math.max(0.1, ry), c, rot);
+function glow(x, y, r, col, a = 1) {
+  r = Math.max(1, r);
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.save(); ctx.globalAlpha = clamp(a, 0, 1); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); ctx.restore();
+}
+function star(x, y, r, fill, rot = 0, pts = 5, inner = 0.48) {
+  ctx.fillStyle = fill; ctx.beginPath();
+  for (let i = 0; i < pts * 2; i++) { const a = -Math.PI / 2 + rot + i * Math.PI / pts, q = i % 2 ? r * inner : r; ctx.lineTo(x + Math.cos(a) * Math.max(0, q), y + Math.sin(a) * Math.max(0, q)); }
+  ctx.closePath(); ctx.fill();
+}
+function tri(a, b, c, d, e, f, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.lineTo(e, f); ctx.closePath(); ctx.fill(); }
+function poly(pts, fill, stroke, lw = 2) { ctx.beginPath(); pts.forEach((p, i) => ctx[i ? 'lineTo' : 'moveTo'](p[0], p[1])); ctx.closePath(); if (fill) { ctx.fillStyle = fill; ctx.fill(); } if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw; ctx.stroke(); } }
+function line(x1, y1, x2, y2, col, lw) { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+function text(str, x, y, size, color = '#fff', align = 'center', outline = true) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; ctx.textAlign = align; ctx.textBaseline = 'alphabetic'; ctx.lineJoin = 'round';
+  if (outline) { ctx.strokeStyle = typeof outline === 'string' ? outline : 'rgba(0,0,0,.6)'; ctx.lineWidth = Math.max(3, size / 6); ctx.strokeText(str, x, y); }
+  ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function fit(str, x, y, size, maxW, color, align, outline) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; const w = ctx.measureText(str).width || 0;
+  text(str, x, y, w > maxW ? Math.max(9, Math.floor(size * maxW / w)) : size, color, align, outline);
+}
+function emoji(e, x, y, size) { ctx.font = `${size}px "Apple Color Emoji", "Segoe UI Emoji", Arial`; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = '#000'; ctx.fillText(e, x, y); }
+function wrap(str, size, maxW) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; const out = []; let ln = '';
+  for (const wd of String(str).split(' ')) { const t = ln ? ln + ' ' + wd : wd; if (ln && ctx.measureText(t).width > maxW) { out.push(ln); ln = wd; } else ln = t; }
+  if (ln) out.push(ln); return out;
+}
+function button(b, label, fill, size = 22) {
+  rr(b.x, b.y + 4, b.w, b.h, 14, 'rgba(0,0,0,.35)'); rr(b.x, b.y, b.w, b.h, 14, fill);
+  fit(label, b.x + b.w / 2, b.y + b.h / 2 + size * 0.36, size, b.w - 12);
+}
+const inBox = (t, b) => t && t.x >= b.x && t.x <= b.x + b.w && t.y >= b.y && t.y <= b.y + b.h;
+function bubble(x, y, w, h, tx, ty, fill = '#fff') {          // speech bubble with a little tail pointing at (tx, ty)
+  rr(x, y, w, h, 14, fill, 'rgba(0,0,0,.25)', 2);
+  ctx.fillStyle = fill; ctx.beginPath(); ctx.moveTo(clamp(tx, x + 16, x + w - 30), y + h - 1); ctx.lineTo(tx, ty); ctx.lineTo(clamp(tx, x + 16, x + w - 30) + 16, y + h - 1); ctx.closePath(); ctx.fill();
+}
+
+const ROBO = { head: '#ffffff', body: '#f5f7ff', visor: '#111827', eye: '#40c4ff', legs: '#3d5afe', pod: '#2979ff', edge: '#9fa8da' };
+// o = { s, face, t, pose (idle/off/walk/run/wobble/jump/happy/fall/sit/wave), eyes 0..1, mouth, parts (bitmask: 1 body+legs, 2 head+visor, 4 ear pods, 8 antenna), dizzy }
+function drawRobo(x, y, o = {}) {
+  const s = o.s || 2.6, f = o.face || 1, t = o.t || frame, pose = o.pose || 'idle', parts = o.parts === undefined ? 15 : o.parts;
+  const eyes = o.eyes === undefined ? 1 : o.eyes;
+  let tilt = o.tilt || 0, bob = 0, lA = 0, lB = 0, sq = 1;
+  if (pose === 'walk' || pose === 'run') { const k = t * (pose === 'run' ? 0.5 : 0.3); lA = Math.max(0, Math.sin(k)) * 4; lB = Math.max(0, -Math.sin(k)) * 4; bob = -Math.abs(Math.sin(k)) * 1.5; }
+  else if (pose === 'wobble') { const k = t * 0.16; tilt += Math.sin(k) * 0.22; lA = Math.max(0, Math.sin(k)) * 5; lB = Math.max(0, -Math.sin(k)) * 5; }
+  else if (pose === 'jump') { lA = lB = 4; sq = 1.06; }
+  else if (pose === 'happy') { bob = -Math.abs(Math.sin(t * 0.25)) * 4; tilt += Math.sin(t * 0.25) * 0.08; }
+  else if (pose === 'fall') { tilt += -0.5; bob = 3; }
+  else if (pose === 'sit') { lA = lB = 3; bob = 3; }
+  else if (pose !== 'off') bob = Math.sin(t * 0.06) * 0.6;
+  ctx.save(); ctx.translate(x, y); ctx.rotate(tilt * f); ctx.scale(s * f, s * sq); ctx.translate(0, bob);
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  if (parts & 1) {
+    ctx.fillStyle = ROBO.legs; ctx.fillRect(-11, -7 - lA, 8, 7); ctx.fillRect(3, -7 - lB, 8, 7);
+    roundRect(-13, -21, 26, 17, 6, ROBO.body);
+    ctx.strokeStyle = ROBO.edge; ctx.lineWidth = 0.8; rrect(-13, -21, 26, 17, 6); ctx.stroke();
+    circle(0, -12, 3, ROBO.pod); circle(-0.8, -12.8, 1, 'rgba(255,255,255,.7)');
+  }
+  if (parts & 8) {                                     // 📡 the little antenna (wiggles when he moves)
+    const tip = Math.sin(t * 0.12) * (pose === 'idle' || pose === 'off' ? 0.6 : 2);
+    ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 1.4; ctx.beginPath(); ctx.moveTo(0, -40); ctx.quadraticCurveTo(tip * 0.4, -45, tip, -49); ctx.stroke();
+    const lit = pose === 'off' ? 0.25 : 0.6 + (o.mouth ? 0.4 * Math.abs(Math.sin(t * 0.4)) : 0);
+    if (pose !== 'off') glow(tip, -50, 7, 'rgba(64,196,255,.8)', lit);
+    circle(tip, -50, 2.6, ROBO.pod); circle(tip - 0.8, -50.8, 0.8, 'rgba(255,255,255,.8)');
+  }
+  if (parts & 4) { roundRect(-20, -31, 6, 9, 3, ROBO.pod); roundRect(14, -31, 6, 9, 3, ROBO.pod); }
+  if (parts & 2) {
+    roundRect(-17, -40, 34, 22, 12, ROBO.head);
+    ctx.strokeStyle = ROBO.edge; ctx.lineWidth = 0.8; rrect(-17, -40, 34, 22, 12); ctx.stroke();
+    roundRect(-13, -36, 26, 13, 9, ROBO.visor);
+    ellipse(-7, -34, 4, 1.2, 'rgba(255,255,255,.18)', -0.2);
+    if (eyes > 0.01) {
+      ctx.save(); ctx.globalAlpha *= clamp(eyes, 0, 1);
+      glow(3, -29.5, 16, 'rgba(64,196,255,.45)', eyes);
+      const ey = -29.5;
+      if (o.dizzy) {                                   // 💫 swirly dizzy eyes
+        ctx.strokeStyle = ROBO.eye; ctx.lineWidth = 1.1;
+        for (const ex of [-3, 9]) { ctx.beginPath(); for (let a = 0; a < 12; a += 0.4) ctx.lineTo(ex + Math.cos(a + t * 0.2) * a * 0.3, ey + Math.sin(a + t * 0.2) * a * 0.3); ctx.stroke(); }
+      } else if (pose === 'happy' || o.happy) {        // ^ ^ happy eyes
+        ctx.strokeStyle = ROBO.eye; ctx.lineWidth = 1.8;
+        for (const ex of [-3, 9]) { ctx.beginPath(); ctx.arc(ex, ey + 2, 3.2, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+      } else {
+        const blink = (t % 200) < 6 ? 0.6 : 5, talk = o.mouth ? 0.85 + 0.15 * Math.sin(t * 0.6) : 1;
+        ctx.fillStyle = ROBO.eye; ctx.beginPath();
+        ctx.ellipse(-3, ey, 3.5, Math.max(0.5, blink * talk), 0, 0, 7); ctx.ellipse(9, ey, 3.5, Math.max(0.5, blink * talk), 0, 0, 7); ctx.fill();
+        if (blink > 1) { circle(-2, ey - 2, 1, 'rgba(255,255,255,.85)'); circle(10, ey - 2, 1, 'rgba(255,255,255,.85)'); }
+      }
+      if (o.mouth) { ctx.strokeStyle = ROBO.eye; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(1, -25); ctx.lineTo(1 + 2 + Math.abs(Math.sin(t * 0.5)) * 3, -25); ctx.stroke(); }
+      ctx.restore();
+    }
+  }
+  if (o.wave) {                                        // 👋 a little waving hand
+    const a = Math.sin(t * 0.3) * 0.5;
+    ctx.save(); ctx.translate(13, -16); ctx.rotate(-1.2 + a); roundRect(-2, -14, 4, 14, 2, ROBO.pod); circle(0, -15, 3.4, ROBO.head); ctx.restore();
+  }
+  ctx.restore();
+  if (o.dizzy) for (let i = 0; i < 3; i++) { const a = t * 0.08 + i * 2.1; star(x + Math.cos(a) * 22 * s / 2.6, y - 118 * s / 2.6 + Math.sin(a) * 6, 7, '#ffd54f', a); }
+}
+
+// ---------- sounds (soft! master volume 0.12) ----------
+let AC = null, MASTER = null;
+function beep(f, t = 0, d = 0.12, type = 'triangle', v = 0.35) {
+  try { if (!AC) { AC = new (window.AudioContext || window.webkitAudioContext)(); MASTER = AC.createGain(); MASTER.gain.value = 0.12; MASTER.connect(AC.destination); }
+    const o = AC.createOscillator(), g = AC.createGain(), n = AC.currentTime + t;
+    o.type = type; o.frequency.value = f; g.gain.setValueAtTime(0.0001, n); g.gain.linearRampToValueAtTime(Math.min(0.5, v), n + 0.015); g.gain.exponentialRampToValueAtTime(0.001, n + d);
+    o.connect(g); g.connect(MASTER); o.start(n); o.stop(n + d + 0.05); } catch (_) {}
+}
+const tune = (notes, gap = 0.12, d = 0.18, type = 'triangle', v = 0.35) => notes.forEach((f, i) => f && beep(f, i * gap, d, type, v));
+const sfx = {
+  click: () => beep(660, 0, 0.07),
+  whoosh: () => beep(320, 0, 0.25, 'sine', 0.3),
+  stamp: () => { beep(200, 0, 0.12, 'sine', 0.4); tune([784, 988, 1175], 0.07, 0.15); },
+  yay: () => tune([523, 659, 784, 1047], 0.1, 0.3),
+};
+// ---------- 🚀 rockets (feet on y = 0; 1 unit is about 0.38 meters, so the rockets are the right sizes next to each other) ----------
+const k01 = a => a > 0 ? Math.sin(Math.PI * clamp(a, 0, 1)) : 0;
+function flame(x, y, w, len, t) {
+  const f = len * (0.85 + 0.15 * Math.sin(t * 0.9));
+  ctx.fillStyle = 'rgba(255,183,77,.9)'; ctx.beginPath(); ctx.moveTo(x - w, y); ctx.quadraticCurveTo(x, y + f * 1.2, x + w, y); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,200,.95)'; ctx.beginPath(); ctx.moveTo(x - w * 0.5, y); ctx.quadraticCurveTo(x, y + f * 0.7, x + w * 0.5, y); ctx.fill();
+}
+function smoke(k, w, t) {
+  if (k < 0.05) return;
+  for (let i = 0; i < 9; i++) { const sx = (i - 4) * w * 0.32, r = w * (0.24 + 0.06 * Math.sin(t * 0.05 + i)) * (0.4 + k); glow(sx, -r * 0.3, r * 1.3, 'rgba(250,250,250,.95)', k); circle(sx, -r * 0.2, r * 0.55, `rgba(236,239,241,${0.7 * k})`); }
+}
+function bell(x, y, w, h, col = '#37474f') { poly([[x - w * 0.3, y], [x + w * 0.3, y], [x + w * 0.5, y + h], [x - w * 0.5, y + h]], col); }
+function launchPad(w) { rr(-w / 2, -6, w, 6, 2, '#546e7a', '#37474f', 1.5); }
+function drawSaturn(cx, by, s, a) {
+  const k = k01(a), t = frame, up = k * 40;
+  ctx.translate(cx, by); ctx.scale(s, s); launchPad(110);
+  ctx.save(); ctx.translate(0, -up);
+  if (k > 0.05) for (const x of [-9, 0, 9]) flame(x, -6, 5, 30 + k * 30, t + x);
+  for (const x of [-9, 0, 9]) bell(x, -18, 9, 12);
+  for (const sd of [-1, 1]) poly([[sd * 13, -34], [sd * 22, -10], [sd * 22, -4], [sd * 13, -16]], '#eceff1', '#90a4ae', 1);     // fins
+  rr(-13, -118, 26, 102, 2, '#fafafa', '#b0bec5', 1);                                         // 1st stage (S-IC)
+  ctx.fillStyle = '#212121'; ctx.fillRect(-13, -44, 9, 28); ctx.fillRect(4, -72, 9, 28); ctx.fillRect(-13, -118, 26, 8);
+  ctx.save(); ctx.translate(4, -100); ctx.fillStyle = '#c62828'; ctx.font = 'bold 9px Arial'; ctx.textAlign = 'center'; ['U', 'S', 'A'].forEach((c, i) => ctx.fillText(c, -4, i * 10 + 8)); ctx.restore();
+  rr(-13, -194, 26, 76, 1, '#fafafa', '#b0bec5', 1); ctx.fillStyle = '#212121'; ctx.fillRect(-13, -132, 26, 4); ctx.fillRect(-13, -194, 26, 3);   // 2nd stage (S-II)
+  poly([[-13, -194], [13, -194], [8.7, -206], [-8.7, -206]], '#eceff1', '#b0bec5', 1);
+  rr(-8.7, -240, 17.4, 34, 1, '#fafafa', '#b0bec5', 1); ctx.fillStyle = '#212121'; ctx.fillRect(-8.7, -222, 6, 16);   // 3rd stage (S-IVB)
+  ctx.fillStyle = '#90a4ae'; ctx.fillRect(-8.7, -243, 17.4, 3);
+  poly([[-8.7, -243], [8.7, -243], [5, -263], [-5, -263]], '#eceff1', '#b0bec5', 1);       // adapter
+  poly([[-5, -263], [5, -263], [1.4, -274], [-1.4, -274]], '#cfd8dc', '#90a4ae', 1);       // command module cover
+  ctx.strokeStyle = '#c62828'; ctx.lineWidth = 0.8; ctx.beginPath(); ctx.moveTo(-1.4, -274); ctx.lineTo(0, -286); ctx.lineTo(1.4, -274); ctx.moveTo(-0.8, -280); ctx.lineTo(0.8, -280); ctx.stroke();   // escape tower
+  rr(-1.4, -294, 2.8, 8, 1, '#c62828'); tri(-1.4, -294, 1.4, -294, 0, -299, '#c62828');
+  line(-10, -112, -10, -24, 'rgba(255,255,255,.7)', 1.5);
+  ctx.restore(); smoke(k, 120, t);
+  if (k > 0.3) text('3, 2, 1... LIFT OFF!', 0, -300 - up, 14, '#fff59d');
+}
+function drawShuttle(cx, by, s, a) {
+  const k = k01(a), t = frame, up = k * 26;
+  ctx.translate(cx, by); ctx.scale(s, s); launchPad(90);
+  ctx.save(); ctx.translate(0, -up);
+  if (k > 0.05) { flame(-16, -2, 5, 26 + k * 20, t); flame(20, -10, 3, 16 + k * 10, t + 3); }
+  bell(-16, -8, 8, 7); for (const y of [-14, -10]) bell(20, y, 6, 5);
+  rr(-21, -122, 10, 114, 2, '#fafafa', '#b0bec5', 1); poly([[-21, -122], [-11, -122], [-16, -134]], '#fafafa', '#b0bec5', 1);   // solid rocket booster
+  ctx.fillStyle = '#90a4ae'; for (const y of [-40, -80]) ctx.fillRect(-21, y, 10, 1.5);
+  const g = ctx.createLinearGradient(-11, 0, 11, 0); g.addColorStop(0, '#bf5a17'); g.addColorStop(0.5, '#f08a3e'); g.addColorStop(1, '#a84b10');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(-11, -6); ctx.lineTo(-11, -128); ctx.quadraticCurveTo(0, -152, 11, -128); ctx.lineTo(11, -6); ctx.closePath(); ctx.fill();   // big orange tank
+  ctx.strokeStyle = 'rgba(0,0,0,.15)'; ctx.lineWidth = 1; for (const y of [-40, -90]) { ctx.beginPath(); ctx.moveTo(-11, y); ctx.lineTo(11, y); ctx.stroke(); }
+  // the orbiter (nose up, belly against the tank)
+  ctx.fillStyle = '#fafafa'; ctx.beginPath(); ctx.moveTo(12, -16); ctx.lineTo(12, -100); ctx.quadraticCurveTo(14, -112, 19, -112); ctx.quadraticCurveTo(26, -108, 26, -96); ctx.lineTo(26, -16); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 1; ctx.stroke();
+  ctx.fillStyle = '#263238'; ctx.beginPath(); ctx.moveTo(12, -16); ctx.lineTo(12, -100); ctx.quadraticCurveTo(14, -112, 19, -112); ctx.lineTo(19, -106); ctx.quadraticCurveTo(15, -104, 15, -96); ctx.lineTo(15, -16); ctx.closePath(); ctx.fill();   // black heat tiles
+  poly([[17, -103], [24, -101], [24, -97], [17, -98]], '#263238');                             // windows
+  poly([[26, -18], [42, -36], [42, -42], [26, -40]], '#fafafa', '#90a4ae', 1);              // tail fin
+  rr(24, -30, 6, 12, 3, '#eceff1', '#90a4ae', 1);                                              // engine pods
+  ctx.fillStyle = '#90a4ae'; ctx.fillRect(16, -70, 10, 1); ctx.fillRect(16, -50, 10, 1);
+  ctx.restore(); smoke(k, 100, t);
+  if (k > 0.3) text('LIFT OFF!', -40, -120 - up, 12, '#fff59d');
+}
+function drawBooster(cx, by, s, a) {
+  const k = k01(a), t = frame, hgt = k * 90;
+  ctx.translate(cx, by); ctx.scale(s, s);
+  rr(-40, -4, 80, 4, 2, '#455a64'); ctx.strokeStyle = '#fff59d'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(0, -2, 22, Math.PI, 0); ctx.stroke(); text('X', 0, -6, 10, '#fff59d', 'center', false);   // the landing pad
+  ctx.save(); ctx.translate(0, -hgt);
+  const legsOut = hgt < 60;
+  if (k > 0.05) flame(0, -6, 4, 14 + 16 * Math.min(1, hgt / 40), t);
+  bell(0, -12, 9, 6, '#424242');
+  for (const sd of [-1, 1]) { if (legsOut) { line(sd * 5, -30, sd * 26, 0, '#37474f', 2.6); line(sd * 26, 0, sd * 20, 0, '#37474f', 2); line(sd * 5, -14, sd * 18, -6, '#546e7a', 1.4); } else line(sd * 5.6, -30, sd * 5.6, -12, '#37474f', 2.6); }
+  rr(-5, -116, 10, 106, 1.5, '#fafafa', '#b0bec5', 1);
+  ctx.fillStyle = 'rgba(80,70,60,.35)'; ctx.fillRect(-5, -60, 10, 44); ctx.fillRect(-5, -100, 4, 20);   // soot from flying back!
+  rr(-5, -128, 10, 12, 1, '#212121');                                                         // black interstage
+  for (const sd of [-1, 1]) { ctx.strokeStyle = '#78909c'; ctx.lineWidth = 0.8; ctx.strokeRect(sd > 0 ? 5 : -11, -124, 6, 6); line(sd * 5, -121, sd * 11, -121, '#78909c', 0.6); }   // grid fins
+  ctx.restore();
+  if (k > 0.2 && hgt < 30 && a > 0.5) text('TOUCHDOWN!', 0, -150, 14, '#fff59d');
+}
+// ---------- 🌑 MOON ROCK under glass ----------
+function drawMoonRock(cx, by, s, a) {
+  const k = k01(a), t = frame;
+  ctx.translate(cx, by); ctx.scale(s, s);
+  rr(-60, -110, 120, 110, 8, '#37474f', '#263238', 2); rr(-72, -122, 144, 14, 5, '#455a64');
+  rr(-56, -70, 112, 30, 6, '#ffd54f'); text('APOLLO 11 • 1969', 0, -49, 11, '#4e342e', 'center', false);
+  if (k > 0) glow(0, -160, 120, 'rgba(255,255,230,.9)', k);
+  poly([[-40, -124], [-30, -150], [-6, -162], [22, -156], [40, -136], [36, -124]], '#8d8d8d', '#5f5f5f', 2);
+  for (const [x, y, r] of [[-14, -142, 5], [12, -146, 4], [24, -134, 3], [-26, -132, 3]]) { circle(x, y, r, '#6e6e6e'); circle(x - 1, y - 1, r * 0.5, '#9e9e9e'); }
+  if (k > 0.2) for (let i = 0; i < 5; i++) star(-30 + i * 15, -140 - Math.sin(t * 0.1 + i) * 14, 3, '#fff');
+  ctx.fillStyle = 'rgba(200,230,255,.18)'; ctx.beginPath(); ctx.moveTo(-62, -122); ctx.lineTo(-62, -170); ctx.arc(0, -170, 62, Math.PI, 0); ctx.lineTo(62, -122); ctx.fill();   // glass dome
+  ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 2; ctx.stroke(); line(-44, -150, -40, -200, 'rgba(255,255,255,.6)', 4);
+}
+// ---------- 👩‍🚀 SPACESUITS (Robo can try them on!) ----------
+const SUITS = [
+  { name: 'Moon Walk Suit', body: '#f5f5f5', trim: '#90a4ae', visor: '#ffca28', stripe: null },
+  { name: 'Orange Launch Suit', body: '#ff7a1a', trim: '#bf360c', visor: '#cfd8dc', stripe: null },
+  { name: 'Spacewalk Suit', body: '#f5f5f5', trim: '#90a4ae', visor: '#ffb300', stripe: '#d32f2f' },
+];
+let suitOn = -1;
+function suitFigure(x, y, sc, S) {                 // a suit on a stand (feet at y)
+  ctx.save(); ctx.translate(x, y); ctx.scale(sc, sc);
+  rr(-36, -4, 72, 6, 3, '#455a64'); rr(-3, -30, 6, 26, 2, '#78909c');
+  rr(-30, -150, 60, 70, 10, S.trim);                                                          // backpack
+  rr(-20, -60, 18, 46, 8, S.body, S.trim, 1.5); rr(2, -60, 18, 46, 8, S.body, S.trim, 1.5);  // legs
+  if (S.stripe) { ctx.fillStyle = S.stripe; ctx.fillRect(-20, -52, 18, 5); ctx.fillRect(2, -52, 18, 5); }
+  rr(-22, -20, 22, 12, 5, '#eceff1', '#78909c', 1.5); rr(0, -20, 22, 12, 5, '#eceff1', '#78909c', 1.5);   // boots
+  rr(-26, -128, 52, 72, 14, S.body, S.trim, 1.5);                                             // body
+  rr(-14, -112, 28, 18, 4, '#cfd8dc', '#78909c', 1); for (let i = 0; i < 3; i++) circle(-7 + i * 7, -103, 2.5, ['#e53935', '#43a047', '#1e88e5'][i]);   // chest controls
+  for (const sd of [-1, 1]) { rr(sd > 0 ? 24 : -38, -124, 14, 54, 7, S.body, S.trim, 1.5); circle(sd * 31, -66, 8, '#eceff1'); }   // arms + gloves
+  circle(0, -150, 26, '#eceff1'); ctx.strokeStyle = S.trim; ctx.lineWidth = 2; ctx.stroke();  // helmet
+  ellipse(0, -148, 19, 15, S.visor); ellipse(-6, -154, 6, 3, 'rgba(255,255,255,.6)', -0.4);
+  ctx.restore();
+}
+function roboSuit(x, y, s, S) {                     // Robo wearing a suit: same Robo, with a suit over him
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s); rr(-17, -36, 34, 30, 6, S.trim); ctx.restore();
+  drawRobo(x, y, { s, pose: 'happy' });
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  rr(-13, -9, 11, 9, 3, '#eceff1', '#78909c', 0.6); rr(2, -9, 11, 9, 3, '#eceff1', '#78909c', 0.6);
+  rr(-15, -23, 30, 16, 6, S.body, S.trim, 0.8); if (S.stripe) { ctx.fillStyle = S.stripe; ctx.fillRect(-15, -12, 30, 2.5); }
+  rr(-5, -20, 10, 6, 1.5, '#cfd8dc'); circle(-2, -17, 1, '#e53935'); circle(2, -17, 1, '#43a047');
+  ctx.fillStyle = 'rgba(200,230,255,.22)'; ctx.beginPath(); ctx.arc(0, -29, 25, 0, 7); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 1.4; ctx.stroke(); ctx.strokeStyle = S.trim; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(0, -29, 25, 0.5, Math.PI - 0.5); ctx.stroke();
+  ellipse(-10, -40, 6, 3, 'rgba(255,255,255,.6)', -0.5);
+  if (S.visor === '#ffca28' || S.visor === '#ffb300') { ctx.fillStyle = 'rgba(255,202,40,.25)'; ctx.beginPath(); ctx.arc(0, -29, 23, Math.PI * 1.05, Math.PI * 1.95); ctx.fill(); }
+  ctx.restore();
+}
+function drawSuits(cx, by, s, a) {
+  ctx.translate(cx, by); ctx.scale(s, s);
+  const close = state === 'close' && EX[showI].id === 'suits';
+  if (!close) { SUITS.forEach((S, i) => suitFigure((i - 1) * 96, 0, 1.15, S)); return; }
+  SUITS.forEach((S, i) => { if (i === suitOn) { glow(-150 + i * 78, -80, 56, 'rgba(255,245,157,.8)'); } suitFigure(-150 + i * 78, -60, 0.72, S); text(i === suitOn ? '✅' : '👆', -150 + i * 78, -32, 14, '#fff', 'center', false); });
+  if (suitOn >= 0) { roboSuit(110, -10, 3.6 + k01(a) * 0.2, SUITS[suitOn]); fit('Robo is wearing the ' + SUITS[suitOn].name + '!', 0, -270, 16, 330, '#fff59d'); }
+  else { drawRobo(110, -10, { s: 3.6 }); text('Tap a suit!', 110, -210, 18, '#fff59d'); }
+}
+// ---------- 🔭 HUBBLE ----------
+function galaxy(x, y, r, t) {
+  glow(x, y, r * 1.3, 'rgba(206,147,216,.6)'); circle(x, y, r * 0.18, '#fff8e1');
+  for (let arm = 0; arm < 2; arm++) for (let i = 0; i < 26; i++) { const q = i / 26, an = arm * Math.PI + q * 4 + t * 0.01; circle(x + Math.cos(an) * q * r, y + Math.sin(an) * q * r * 0.6, 2.4 * (1 - q) + 0.6, i % 3 ? '#e1bee7' : '#fff'); }
+}
+function drawHubble(cx, by, s, a) {
+  const k = k01(a), t = frame;
+  ctx.translate(cx, by); ctx.scale(s, s);
+  rr(-40, -6, 80, 6, 2, '#455a64'); rod(0, -110, 104);
+  ctx.save(); ctx.translate(0, -140); ctx.rotate(-0.12);
+  for (const sd of [-1, 1]) { line(-10, sd * 30, -10, sd * 46, '#90a4ae', 2); rr(-60, sd > 0 ? 46 : -62, 100, 16, 2, '#1a237e', '#5c6bc0', 1); ctx.strokeStyle = 'rgba(144,202,249,.6)'; ctx.lineWidth = 0.6; for (let i = 1; i < 10; i++) { ctx.beginPath(); ctx.moveTo(-60 + i * 10, sd > 0 ? 46 : -62); ctx.lineTo(-60 + i * 10, sd > 0 ? 62 : -46); ctx.stroke(); } }
+  const g = ctx.createLinearGradient(0, -30, 0, 30); g.addColorStop(0, '#eceff1'); g.addColorStop(0.5, '#b0bec5'); g.addColorStop(1, '#78909c');
+  rr(-110, -30, 150, 60, 6, g, '#607d8b', 1.5); rr(40, -26, 50, 52, 4, '#cfd8dc', '#607d8b', 1.5);    // silver foil body
+  ctx.fillStyle = 'rgba(255,255,255,.4)'; for (let i = 0; i < 6; i++) ctx.fillRect(-100 + i * 24, -28, 2, 56);
+  ctx.save(); ctx.translate(90, -26); ctx.rotate(-0.5 - k * 0.6); rr(0, -4, 8, 56, 3, '#eceff1', '#607d8b', 1); ctx.restore();   // aperture door
+  rr(-120, -20, 10, 40, 3, '#90a4ae');
+  ctx.restore();
+  if (k > 0.1) { ctx.save(); ctx.globalAlpha = Math.min(1, k * 2); glow(80, -150, 50, 'rgba(255,255,255,.9)'); rr(-40, -238, 160, 90, 8, '#0b0b2a', '#fff', 3); galaxy(40, -193, 50, t); text('📸 Hubble picture!', 40, -244, 13, '#fff59d'); ctx.restore(); }
+}
+// ---------- 🛰️ INTERNATIONAL SPACE STATION ----------
+function drawISS(cx, by, s, a) {
+  const k = k01(a), t = frame, turn = Math.cos(t * 0.02 * (k > 0 ? 3 : 1));
+  ctx.translate(cx, by); ctx.scale(s, s);
+  for (const x of [-110, 110]) line(x, -140, x * 0.8, -300, 'rgba(120,120,120,.7)', 1);
+  if (k > 0) { ctx.save(); ctx.globalAlpha = k; const eg = ctx.createRadialGradient(0, 40, 20, 0, 60, 120); eg.addColorStop(0, '#64b5f6'); eg.addColorStop(1, '#0d47a1'); ctx.fillStyle = eg; ctx.beginPath(); ctx.arc(0, 60, 110, Math.PI, 0); ctx.fill(); glow(-80 + a * 160, -48, 50, 'rgba(255,224,130,.9)'); ctx.restore(); }
+  ctx.save(); ctx.translate(0, -140);
+  rr(-150, -4, 300, 8, 2, '#b0bec5', '#78909c', 1);                                                 // the long truss
+  ctx.strokeStyle = '#78909c'; ctx.lineWidth = 0.6; for (let x = -146; x < 150; x += 8) { ctx.beginPath(); ctx.moveTo(x, -4); ctx.lineTo(x + 4, 4); ctx.stroke(); }
+  for (const x of [-130, -96, 96, 130]) for (const sd of [-1, 1]) { const w = 13 * Math.abs(turn) + 3; rr(x - w, sd > 0 ? 6 : -70, w * 2, 64, 1, turn > 0 ? '#c77d2e' : '#8d5524', '#5d4037', 0.8);
+    ctx.strokeStyle = 'rgba(0,0,0,.25)'; ctx.lineWidth = 0.6; for (let i = 1; i < 8; i++) { const yy = (sd > 0 ? 6 : -70) + i * 8; ctx.beginPath(); ctx.moveTo(x - w, yy); ctx.lineTo(x + w, yy); ctx.stroke(); } }
+  for (const x of [-50, 50]) rr(x - 14, 8, 28, 30, 1, '#eceff1', '#90a4ae', 0.8);                // white radiators
+  rr(-44, -12, 88, 20, 8, '#f5f5f5', '#90a4ae', 1); rr(-12, -40, 24, 76, 8, '#f5f5f5', '#90a4ae', 1);   // modules
+  rr(-60, -8, 18, 14, 5, '#eceff1', '#90a4ae', 1); rr(42, -8, 22, 14, 5, '#eceff1', '#90a4ae', 1);
+  for (const [x, y] of [[-30, -2], [0, -2], [30, -2], [0, -28], [0, 24]]) circle(x, y, 1.6, '#90caf9');
+  ctx.restore();
+  if (k > 0.3) text('🌅 16 sunrises a day!', 0, 0 - 10, 14, '#fff59d');
+}
+function rod(x, y, h) { rr(x - 2.5, y, 5, h, 2, '#90a4ae', '#546e7a', 1); }
+// ---------- 🤖 MARS ROVER (+ a little helicopter) ----------
+function drawRover(cx, by, s, a) {
+  const k = k01(a), t = frame, dx = k * Math.sin(a * Math.PI * 2) * 40, look = k * Math.sin(t * 0.05) * 0.6;
+  ctx.translate(cx, by); ctx.scale(s, s);
+  ctx.fillStyle = '#c1440e'; ctx.beginPath(); ctx.moveTo(-150, 0); ctx.quadraticCurveTo(-60, -26, 0, -16); ctx.quadraticCurveTo(80, -8, 150, -22); ctx.lineTo(150, 0); ctx.fill();   // red Mars sand
+  for (const [x, y, r] of [[-120, -10, 6], [100, -12, 5], [130, -16, 4]]) circle(x, y, r, '#8d3a12');
+  ctx.save(); ctx.translate(dx, -14);
+  const wr = 13, spin = dx * 0.15;
+  for (const x of [-56, 0, 56]) { circle(x, -wr, wr, '#424242'); circle(x, -wr, wr * 0.55, '#9e9e9e'); ctx.strokeStyle = '#616161'; ctx.lineWidth = 2; for (let i = 0; i < 3; i++) { const an = spin + i * 2.09; ctx.beginPath(); ctx.moveTo(x, -wr); ctx.lineTo(x + Math.cos(an) * wr * 0.9, -wr + Math.sin(an) * wr * 0.9); ctx.stroke(); } }
+  ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(-56, -wr); ctx.lineTo(-28, -40); ctx.lineTo(0, -wr); ctx.moveTo(-28, -40); ctx.lineTo(10, -46); ctx.lineTo(56, -wr); ctx.stroke();   // rocker-bogie legs
+  rr(-60, -72, 120, 30, 4, '#eceff1', '#90a4ae', 1.5); rr(-56, -80, 112, 10, 3, '#cfd8dc', '#90a4ae', 1);   // body + deck
+  rr(-76, -80, 24, 26, 3, '#b0bec5', '#78909c', 1);                                           // power unit at the back
+  ctx.strokeStyle = '#b0bec5'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(60, -56); ctx.lineTo(80, -50); ctx.lineTo(88, -30); ctx.stroke(); rr(82, -32, 14, 10, 2, '#78909c');   // robot arm
+  rr(36, -150, 6, 72, 2, '#cfd8dc', '#90a4ae', 1);                                             // camera mast
+  ctx.save(); ctx.translate(39, -156); ctx.scale(Math.cos(look), 1); rr(-18, -10, 36, 18, 4, '#eceff1', '#78909c', 1.2); circle(8, -1, 4, '#263238'); circle(-6, -1, 4, '#263238'); circle(9, -2, 1.3, '#90caf9'); circle(-5, -2, 1.3, '#90caf9'); ctx.restore();
+  line(-30, -80, -30, -110, '#90a4ae', 2); rr(-40, -116, 20, 6, 3, '#eceff1');               // antenna
+  ctx.restore();
+  // the little helicopter: hovers when the rover drives
+  const hy = -40 - k * 120, hx = -100 + k * 30;
+  ctx.save(); ctx.translate(hx, hy);
+  for (const sd of [-1, 1]) line(sd * 6, 4, sd * 12, 16, '#bdbdbd', 1.5);
+  rr(-8, -6, 16, 12, 3, '#eceff1', '#78909c', 1); line(0, -6, 0, -22, '#78909c', 1.5);
+  for (const y of [-16, -22]) { const w = 30 * Math.abs(Math.cos(t * (k > 0 ? 0.9 : 0.02) + y)); line(-w, y, w, y, '#455a64', 2); }
+  ctx.restore();
+}
+// ---------- 📡 VOYAGER 1 + the Golden Record ----------
+function drawVoyager(cx, by, s, a) {
+  const k = k01(a), t = frame;
+  ctx.translate(cx, by); ctx.scale(s, s);
+  rr(-40, -6, 80, 6, 2, '#455a64'); rod(0, -96, 90);
+  ctx.save(); ctx.translate(0, -120);
+  line(-10, 0, -150, -60, '#b0bec5', 1.2);                                                       // magnetometer boom
+  line(10, 10, 90, 40, '#90a4ae', 3); for (let i = 0; i < 3; i++) rr(60 + i * 12, 26 + i * 5, 10, 16, 2, '#78909c');   // power unit boom
+  line(-14, 10, -80, 40, '#90a4ae', 3); rr(-96, 34, 22, 14, 2, '#cfd8dc', '#78909c', 1); circle(-86, 52, 5, '#5c6bc0');   // science boom + cameras
+  poly([[-26, -4], [26, -4], [32, 10], [26, 24], [-26, 24], [-32, 10]], '#455a64', '#263238', 1.5);   // the 10-sided body
+  ctx.save(); ctx.translate(8, 10); ctx.rotate(k * t * 0.05);
+  const gg = ctx.createRadialGradient(-3, -3, 1, 0, 0, 12); gg.addColorStop(0, '#fff59d'); gg.addColorStop(1, '#c79100');
+  circle(0, 0, 11, gg); ctx.strokeStyle = 'rgba(120,80,0,.5)'; ctx.lineWidth = 0.6; for (const r of [4, 7, 9.5]) { ctx.beginPath(); ctx.arc(0, 0, r, 0, 7); ctx.stroke(); } circle(0, 0, 1.6, '#5d4037');
+  ctx.restore();
+  if (k > 0) glow(8, 10, 40, 'rgba(255,213,79,.8)', k);
+  ctx.fillStyle = '#fafafa'; ctx.beginPath(); ctx.ellipse(0, -14, 60, 16, 0, Math.PI, 0); ctx.fill(); ctx.strokeStyle = '#b0bec5'; ctx.lineWidth = 1.5; ctx.stroke();   // big dish
+  ctx.beginPath(); ctx.moveTo(-60, -14); ctx.lineTo(60, -14); ctx.stroke(); line(0, -14, 0, -44, '#b0bec5', 1.5); circle(0, -46, 3, '#cfd8dc');
+  ctx.restore();
+  if (k > 0.1) for (let i = 0; i < 5; i++) { const q = (a * 3 + i * 0.2) % 1; emoji(['🎵', '🎶', '👋', '🐋', '🎵'][i], -60 + i * 30 + Math.sin(q * 6) * 10, -150 - q * 90, 18); }
+}
+// ---------- 🪐 THE PLANETS WALL ----------
+const PLANETS = [['Mercury', 6, '#a1887f'], ['Venus', 11, '#ffcc80'], ['Earth', 12, '#42a5f5'], ['Mars', 8, '#e64a19'], ['Jupiter', 42, '#d7a86e'], ['Saturn', 35, '#e8c97a'], ['Uranus', 19, '#80deea'], ['Neptune', 18, '#3f51b5']];
+function drawPlanets(cx, by, s, a) {
+  const t = frame, lit = a > 0 ? Math.floor(a * 10) - 1 : 99;
+  ctx.translate(cx, by); ctx.scale(s, s);
+  rr(-330, -232, 660, 226, 12, '#0d1137', '#ffd54f', 4);
+  for (let i = 0; i < 50; i++) circle(-320 + (i * 97) % 640, -225 + (i * 53) % 210, (i % 3) * 0.5 + 0.6, `rgba(255,255,255,${0.4 + 0.4 * Math.sin(t * 0.05 + i)})`);
+  ctx.save(); rrect(-326, -228, 652, 218, 10); ctx.clip();
+  const sg = ctx.createRadialGradient(-330, -118, 10, -330, -118, 90); sg.addColorStop(0, '#fffde7'); sg.addColorStop(0.4, '#ffca28'); sg.addColorStop(1, 'rgba(255,111,0,0)');
+  ctx.fillStyle = sg; ctx.fillRect(-330, -232, 120, 230); circle(-330, -118, 56, '#ffb300');
+  ctx.restore();
+  let x = -250;
+  PLANETS.forEach(([name, r, col], i) => {
+    x += (i ? PLANETS[i - 1][1] : 0) + r + 28;
+    const y = -118, on = i <= lit;
+    if (on) glow(x, y, r + 26, 'rgba(255,255,200,.6)');
+    if (name === 'Saturn') { ctx.strokeStyle = '#c9b37a'; ctx.lineWidth = 5; ctx.beginPath(); ctx.ellipse(x, y, r * 1.7, r * 0.45, -0.25, Math.PI, 0); ctx.stroke(); }
+    const g = ctx.createRadialGradient(x - r * 0.4, y - r * 0.4, 1, x, y, r); g.addColorStop(0, '#fff'); g.addColorStop(0.25, col); g.addColorStop(1, '#1a1a2e'); circle(x, y, r, g);
+    if (name === 'Jupiter') { ctx.save(); ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.clip(); for (const yy of [-16, -6, 4, 14]) { ctx.fillStyle = 'rgba(141,90,50,.35)'; ctx.fillRect(x - r, y + yy, r * 2, 4); } ellipse(x + 10, y + 10, 6, 3.5, 'rgba(191,54,12,.7)'); ctx.restore(); }
+    if (name === 'Earth') { ellipse(x - 3, y - 2, 4, 3, '#66bb6a'); ellipse(x + 4, y + 3, 3, 2, '#66bb6a'); }
+    if (name === 'Saturn') { ctx.strokeStyle = '#e0cc90'; ctx.lineWidth = 5; ctx.beginPath(); ctx.ellipse(x, y, r * 1.7, r * 0.45, -0.25, 0, Math.PI); ctx.stroke(); }
+    text(name, x, y + (i % 2 ? 66 : -54), on ? 20 : 16, on ? '#fff59d' : '#cfd8dc', 'center', false);
+  });
+  text('☀️ THE SUN', -290, -20, 13, '#fff59d', 'center', false);
+  text('Not to scale! Jupiter is really 11 times wider than Earth.', 30, -16, 14, '#b0bec5', 'center', false);
+}
+// ---------- the exhibits (card facts are TRUE) ----------
+const EX = [
+  { id: 'saturn', name: 'Saturn V', icon: '🚀', act: 'LIFT OFF!', tag: 'Rocket Hall  •  the Moon rocket', draw: drawSaturn, closeS: 1.32, closeY: 470, stampS: 0.6,
+    snd: () => { for (let i = 0; i < 4; i++) beep(110 + i * 20, i * 0.2, 0.6, 'sine', 0.3); tune([523, 659, 784], 0.15, 0.4); },
+    facts: ['Saturn V carried astronauts to the Moon.', 'It was 363 feet (111 meters) tall, taller than the Statue of Liberty!', 'It launched 13 times, from 1967 to 1973.', 'Its first stage had 5 giant engines.'] },
+  { id: 'shuttle', name: 'Space Shuttle', icon: '🛸', act: 'LIFT OFF!', tag: 'Rocket Hall  •  the space plane', draw: drawShuttle, closeS: 2.4, closeY: 470,
+    snd: () => { for (let i = 0; i < 3; i++) beep(130 + i * 25, i * 0.2, 0.5, 'sine', 0.3); tune([587, 740, 880], 0.15, 0.4); },
+    facts: ['The first Space Shuttle launched on April 12, 1981.', 'It landed on a runway, like an airplane!', 'The shuttles flew 135 missions. The last one was in 2011.', 'The big orange tank held its fuel.'] },
+  { id: 'booster', name: 'Reusable Booster', icon: '🛬', act: 'FLY + LAND!', tag: 'Rocket Hall  •  a rocket that comes back', draw: drawBooster, closeS: 2.0, closeY: 470,
+    snd: () => { beep(200, 0, 1.2, 'sine', 0.25); tune([392, 523, 659, 784], 0.18, 0.3); },
+    facts: ['Some new rocket boosters fly back and land standing up on legs!', 'In 2015, a rocket booster flew to space and landed upright for the very first time.', 'Little "grid fins" at the top help steer it on the way down.', 'Flying the same booster again and again saves lots of money.'] },
+  { id: 'moonrock', name: 'Moon Rock', icon: '🌑', act: 'SHINE THE LIGHT!', tag: 'Moon Room  •  from Apollo 11', draw: drawMoonRock,
+    snd: () => tune([659, 784, 988, 1319], 0.14, 0.5, 'sine'),
+    facts: ['Apollo 11 landed on the Moon on July 20, 1969.', 'Neil Armstrong was the first person to walk on the Moon. Buzz Aldrin was second.', 'Michael Collins flew around the Moon, waiting to bring them home.', 'Apollo 11 brought back about 47 pounds (21.5 kg) of Moon rocks and dust.'] },
+  { id: 'suits', name: 'Spacesuits', icon: '👨‍🚀', act: () => suitOn < 0 ? 'TRY ONE ON!' : 'TRY THE NEXT ONE!', tag: 'Moon Room  •  Robo tries them on!', draw: drawSuits, closeS: 1.25, closeY: 470, hint: '👆 Tap a suit, and Robo puts it on!',
+    onAct: () => { suitOn = (suitOn + 1) % SUITS.length; }, snd: () => tune([523, 784, 1047], 0.1, 0.25),
+    tap: (x, y) => { const lx = (x - 280) / 1.25; let best = -1; SUITS.forEach((_, i) => { if (Math.abs(lx - (-150 + i * 78)) < 38) best = i; }); if (best >= 0) { suitOn = best; actT = 1; tune([523, 784, 1047], 0.1, 0.25); } },
+    facts: ['A spacesuit is like a tiny spaceship you wear. It gives you air and keeps you warm or cool.', 'Spacewalk suits are white to bounce away the hot sunlight.', 'The helmet visor has a super thin layer of real GOLD to block the bright Sun.', 'Astronauts called the orange launch suit the "pumpkin suit"!'] },
+  { id: 'hubble', name: 'Hubble Telescope', icon: '🔭', act: 'TAKE A PICTURE!', tag: 'Up in Orbit  •  a space camera', draw: drawHubble,
+    snd: () => { beep(1200, 0, 0.06, 'square', 0.15); tune([784, 988, 1175], 0.12, 0.4, 'sine'); },
+    facts: ['Hubble was launched on April 24, 1990, by the Space Shuttle Discovery.', 'It is about as long as a school bus.', 'Astronauts flew up 5 times to fix it and make it better.', 'It is named after Edwin Hubble, a scientist who studied galaxies.'] },
+  { id: 'iss', name: 'Space Station (ISS)', icon: '🛰️', act: 'GO AROUND EARTH!', tag: 'Up in Orbit  •  a home in space', draw: drawISS, noStand: true,
+    snd: () => tune([523, 659, 784, 659, 523, 659, 784, 1047], 0.18, 0.3, 'sine'),
+    facts: ['Astronauts have lived on the Space Station every day since November 2000.', 'It goes all the way around Earth in about 90 minutes.', 'So the crew can see about 16 sunrises every day!', 'With its solar panels, it is about as big as a football field.'] },
+  { id: 'rover', name: 'Mars Rover', icon: '🤖', act: 'DRIVE ON MARS!', tag: 'The Explorers  •  a robot on Mars', draw: drawRover,
+    snd: () => { for (let i = 0; i < 6; i++) beep(300 + (i % 2) * 80, i * 0.15, 0.1, 'triangle', 0.2); },
+    facts: ['Mars rovers are robots that drive on Mars and take pictures.', 'Curiosity landed on Mars on August 6, 2012. Perseverance landed on February 18, 2021.', 'Perseverance brought a little helicopter, Ingenuity. It made the first powered flight on another planet!', 'Mars looks red because its dust has rust in it.'] },
+  { id: 'voyager', name: 'Voyager 1', icon: '📡', act: 'PLAY THE GOLDEN RECORD!', tag: 'The Explorers  •  the farthest spacecraft', draw: drawVoyager, actLen: 300,
+    snd: () => tune([392, 440, 494, 523, 587, 523, 494, 440, 392], 0.3, 0.5, 'sine'),
+    facts: ['Voyager 1 launched on September 5, 1977.', 'It is the farthest human-made object from Earth!', 'In 2012 it became the first spacecraft to reach interstellar space, the space between the stars.', 'It carries a Golden Record with music, greetings, and sounds from Earth.'] },
+  { id: 'planets', name: 'The Planets Wall', icon: '🪐', act: 'NAME THE PLANETS!', tag: 'Grand Hall  •  our Solar System', draw: drawPlanets, noStand: true, hallS: 0.77, closeS: 0.8, closeY: 400, actLen: 420, stampS: 0.5,
+    snd: () => tune([262, 294, 330, 349, 392, 440, 494, 523], 0.47, 0.4, 'sine'),
+    facts: ['There are 8 planets going around our Sun.', 'Jupiter is the biggest. More than 1,300 Earths could fit inside it!', 'Venus is the hottest planet, even though Mercury is closer to the Sun.', 'Saturn\'s rings are made of ice and rock.'] },
+];
+// ---------- halls ----------
+function spaceBack(wall, wall2, trim, floor, starsOn = true) {
+  const g = ctx.createLinearGradient(0, 0, 0, 420); g.addColorStop(0, wall); g.addColorStop(1, wall2); ctx.fillStyle = g; ctx.fillRect(0, 0, W, 420);
+  if (starsOn) for (let i = 0; i < 70; i++) circle((i * 137) % W, 80 + (i * 71) % 320, (i % 3) * 0.6 + 0.6, `rgba(255,255,255,${0.35 + 0.35 * Math.sin(frame * 0.03 + i)})`);
+  for (let i = 0; i <= 4; i++) rr(i * 240 - 8, 82, 16, 330, 3, 'rgba(255,255,255,.1)');
+  ctx.fillStyle = trim; ctx.fillRect(0, 76, W, 6); ctx.fillRect(0, 408, W, 12);
+  ctx.fillStyle = floor; ctx.fillRect(0, 420, W, 62); ctx.fillStyle = 'rgba(255,255,255,.06)'; for (let x = 0; x < W; x += 60) ctx.fillRect(x, 420, 2, 62);
+}
+const HALLS = [
+  { name: '🚀 HALL 1: THE ROCKET HALL', ids: ['saturn', 'shuttle', 'booster'], guide: 'These rockets are drawn the right size next to each other!', trim: '#1e88e5', stand: '#37474f', back: () => spaceBack('#0b1638', '#1c2f66', '#1e88e5', '#263238') },
+  { name: '🌑 HALL 2: THE MOON ROOM', ids: ['moonrock', 'suits'], guide: 'A REAL kind of Moon rock! And I get to try on spacesuits!', trim: '#78909c', stand: '#37474f', back: () => { spaceBack('#1b1b2f', '#3a3a52', '#78909c', '#424242'); circle(860, 150, 40, '#e0e0e0'); circle(848, 140, 8, '#bdbdbd'); circle(872, 162, 6, '#bdbdbd'); } },
+  { name: '🛰️ HALL 3: UP IN ORBIT', ids: ['hubble', 'iss'], guide: 'These two fly around Earth right now, way up high!', trim: '#5e35b1', stand: '#37474f', back: () => spaceBack('#120f3a', '#2c2470', '#5e35b1', '#311b92') },
+  { name: '🔴 HALL 4: THE EXPLORERS', ids: ['rover', 'voyager'], guide: 'One drives on Mars. One is flying out past all the planets!', trim: '#d84315', stand: '#3e2723', back: () => spaceBack('#2a0f0a', '#5d2414', '#d84315', '#3e2723') },
+  { name: '🪐 HALL 5: THE GRAND PLANETS HALL', ids: ['planets'], guide: 'Tap the wall, and I will tell you every planet\'s name!', trim: '#f9a825', stand: '#37474f', back: () => spaceBack('#05081c', '#141a40', '#ffd54f', '#1a237e') },
+  { name: '🎁 THE SPACE GIFT SHOP', ids: [], shop: true, guide: 'Pick any souvenir you like. They are all FREE!', trim: '#00897b', back: () => spaceBack('#e3f2fd', '#bbdefb', '#00897b', '#90a4ae', false) },
+];
+// ---------- 🎁 souvenirs ----------
+const SHOP = [
+  { k: 'rocket', name: 'Toy Rocket', draw: () => { ctx.translate(0, 62); drawSaturn(0, 0, 0.42, 0); } },
+  { k: 'food', name: 'Astronaut Ice Cream', draw: () => { rr(-40, -44, 80, 88, 8, '#cfd8dc', '#90a4ae', 2); rr(-30, -14, 60, 40, 4, '#fff'); rr(-28, -12, 19, 36, 2, '#8d6e63'); rr(-9, -12, 19, 36, 2, '#fffde7'); rr(10, -12, 18, 36, 2, '#f48fb1'); text('SPACE FOOD', 0, -24, 12, '#1565c0', 'center', false); } },
+  { k: 'patch', name: 'Mission Patch', draw: () => { circle(0, 0, 46, '#1a237e'); ctx.strokeStyle = '#ffd54f'; ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(0, 0, 44, 0, 7); ctx.stroke(); circle(18, 14, 14, '#e0e0e0'); for (let i = 0; i < 4; i++) star(-24 + i * 12, -18 + (i % 2) * 8, 4, '#fff'); text('ROBO-1', 0, 32, 11, '#ffd54f', 'center', false); } },
+  { k: 'globe', name: 'Glow Planets', draw: () => { for (const [x, y, r, c] of [[-40, 6, 14, '#42a5f5'], [0, -4, 22, '#d7a86e'], [42, 8, 16, '#e8c97a']]) { glow(x, y, r + 14, 'rgba(255,255,160,.6)'); circle(x, y, r, c); } ctx.strokeStyle = '#c9b37a'; ctx.lineWidth = 3; ctx.beginPath(); ctx.ellipse(42, 8, 26, 7, -0.25, 0, 7); ctx.stroke(); } },
+  { k: 'helmet', name: 'Toy Helmet', draw: () => { circle(0, 0, 44, '#eceff1'); ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 3; ctx.stroke(); ellipse(0, 2, 32, 26, '#ffca28'); ellipse(-10, -8, 9, 5, 'rgba(255,255,255,.6)', -0.4); rr(-30, 34, 60, 12, 4, '#90a4ae'); } },
+  { k: 'card', name: 'Moon Postcard', draw: () => { rr(-70, -46, 140, 92, 6, '#0d1137', '#90a4ae', 2); circle(30, -6, 26, '#e0e0e0'); circle(22, -12, 5, '#bdbdbd'); circle(38, 4, 4, '#bdbdbd'); for (let i = 0; i < 6; i++) circle(-60 + i * 14, -36 + (i % 3) * 22, 1.4, '#fff'); text('Hi from the Moon!', -12, 36, 12, '#fff59d', 'center', false); } },
+];
+// ---------- the museum's look ----------
+const MUSE = {
+  key: 'spaceMuseum', trophyId: 'spaceMuseum', accent: '#3949ab', dark: '#1a237e', master: 'Space Museum Master!',
+  confetti: ['#ffd54f', '#42a5f5', '#fff', '#ef5350', '#ab47bc'],
+  closeBack: () => { const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#05081c'); g.addColorStop(1, '#1b2350'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    for (let i = 0; i < 60; i++) circle((i * 113) % 560, (i * 67) % H, (i % 3) * 0.5 + 0.6, `rgba(255,255,255,${0.4 + 0.3 * Math.sin(frame * 0.04 + i)})`); glow(280, 320, 280, 'rgba(120,160,255,.25)'); },
+  drawTitle: () => {
+    spaceBack('#05081c', '#1b2350', '#1e88e5', '#263238');
+    ctx.save(); drawSaturn(150, 470, 1.25, 0); ctx.restore(); ctx.save(); drawShuttle(820, 470, 2.0, 0); ctx.restore();
+    text('THE SPACE MUSEUM', W / 2, 150, 60, '#fff59d', 'center', '#1a237e');
+    text('💡 Ben\'s idea!', W / 2, 196, 24, '#fff');
+    roboSuit(W / 2, 380, 2.6, SUITS[0]);
+    button(START, '▶ COME IN!', '#43a047', 30);
+    ctx.fillStyle = '#0b1638'; ctx.fillRect(0, 482, W, 58); text('Tap the rockets • help Robo try on spacesuits • collect stamps!', W / 2, 518, 20, '#fff59d', 'center', false);
+  },
+};
+// ---------- the museum engine (same way of walking + tapping as the MacBook Museum) ----------
+let save = { seen: {}, bag: {} };
+try { const s = JSON.parse(localStorage.getItem(MUSE.key) || 'null'); if (s && s.seen) save = Object.assign({ seen: {}, bag: {} }, s); } catch (_) {}
+function writeSave() { try { localStorage.setItem(MUSE.key, JSON.stringify(save)); } catch (_) {} }
+const EI = {}; EX.forEach((e, i) => EI[e.id] = i);
+function drawEx(i, cx, by, s, a = 0) { ctx.save(); try { EX[i].draw(cx, by, s, a); } finally { ctx.restore(); } }
+let state = 'title', hall = 0, tap = null, sel = 0, showI = 0, actT = 0, msg = '', msgT = 0, parts = [], hallT = 0, down = false, shopPop = null;
+const seenCount = () => EX.filter(e => save.seen[e.id]).length;
+const START = { x: 360, y: 410, w: 240, h: 70 };
+const BTN_PREV = { x: 14, y: 488, w: 130, h: 44 }, BTN_NEXT = { x: 816, y: 488, w: 130, h: 44 }, BTN_PASS = { x: 160, y: 488, w: 300, h: 44 }, BTN_SHOP = { x: 476, y: 488, w: 324, h: 44 };
+const BTN_BACK = { x: 14, y: 12, w: 110, h: 42 }, BTN_ACT = { x: 580, y: 412, w: 350, h: 62 };
+const ART = { x: 0, y: 60, w: 560, h: 480 };
+const actLen = e => e.actLen || 180;
+function slotPos(h, k) { const n = HALLS[h].ids.length, sw = W / n; return { x: (k + 0.5) * sw, y: 392, s: Math.min(1.3, (sw - 24) / 300) * (EX[EI[HALLS[h].ids[k]]].hallS || 1), w: sw }; }
+function slotRect(h, k) { const p = slotPos(h, k); return { x: p.x - p.w / 2 + 4, y: 80, w: p.w - 8, h: 395 }; }
+function say(s, t = 170) { msg = s; msgT = t; }
+function confetti(x, y, n = 40) { const cs = MUSE.confetti; for (let i = 0; i < n; i++) parts.push({ x, y, vx: (Math.random() - 0.5) * 9, vy: -Math.random() * 8 - 2, c: cs[i % cs.length], life: 70 + Math.random() * 40 }); }
+function openExhibit(id) {
+  showI = EI[id]; state = 'close'; actT = 0; sfx.whoosh(); const e = EX[showI]; if (e.onOpen) e.onOpen();
+  if (!save.seen[id]) { save.seen[id] = 1; writeSave(); sfx.stamp(); say('📘 NEW STAMP in your Museum Passport!'); confetti(W / 2, 120, 30);
+    if (seenCount() === EX.length && !save.allDone) { save.allDone = 1; writeSave(); trophy(MUSE.trophyId); setTimeout(() => { say('🏆 You saw EVERY exhibit! ' + MUSE.master, 260); confetti(W / 2, 200, 120); sfx.yay(); }, 700); } }
+}
+function goHall(h) { hall = (h + HALLS.length) % HALLS.length; sel = 0; hallT = 0; shopPop = null; sfx.whoosh(); }
+// ---------- input (taps, drags, and arrow keys / Enter / Escape) ----------
+const toXY = e => { const r = C.getBoundingClientRect(); return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height }; };
+C.addEventListener('mousedown', e => { tap = toXY(e); down = true; });
+addEventListener('mouseup', () => { down = false; });
+C.addEventListener('mousemove', e => { if (!down || !(e.buttons & 1)) return; const p = toXY(e); if (state === 'close' && EX[showI].drag && p.x < 560 && p.y > 60) EX[showI].drag(p.x, p.y); });
+const press = {};
+addEventListener('keydown', e => { press[e.key] = true; if (e.key.startsWith('Arrow') || e.key === ' ') e.preventDefault(); });
+function doAct() { const e = EX[showI]; actT = 1; if (e.onAct) e.onAct(); if (e.snd) e.snd(); else sfx.yay(); }
+function update() {
+  frame++; hallT++; if (msgT > 0) msgT--; if (actT > 0) { actT++; if (actT > actLen(EX[showI])) actT = 0; }
+  for (const p of parts) { p.x += p.vx; p.y += p.vy; p.vy += 0.2; p.life--; } parts = parts.filter(p => p.life > 0);
+  if (state === 'close' && EX[showI].tick) EX[showI].tick();
+  if (shopPop) { shopPop.t++; if (shopPop.t > 150) shopPop = null; }
+  const t = tap, k = Object.assign({}, press); tap = null; for (const key in press) delete press[key];
+  const ok = k.Enter || k[' '], esc = k.Escape;
+  if (state === 'title') { if (ok || inBox(t, START)) { state = 'hall'; hallT = 0; sfx.click(); } return; }
+  if (state === 'close') {
+    const e = EX[showI];
+    if (esc || inBox(t, BTN_BACK)) { state = 'hall'; sfx.click(); }
+    else if (ok || inBox(t, BTN_ACT)) doAct();
+    else if (t && t.x < 560 && t.y > 60) { if (e.tap) e.tap(t.x, t.y); else if (e.drag) e.drag(t.x, t.y); else if (!actT) doAct(); }
+    return;
+  }
+  if (state === 'pass') { if (esc || ok || inBox(t, BTN_BACK)) { state = 'hall'; sfx.click(); } return; }
+  const H0 = HALLS[hall];
+  if (k.ArrowRight) { if (!H0.shop && sel < H0.ids.length - 1) sel++; else goHall(hall + 1); }
+  if (k.ArrowLeft) { if (!H0.shop && sel > 0) sel--; else { goHall(hall - 1); sel = Math.max(0, HALLS[hall].ids.length - 1); } }
+  if (ok && !H0.shop && H0.ids[sel]) { openExhibit(H0.ids[sel]); return; }
+  if (ok && H0.shop) { buySouvenir((Object.keys(save.bag).length) % SHOP.length); return; }
+  if (!t) return;
+  if (inBox(t, BTN_PREV)) { goHall(hall - 1); return; }
+  if (inBox(t, BTN_NEXT)) { goHall(hall + 1); return; }
+  if (inBox(t, BTN_PASS)) { state = 'pass'; sfx.click(); return; }
+  if (inBox(t, BTN_SHOP)) { goHall(HALLS.length - 1); return; }
+  if (t.y < 76 && t.x < 110) { say(H0.guide); tune([880, 660, 880], 0.1, 0.1, 'square', 0.15); return; }
+  if (H0.shop) { SHOP.forEach((sv, i) => { if (inBox(t, shopRect(i))) buySouvenir(i); }); return; }
+  H0.ids.forEach((id, i) => { if (inBox(t, slotRect(hall, i))) { sel = i; openExhibit(id); } });
+}
+// ---------- 🎁 gift shop ----------
+const shopRect = i => ({ x: 30 + (i % 3) * 300, y: 90 + Math.floor(i / 3) * 178, w: 280, h: 166 });
+function buySouvenir(i) {
+  const sv = SHOP[i]; if (!sv) return; const r = shopRect(i);
+  const first = !save.bag[sv.k]; save.bag[sv.k] = 1; writeSave(); shopPop = { i, t: 0 };
+  sfx.stamp(); confetti(r.x + r.w / 2, r.y + 60, 24);
+  say(first ? `🎁 You got the ${sv.name}! It's FREE!` : `🎁 You already have the ${sv.name}. Here's another!`);
+  if (Object.keys(save.bag).length === SHOP.length && first) setTimeout(() => { say('🛍️ You got EVERY souvenir! Thanks for visiting!', 240); confetti(W / 2, 140, 90); sfx.yay(); }, 800);
+}
+function drawShop() {
+  SHOP.forEach((sv, i) => {
+    const b = shopRect(i), got = save.bag[sv.k], pop = shopPop && shopPop.i === i ? Math.sin(Math.min(1, shopPop.t / 30) * Math.PI) * 14 : 0;
+    rr(b.x, b.y + 5, b.w, b.h, 18, 'rgba(0,0,0,.18)'); rr(b.x, b.y - pop, b.w, b.h, 18, '#fff', MUSE.accent, 3);
+    ctx.save(); try { ctx.translate(b.x + b.w / 2, b.y + 66 - pop); ctx.scale(0.82, 0.82); sv.draw(0, 0, 1); } finally { ctx.restore(); }
+    fit(sv.name, b.x + b.w / 2, b.y + b.h - 34 - pop, 19, b.w - 16, MUSE.dark, 'center', false);
+    text(got ? '✅ in your bag!' : '👆 tap to take it!', b.x + b.w / 2, b.y + b.h - 12 - pop, 15, got ? '#2e7d32' : '#6d4c41', 'center', false);
+  });
+  const n = Object.keys(save.bag).length;
+  fit(`🛍️ Your bag: ${n}/${SHOP.length}    Every souvenir is FREE!` + (save.allDone ? '   🏆 Museum Master!' : ''), W / 2, 461, 19, 900, MUSE.dark, 'center', false);
+}
+// ---------- drawing ----------
+function drawGuide(x, y, s) { drawRobo(x, y, { s, mouth: msgT > 0, pose: msgT > 0 ? 'happy' : 'idle', wave: msgT > 0 || hallT < 120 }); }
+function drawHeader(H0) {
+  ctx.fillStyle = 'rgba(0,0,0,.28)'; ctx.fillRect(0, 0, W, 76);
+  fit(H0.name, W / 2 + 40, 34, 28, 740, '#fff');
+  fit('🤖 Robo: "' + H0.guide + '"', W / 2 + 40, 62, 16, 760, '#fff59d', 'center', 'rgba(0,0,0,.5)');
+  drawGuide(52, 74, 1.15);
+}
+function drawHall() {
+  const H0 = HALLS[hall];
+  H0.back();
+  drawHeader(H0);
+  if (H0.shop) return drawShop();
+  H0.ids.forEach((id, k) => {
+    const p = slotPos(hall, k), i = EI[id], e = EX[i], seen = save.seen[id];
+    if (k === sel) glow(p.x, 280, 170, 'rgba(255,255,220,.55)');
+    if (!e.noStand) { rr(p.x - Math.min(150, p.w / 2 - 14), 392, Math.min(300, p.w - 28), 16, 5, H0.stand || '#5d4037'); }
+    drawEx(i, p.x, 392, p.s, 0);
+    const pw = Math.min(260, p.w - 16); rr(p.x - pw / 2, 420, pw, 50, 10, H0.trim);
+    fit(e.icon + ' ' + e.name, p.x, 442, 18, pw - 10, '#fff', 'center', false); text(seen ? '✅ visited' : '👆 tap me!', p.x, 462, 14, '#fff', 'center', false);
+  });
+  if (H0.visitors) { ctx.save(); try { H0.visitors(); } finally { ctx.restore(); } }
+}
+function drawBar() {
+  rr(0, 482, W, 58, 0, 'rgba(20,20,35,.92)');
+  button(BTN_PREV, '◀ BACK', '#607d8b', 20); button(BTN_NEXT, 'NEXT ▶', '#607d8b', 20);
+  button(BTN_PASS, `📘 PASSPORT  ${seenCount()}/${EX.length}`, '#5c6bc0', 20); button(BTN_SHOP, '🎁 GIFT SHOP', '#00897b', 22);
+}
+function drawClose() {
+  const e = EX[showI], a = actT > 0 ? actT / actLen(e) : 0;
+  MUSE.closeBack();
+  drawEx(showI, 280, e.closeY || 462, e.closeS || 1.6, a);
+  rr(566, 56, 380, 432, 20, '#fffdf7'); rr(576, 66, 360, 62, 14, MUSE.accent);
+  fit(e.icon + ' ' + e.name, 756, 108, 30, 340, '#fff'); fit('🏷️ ' + e.tag, 756, 154, 16, 350, '#5d4037', 'center', false);
+  let y = 188; for (const f of e.facts) { for (const ln of wrap('• ' + f, 17, 344)) { if (y < 404) text(ln, 584, y, 17, '#263238', 'left', false); y += 22; } y += 5; }
+  button(BTN_ACT, '✨ ' + (typeof e.act === 'function' ? e.act() : e.act), '#43a047', 24);
+  button(BTN_BACK, '⬅ BACK', '#455a64', 18);
+  if (e.hint) fit(e.hint, 280, 530, 17, 540, '#fff');
+  if (msgT > 0) { rr(140, 8, 410, 40, 12, 'rgba(0,0,0,.65)'); fit(msg, 345, 35, 18, 390, '#fff59d'); }
+}
+function drawPass() {
+  ctx.fillStyle = MUSE.dark; ctx.fillRect(0, 0, W, H); rr(40, 60, W - 80, 420, 20, '#fffdf7');
+  text('📘 MY MUSEUM PASSPORT', W / 2, 46, 30, '#fff');
+  const n = EX.length, cols = Math.min(5, Math.ceil(n / 2)), cw = (W - 120) / cols;
+  EX.forEach((e, i) => { const x = 60 + cw * (i % cols + 0.5), y = 150 + Math.floor(i / cols) * 190, seen = save.seen[e.id];
+    ctx.strokeStyle = seen ? '#c62828' : '#bdbdbd'; ctx.lineWidth = 4; ctx.setLineDash(seen ? [] : [8, 6]); ctx.beginPath(); ctx.arc(x, y, 62, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+    if (seen) { ctx.save(); ctx.beginPath(); ctx.arc(x, y, 60, 0, 7); ctx.clip(); drawEx(i, x, y + 44, 0.36 * (e.stampS || 1), 0); ctx.restore(); } else text('?', x, y + 12, 34, '#bdbdbd', 'center', false);
+    const ln = wrap(e.name, 15, cw - 10).slice(0, 2); ln.forEach((l, j) => fit(l, x, y + 86 + j * 17, 15, cw - 8, '#263238', 'center', false)); });
+  if (save.allDone) fit('🏆 ' + MUSE.master + ' You saw them all!', W / 2, 474, 18, 800, '#c62828', 'center', false);
+  button(BTN_BACK, '⬅ BACK', '#455a64', 18);
+}
+function draw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
+  if (state === 'title') MUSE.drawTitle();
+  else if (state === 'close') drawClose();
+  else if (state === 'pass') drawPass();
+  else { drawHall(); drawBar(); if (msgT > 0) { rr(W / 2 - 300, 84, 600, 40, 12, 'rgba(0,0,0,.65)'); fit(msg, W / 2, 111, 19, 580, '#fff59d'); } }
+  for (const p of parts) { ctx.globalAlpha = Math.min(1, p.life / 20); ctx.fillStyle = p.c; ctx.fillRect(p.x - 4, p.y - 4, 8, 8); }
+  ctx.globalAlpha = 1;
+}
+let last = performance.now(), acc = 0;
+function loop(now) { acc += Math.min(100, now - last); last = now; while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; } draw(); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+</script>

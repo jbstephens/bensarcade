@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>The Toy Museum</title>
+<script src="touchpad.js?v=10"></script>
+<style>
+  html, body { height: 100%; }
+  body { margin: 0; background: #141b24; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  canvas { width: min(100vw, calc(100vh * 960 / 540)); height: auto; display: block; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
+  #printBox { position: fixed; inset: 0; overflow: auto; -webkit-overflow-scrolling: touch; background: #e8f1fb; z-index: 99999; text-align: center; padding: 12px 12px 40px; box-sizing: border-box; font-family: "Trebuchet MS", Arial, sans-serif; }
+  #printBox .pbBar { position: sticky; top: 0; display: flex; gap: 14px; justify-content: center; padding: 8px; background: #e8f1fb; z-index: 2; }
+  #printBox button { font: bold 26px "Trebuchet MS", Arial, sans-serif; border: 0; border-radius: 16px; padding: 14px 30px; color: #fff; cursor: pointer; box-shadow: 0 5px 0 rgba(0,0,0,.25); }
+  #printBox .pbPrint { background: #43a047; } #printBox .pbBack { background: #455a64; }
+  #printBox .pbTip { font-size: 20px; color: #1a4f8f; margin: 6px 0 4px; }
+  #printBox .pbPage { display: block; width: min(94vw, 720px); margin: 16px auto; background: #fff; box-shadow: 0 6px 20px rgba(0,0,0,.25); border-radius: 6px; }
+  @media print {
+    @page { size: letter portrait; margin: 0.3in; }
+    html, body { display: block !important; height: auto !important; overflow: visible !important; background: #fff !important; }
+    body > *:not(#printBox) { display: none !important; }
+    #printBox { position: static; overflow: visible; background: #fff; padding: 0; }
+    #printBox .pbBar, #printBox .pbTip { display: none !important; }
+    #printBox .pbPage { width: 100%; margin: 0; box-shadow: none; border-radius: 0; break-after: page; page-break-after: always; }
+    #printBox .pbPage:last-child { break-after: auto; page-break-after: auto; }
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+<canvas id="game" width="960" height="540"></canvas>
+<script>
+// 🧸 THE TOY MUSEUM — Ben's idea! Toys from long ago up to today, with REAL facts. Robo is the guide. Tap 🌙 NIGHT and the toys come alive!
+const C = document.getElementById('game');
+let ctx = C.getContext('2d');
+const W = 960, H = 540;
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+let frame = 0;
+
+// ---------- drawing helpers ----------
+function rr(x, y, w, h, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(x, y, Math.max(0, w), Math.max(0, h), r); else ctx.rect(x, y, w, h); ctx.fill(); }
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, 7); ctx.fill(); }
+function tri(a, b, c, d, e, f, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.lineTo(e, f); ctx.closePath(); ctx.fill(); }
+function text(str, x, y, size, color = '#fff', align = 'center', outline = true) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; ctx.textAlign = align; ctx.lineJoin = 'round';
+  if (outline) { ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = Math.max(3, size / 6); ctx.strokeText(str, x, y); }
+  ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function fit(str, x, y, size, maxW, color, align, outline) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; const w = ctx.measureText(str).width || 0;
+  text(str, x, y, w > maxW ? Math.max(9, Math.floor(size * maxW / w)) : size, color, align, outline);
+}
+function emoji(e, x, y, size) { ctx.font = `${size}px Arial`; ctx.textAlign = 'center'; ctx.fillStyle = '#000'; ctx.fillText(e, x, y); }
+function star(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, q = i % 2 ? r * 0.45 : r; ctx.lineTo(x + Math.cos(a) * q, y + Math.sin(a) * q); } ctx.closePath(); ctx.fill(); }
+function wrap(str, size, maxW) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; const out = []; let line = '';
+  for (const wd of String(str).split(' ')) { const t = line ? line + ' ' + wd : wd; if (line && ctx.measureText(t).width > maxW) { out.push(line); line = wd; } else line = t; }
+  if (line) out.push(line); return out;
+}
+function button(b, label, fill, size = 22) {
+  rr(b.x, b.y + 4, b.w, b.h, 14, 'rgba(0,0,0,.35)'); rr(b.x, b.y, b.w, b.h, 14, fill);
+  fit(label, b.x + b.w / 2, b.y + b.h / 2 + size * 0.36, size, b.w - 12);
+}
+const inBox = (t, b) => t && t.x >= b.x && t.x <= b.x + b.w && t.y >= b.y && t.y <= b.y + b.h;
+const DARK = '#263238', GOLD = '#ffc94d', CREAM = '#fffaf0';
+let PRINTING = false;
+function sparkle(cx, cy, r, col, rot = 0, lw) {               // a twinkle: 8 rounded rays
+  ctx.save(); ctx.strokeStyle = col; ctx.lineCap = 'round'; ctx.lineWidth = lw || Math.max(1.5, r * 0.28); ctx.beginPath();
+  for (let i = 0; i < 8; i++) { const a = rot + i * Math.PI / 4, q = i % 2 ? 0.7 : 1; ctx.moveTo(cx + Math.cos(a) * r * 0.25, cy + Math.sin(a) * r * 0.25); ctx.lineTo(cx + Math.cos(a) * r * q, cy + Math.sin(a) * r * q); }
+  ctx.stroke(); ctx.restore();
+}
+function eyes(cx, cy, s, gap = 12, size = 6, col = DARK) {
+  const bl = !PRINTING && frame % 220 < 6 ? 0.15 : 1;
+  for (const d of [-1, 1]) { ctx.fillStyle = col; ctx.beginPath(); ctx.ellipse(cx + d * gap * s, cy, size * s * 0.8, size * s * bl, 0, 0, 7); ctx.fill(); }
+}
+function smile(cx, cy, s, w = 7, col = DARK, open = 0) {
+  ctx.strokeStyle = col; ctx.lineWidth = 2.4 * s; ctx.lineCap = 'round'; ctx.beginPath(); ctx.arc(cx, cy, w * s, 0.2, Math.PI - 0.2); ctx.stroke(); ctx.lineCap = 'butt';
+  if (open > 0) { ctx.fillStyle = '#c62828'; ctx.beginPath(); ctx.ellipse(cx, cy + w * 0.6 * s, w * 0.8 * s, w * 0.7 * open * s, 0, 0, 7); ctx.fill(); }
+}
+function screenFace(x, y, w, h, s, col = '#fff', open = 0) { eyes(x + w / 2, y + h * 0.42, s, 14, 6, col); smile(x + w / 2, y + h * 0.55, s, 9, col, open); }
+function rrect(x, y, w, h, r) {
+  ctx.beginPath();
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function roundRect(x, y, w, h, r, fill) { ctx.fillStyle = fill; rrect(x, y, Math.max(0, w), Math.max(0, h), r); ctx.fill(); }
+function ellipse(x, y, rx, ry, fill, rot = 0) { ctx.fillStyle = fill; ctx.beginPath(); ctx.ellipse(x, y, Math.max(0, rx), Math.max(0, ry), rot, 0, 7); ctx.fill(); }
+function glow(x, y, r, col, a = 1) {                  // soft round light (radial gradient, no ctx.filter)
+  r = Math.max(1, r);
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.save(); ctx.globalAlpha = clamp(a, 0, 1); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); ctx.restore();
+}
+// 🤖 ROBO, the museum guide (draw code copied from robomovie.html so he looks exactly like his games)
+const ROBO = { head: '#ffffff', body: '#f5f7ff', visor: '#111827', eye: '#40c4ff', legs: '#3d5afe', pod: '#2979ff', edge: '#9fa8da' };
+// o = { s, face, t, pose (idle/off/walk/run/wobble/jump/happy/fall/sit/wave), eyes 0..1, mouth, parts (bitmask: 1 body+legs, 2 head+visor, 4 ear pods, 8 antenna), dizzy }
+function drawRobo(x, y, o = {}) {
+  const s = o.s || 2.6, f = o.face || 1, t = o.t || frame, pose = o.pose || 'idle', parts = o.parts === undefined ? 15 : o.parts;
+  const eyes = o.eyes === undefined ? 1 : o.eyes;
+  let tilt = o.tilt || 0, bob = 0, lA = 0, lB = 0, sq = 1;
+  if (pose === 'walk' || pose === 'run') { const k = t * (pose === 'run' ? 0.5 : 0.3); lA = Math.max(0, Math.sin(k)) * 4; lB = Math.max(0, -Math.sin(k)) * 4; bob = -Math.abs(Math.sin(k)) * 1.5; }
+  else if (pose === 'wobble') { const k = t * 0.16; tilt += Math.sin(k) * 0.22; lA = Math.max(0, Math.sin(k)) * 5; lB = Math.max(0, -Math.sin(k)) * 5; }
+  else if (pose === 'jump') { lA = lB = 4; sq = 1.06; }
+  else if (pose === 'happy') { bob = -Math.abs(Math.sin(t * 0.25)) * 4; tilt += Math.sin(t * 0.25) * 0.08; }
+  else if (pose === 'fall') { tilt += -0.5; bob = 3; }
+  else if (pose === 'sit') { lA = lB = 3; bob = 3; }
+  else if (pose !== 'off') bob = Math.sin(t * 0.06) * 0.6;
+  ctx.save(); ctx.translate(x, y); ctx.rotate(tilt * f); ctx.scale(s * f, s * sq); ctx.translate(0, bob);
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  if (parts & 1) {
+    ctx.fillStyle = ROBO.legs; ctx.fillRect(-11, -7 - lA, 8, 7); ctx.fillRect(3, -7 - lB, 8, 7);
+    roundRect(-13, -21, 26, 17, 6, ROBO.body);
+    ctx.strokeStyle = ROBO.edge; ctx.lineWidth = 0.8; rrect(-13, -21, 26, 17, 6); ctx.stroke();
+    circle(0, -12, 3, ROBO.pod); circle(-0.8, -12.8, 1, 'rgba(255,255,255,.7)');
+  }
+  if (parts & 8) {                                     // 📡 the little antenna (wiggles when he moves)
+    const tip = Math.sin(t * 0.12) * (pose === 'idle' || pose === 'off' ? 0.6 : 2);
+    ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 1.4; ctx.beginPath(); ctx.moveTo(0, -40); ctx.quadraticCurveTo(tip * 0.4, -45, tip, -49); ctx.stroke();
+    const lit = pose === 'off' ? 0.25 : 0.6 + (o.mouth ? 0.4 * Math.abs(Math.sin(t * 0.4)) : 0);
+    if (pose !== 'off') glow(tip, -50, 7, 'rgba(64,196,255,.8)', lit);
+    circle(tip, -50, 2.6, ROBO.pod); circle(tip - 0.8, -50.8, 0.8, 'rgba(255,255,255,.8)');
+  }
+  if (parts & 4) { roundRect(-20, -31, 6, 9, 3, ROBO.pod); roundRect(14, -31, 6, 9, 3, ROBO.pod); }
+  if (parts & 2) {
+    roundRect(-17, -40, 34, 22, 12, ROBO.head);
+    ctx.strokeStyle = ROBO.edge; ctx.lineWidth = 0.8; rrect(-17, -40, 34, 22, 12); ctx.stroke();
+    roundRect(-13, -36, 26, 13, 9, ROBO.visor);
+    ellipse(-7, -34, 4, 1.2, 'rgba(255,255,255,.18)', -0.2);
+    if (eyes > 0.01) {
+      ctx.save(); ctx.globalAlpha *= clamp(eyes, 0, 1);
+      glow(3, -29.5, 16, 'rgba(64,196,255,.45)', eyes);
+      const ey = -29.5;
+      if (o.dizzy) {                                   // 💫 swirly dizzy eyes
+        ctx.strokeStyle = ROBO.eye; ctx.lineWidth = 1.1;
+        for (const ex of [-3, 9]) { ctx.beginPath(); for (let a = 0; a < 12; a += 0.4) ctx.lineTo(ex + Math.cos(a + t * 0.2) * a * 0.3, ey + Math.sin(a + t * 0.2) * a * 0.3); ctx.stroke(); }
+      } else if (pose === 'happy' || o.happy) {        // ^ ^ happy eyes
+        ctx.strokeStyle = ROBO.eye; ctx.lineWidth = 1.8;
+        for (const ex of [-3, 9]) { ctx.beginPath(); ctx.arc(ex, ey + 2, 3.2, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+      } else {
+        const blink = (t % 200) < 6 ? 0.6 : 5, talk = o.mouth ? 0.85 + 0.15 * Math.sin(t * 0.6) : 1;
+        ctx.fillStyle = ROBO.eye; ctx.beginPath();
+        ctx.ellipse(-3, ey, 3.5, Math.max(0.5, blink * talk), 0, 0, 7); ctx.ellipse(9, ey, 3.5, Math.max(0.5, blink * talk), 0, 0, 7); ctx.fill();
+        if (blink > 1) { circle(-2, ey - 2, 1, 'rgba(255,255,255,.85)'); circle(10, ey - 2, 1, 'rgba(255,255,255,.85)'); }
+      }
+      if (o.mouth) { ctx.strokeStyle = ROBO.eye; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(1, -25); ctx.lineTo(1 + 2 + Math.abs(Math.sin(t * 0.5)) * 3, -25); ctx.stroke(); }
+      ctx.restore();
+    }
+  }
+  if (o.wave) {                                        // 👋 a little waving hand
+    const a = Math.sin(t * 0.3) * 0.5;
+    ctx.save(); ctx.translate(13, -16); ctx.rotate(-1.2 + a); roundRect(-2, -14, 4, 14, 2, ROBO.pod); circle(0, -15, 3.4, ROBO.head); ctx.restore();
+  }
+  ctx.restore();
+  if (o.dizzy) for (let i = 0; i < 3; i++) { const a = t * 0.08 + i * 2.1; star(x + Math.cos(a) * 22 * s / 2.6, y - 118 * s / 2.6 + Math.sin(a) * 6, 7, '#ffd54f', a); }
+}
+// ---------- sounds (soft! everything goes through one quiet master volume) ----------
+let AC = null, MASTER = null;
+function audio() {
+  if (!AC) { AC = new (window.AudioContext || window.webkitAudioContext)(); MASTER = AC.createGain(); MASTER.gain.value = 0.15; MASTER.connect(AC.destination); }
+  return AC;
+}
+function beep(f, t = 0, d = 0.12, type = 'triangle', v = 0.35) {
+  try { audio(); const o = AC.createOscillator(), g = AC.createGain(), n = AC.currentTime + t;
+    o.type = type; o.frequency.value = f; g.gain.setValueAtTime(0.0001, n); g.gain.linearRampToValueAtTime(Math.min(0.5, v), n + 0.015); g.gain.exponentialRampToValueAtTime(0.001, n + d);
+    o.connect(g); g.connect(MASTER); o.start(n); o.stop(n + d + 0.03); } catch (_) {}
+}
+function glide(f1, f2, t = 0, d = 0.6, v = 0.3, type = 'sine') {   // a sliding note (whale songs, slinky boings)
+  try { audio(); const o = AC.createOscillator(), g = AC.createGain(), n = AC.currentTime + t;
+    o.type = type; o.frequency.setValueAtTime(f1, n); o.frequency.exponentialRampToValueAtTime(f2, n + d); g.gain.setValueAtTime(0.0001, n); g.gain.linearRampToValueAtTime(v, n + 0.08); g.gain.exponentialRampToValueAtTime(0.001, n + d);
+    o.connect(g); g.connect(MASTER); o.start(n); o.stop(n + d + 0.03); } catch (_) {}
+}
+const sfx = { click: () => beep(660, 0, 0.07, 'triangle', 0.3),
+  stamp: () => { beep(180, 0, 0.12, 'sine', 0.4); [784, 988, 1175].forEach((f, i) => beep(f, 0.1 + i * 0.07, 0.15, 'triangle', 0.35)); },
+  whoosh: () => glide(260, 420, 0, 0.25, 0.25),
+  act: k => { const fn = (typeof ACT_SOUNDS !== 'undefined' && ACT_SOUNDS[k]); if (fn) fn(); else [523, 659, 784].forEach((f, i) => beep(f, i * 0.1, 0.15)); } };
+// ---------- 🧸 THE TOY MUSEUM ----------
+const OR = '#ef6c00', OR2 = '#ffb74d', OR3 = '#7a3a00';
+const PAST = ['#fff3e0', '#fce4ec', '#e3f2fd', '#e8f5e9', '#fffde7', '#f3e5f5', '#e0f7fa', '#fbe9e7', '#ede7f6', '#f1f8e9', '#fff8e1'];
+const MUSEUM = { name: 'The Toy Museum', title: 'THE TOY MUSEUM', saveKey: 'toyMuseum', trophyId: 'toyMuseum',
+  doneMsg: '🏆 You saw EVERY toy! Toy Museum Master!', tagline: 'Tap the toys • collect stamps • try 🌙 NIGHT MODE!',
+  titleBg: ['#fff3e0', '#ffcc80'], roof: '#c62828', roof2: '#8e0000', closeBg: '#2a1a3a', closeGlow: 'rgba(255,224,178,.45)', pickBg: '#ffe0b2',
+  posterBg: ['#fff3e0', '#ffb74d'], titleIds: ['teddy', 'top', 'cube', 'train', 'tinbot'] };
+let NIGHT = 0, nightOn = false;                               // 🌙 0 = lights on, 1 = lights low (the toys are awake!)
+const awake = () => PRINTING ? 0 : NIGHT;
+function toyFace(x, y, s, a = awake(), col = DARK) {          // at night, toys open their eyes and smile
+  if (a < 0.05) return;
+  ctx.save(); ctx.globalAlpha *= clamp(a, 0, 1); circle(x - 9 * s, y, 4 * s, col); circle(x + 9 * s, y, 4 * s, col);
+  circle(x - 8 * s, y - 1.5 * s, 1.4 * s, '#fff'); circle(x + 10 * s, y - 1.5 * s, 1.4 * s, '#fff');
+  ctx.strokeStyle = col; ctx.lineWidth = 2.2 * s; ctx.lineCap = 'round'; ctx.beginPath(); ctx.arc(x, y + 4 * s, 6 * s, 0.25, Math.PI - 0.25); ctx.stroke();
+  circle(x - 15 * s, y + 6 * s, 3 * s, 'rgba(255,128,171,.6)'); circle(x + 15 * s, y + 6 * s, 3 * s, 'rgba(255,128,171,.6)'); ctx.restore();
+}
+function shadow(cx, cy, s, w = 60) { ellipse(cx, cy, w * s, 8 * s, 'rgba(0,0,0,.16)'); }
+function brick(x, y, w, h, col, studs, s) {                  // a plain snap-together toy brick (no logos!)
+  const sw = w / studs;
+  for (let i = 0; i < studs; i++) { rr(x + i * sw + sw * 0.2, y - 6 * s, sw * 0.6, 8 * s, 3 * s, col); rr(x + i * sw + sw * 0.28, y - 5 * s, sw * 0.18, 3 * s, 1.5 * s, 'rgba(255,255,255,.45)'); }
+  rr(x, y, w, h, 3 * s, col); ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.fillRect(x, y + h - 4 * s, w, 4 * s); ctx.fillStyle = 'rgba(255,255,255,.25)'; ctx.fillRect(x + 2 * s, y + 2 * s, w - 4 * s, 3 * s);
+}
+function heart(x, y, r, col) { ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(x, y + r * 0.9); ctx.bezierCurveTo(x - r * 1.6, y - r * 0.2, x - r * 0.6, y - r * 1.3, x, y - r * 0.4); ctx.bezierCurveTo(x + r * 0.6, y - r * 1.3, x + r * 1.6, y - r * 0.2, x, y + r * 0.9); ctx.fill(); }
+function wheel(x, y, r, col, rot) { circle(x, y, r, col); circle(x, y, r * 0.55, 'rgba(0,0,0,.2)'); ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = r * 0.18; ctx.beginPath(); for (let i = 0; i < 3; i++) { const an = rot + i * 2.09; ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(an) * r * 0.8, y + Math.sin(an) * r * 0.8); } ctx.stroke(); circle(x, y, r * 0.2, '#fff8e1'); }
+// each: [id, name, emoji, action button, where it comes from, fun facts (only TRUE ones!), draw(cx, cy, s, a)]  (a = 0..1 while it does its thing)
+const CHARS = [
+  ['top', 'Spinning Top', '🌀', 'SPIN IT!', 'Ancient Greece, Rome and China', ['Spinning tops are one of the oldest toys in the whole world!', 'Kids in ancient Greece, Rome and China played with tops.', 'A top stands up only while it spins. When it slows down, it wobbles and falls over!'],
+    (cx, cy, s, a) => { const sp = frame * 0.12 + (a > 0 ? a * a * 70 : 0), wob = a > 0.8 ? Math.sin(a * 60) * (a - 0.8) * 2 : Math.sin(frame * 0.07) * 0.03;
+      shadow(cx, cy + 54 * s, s, 34); ctx.save(); ctx.translate(cx, cy + 52 * s); ctx.rotate(wob);
+      const body = () => { ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(-24 * s, -22 * s, -64 * s, -58 * s); ctx.quadraticCurveTo(-60 * s, -88 * s, 0, -90 * s); ctx.quadraticCurveTo(60 * s, -88 * s, 64 * s, -58 * s); ctx.quadraticCurveTo(24 * s, -22 * s, 0, 0); ctx.closePath(); };
+      body(); ctx.fillStyle = '#fdd835'; ctx.fill(); ctx.save(); body(); ctx.clip();
+      const cols = ['#e53935', '#1e88e5', '#43a047', '#8e24aa'];
+      for (let i = 0; i < 12; i++) { const th = i * Math.PI / 6 + sp, x = Math.sin(th) * 64 * s; if (Math.cos(th) < 0) continue; ctx.fillStyle = cols[i % 4]; ctx.fillRect(x - Math.cos(th) * 7 * s, -95 * s, Math.cos(th) * 14 * s, 100 * s); }
+      const g = ctx.createLinearGradient(-64 * s, 0, 64 * s, 0); g.addColorStop(0, 'rgba(0,0,0,.25)'); g.addColorStop(0.35, 'rgba(255,255,255,.25)'); g.addColorStop(1, 'rgba(0,0,0,.3)'); ctx.fillStyle = g; ctx.fillRect(-70 * s, -100 * s, 140 * s, 110 * s);
+      ctx.restore(); ellipse(0, -72 * s, 52 * s, 13 * s, 'rgba(255,255,255,.35)');
+      rr(-6 * s, -112 * s, 12 * s, 26 * s, 5 * s, '#8d6e63'); circle(0, -112 * s, 8 * s, '#a1887f');
+      toyFace(0, -50 * s, s); ctx.restore();
+      if (a > 0 && a < 0.8) for (let i = 0; i < 3; i++) { ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 3 * s; ctx.beginPath(); ctx.arc(cx, cy - 10 * s, (74 + i * 12) * s, sp + i, sp + i + 0.8); ctx.stroke(); } }],
+  ['yoyo', 'Yo-Yo', '🪀', 'YO-YO!', 'Ancient Greece, over 2,000 years ago', ['The yo-yo is super old! Kids in ancient Greece played with them over 2,000 years ago.', 'Old yo-yos were made of wood, metal or painted clay.', 'In 1985, a yo-yo even flew into space on the Space Shuttle!'],
+    (cx, cy, s, a) => { const y0 = a > 0 ? cy - 70 * s + Math.abs(Math.sin(a * Math.PI * 3)) * 70 * s : cy + Math.sin(frame * 0.05) * 3 * s, rot = frame * 0.1 + (a > 0 ? a * 40 : 0);
+      shadow(cx, cy + 54 * s, s, 30);
+      ctx.strokeStyle = '#5d4037'; ctx.lineWidth = 2 * s; ctx.beginPath(); ctx.moveTo(cx, cy - 104 * s); ctx.lineTo(cx, y0); ctx.stroke();
+      ctx.strokeStyle = '#5d4037'; ctx.lineWidth = 3 * s; ctx.beginPath(); ctx.arc(cx, cy - 110 * s, 6 * s, 0, 7); ctx.stroke();
+      circle(cx, y0, 40 * s, '#b71c1c'); circle(cx, y0, 36 * s, '#e53935'); circle(cx, y0, 26 * s, '#c62828');
+      for (let i = 0; i < 5; i++) { const an = rot + i * 1.2566; circle(cx + Math.cos(an) * 31 * s, y0 + Math.sin(an) * 31 * s, 3.5 * s, '#ffeb3b'); }
+      circle(cx, y0, 9 * s, '#fdd835'); ellipse(cx - 14 * s, y0 - 20 * s, 10 * s, 5 * s, 'rgba(255,255,255,.35)', -0.6);
+      toyFace(cx, y0 + 2 * s, s * 0.8, awake(), '#fff'); }],
+  ['train', 'Wooden Train', '🚂', 'CHOO CHOO!', 'Toy shops in the 1800s', ['Toy trains came out not long after real steam trains, in the 1800s.', 'Early toy trains were made of wood, tin or iron.', 'Many wooden train tracks snap together like puzzle pieces!'],
+    (cx, cy, s, a) => { const dx = a > 0 ? Math.sin(a * Math.PI * 2) * 30 * s : 0, rot = (dx / (12 * s)) + frame * 0.01;
+      rr(cx - 88 * s, cy + 44 * s, 176 * s, 10 * s, 3 * s, '#d7b98e'); ctx.fillStyle = 'rgba(0,0,0,.12)'; ctx.fillRect(cx - 80 * s, cy + 46 * s, 160 * s, 2 * s);
+      ctx.save(); ctx.translate(dx, 0);
+      rr(cx + 20 * s, cy - 4 * s, 62 * s, 32 * s, 4 * s, '#43a047'); ['#fdd835', '#e53935', '#1e88e5'].forEach((c, i) => rr(cx + 26 * s + i * 18 * s, cy - 20 * s, 15 * s, 15 * s, 2 * s, c));
+      rr(cx + 6 * s, cy + 12 * s, 16 * s, 5 * s, 2 * s, '#795548');
+      rr(cx - 82 * s, cy - 44 * s, 42 * s, 72 * s, 5 * s, '#e53935'); rr(cx - 88 * s, cy - 52 * s, 54 * s, 12 * s, 4 * s, '#b71c1c'); rr(cx - 74 * s, cy - 34 * s, 26 * s, 22 * s, 4 * s, '#fff8e1');
+      rr(cx - 42 * s, cy - 14 * s, 52 * s, 42 * s, 8 * s, '#1e88e5'); rr(cx - 6 * s, cy - 40 * s, 14 * s, 28 * s, 3 * s, '#fdd835'); rr(cx - 10 * s, cy - 46 * s, 22 * s, 8 * s, 3 * s, '#f9a825');
+      circle(cx + 8 * s, cy + 6 * s, 9 * s, '#fdd835');
+      for (const wx of [-70, -46, -14]) wheel(cx + wx * s, cy + 32 * s, 12 * s, '#fdd835', rot);
+      for (const wx of [36, 66]) wheel(cx + wx * s, cy + 32 * s, 10 * s, '#ff7043', rot);
+      ctx.strokeStyle = 'rgba(0,0,0,.08)'; ctx.lineWidth = 1.5 * s; for (let i = 0; i < 4; i++) { ctx.beginPath(); ctx.moveTo(cx - 80 * s, cy - 20 * s + i * 12 * s); ctx.lineTo(cx - 42 * s, cy - 18 * s + i * 12 * s); ctx.stroke(); }
+      toyFace(cx - 16 * s, cy + 4 * s, s * 0.8, awake(), '#fff');
+      if (a > 0) for (let i = 0; i < 4; i++) { const t = (a * 3 + i * 0.25) % 1; circle(cx + 1 * s - t * 40 * s, cy - 54 * s - t * 50 * s, (8 + t * 10) * s, `rgba(255,255,255,${0.8 - t * 0.7})`); }
+      ctx.restore(); if (a > 0.2 && a < 0.8) text('CHOO CHOO!', cx, cy - 92 * s, 22 * s, '#fff'); }],
+  ['teddy', 'Teddy Bear', '🧸', 'BIG HUG!', 'Around 1902 and 1903', ['Teddy bears are named after a President: Theodore "Teddy" Roosevelt!', 'In 1902, on a hunting trip, he would not shoot a bear. A newspaper cartoon told the story.', 'Soon after, toy makers sewed stuffed bears, and people called them "Teddy\'s bears."'],
+    (cx, cy, s, a) => { const sq = a > 0 ? 1 + Math.sin(a * Math.PI * 4) * 0.04 : 1, wv = a > 0 || awake() > 0.3 ? Math.sin(frame * 0.2) * 0.4 : 0;
+      const FUR = '#a1663a', LITE = '#dcae7e', DK = '#6d3f1f';
+      shadow(cx, cy + 54 * s, s, 56); ctx.save(); ctx.translate(cx, cy + 50 * s); ctx.scale(1, sq); ctx.translate(-cx, -cy - 50 * s);
+      for (const d of [-1, 1]) { ellipse(cx + d * 32 * s, cy + 40 * s, 22 * s, 15 * s, FUR); ellipse(cx + d * 40 * s, cy + 40 * s, 10 * s, 11 * s, LITE); }
+      ellipse(cx, cy + 6 * s, 46 * s, 46 * s, FUR); ellipse(cx, cy + 14 * s, 28 * s, 30 * s, LITE);
+      ctx.save(); ctx.translate(cx - 38 * s, cy - 8 * s); ctx.rotate(0.5); ellipse(0, 18 * s, 13 * s, 24 * s, FUR); ellipse(0, 34 * s, 9 * s, 8 * s, LITE); ctx.restore();
+      ctx.save(); ctx.translate(cx + 38 * s, cy - 8 * s); ctx.rotate(-0.5 - (wv ? 2 + wv : 0)); ellipse(0, 18 * s, 13 * s, 24 * s, FUR); ellipse(0, 34 * s, 9 * s, 8 * s, LITE); ctx.restore();
+      for (const d of [-1, 1]) { circle(cx + d * 30 * s, cy - 84 * s, 14 * s, FUR); circle(cx + d * 30 * s, cy - 84 * s, 8 * s, LITE); }
+      circle(cx, cy - 56 * s, 38 * s, FUR); ellipse(cx, cy - 42 * s, 18 * s, 13 * s, LITE);
+      ellipse(cx, cy - 48 * s, 7 * s, 5 * s, DK); ctx.strokeStyle = DK; ctx.lineWidth = 2 * s; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(cx, cy - 44 * s); ctx.lineTo(cx, cy - 38 * s); ctx.arc(cx - 5 * s, cy - 38 * s, 5 * s, 0, Math.PI * 0.8); ctx.moveTo(cx, cy - 38 * s); ctx.arc(cx + 5 * s, cy - 38 * s, 5 * s, Math.PI, Math.PI * 0.2, true); ctx.stroke();
+      if (a > 0) { for (const d of [-1, 1]) { ctx.beginPath(); ctx.arc(cx + d * 14 * s, cy - 62 * s, 5 * s, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); } }
+      else { circle(cx - 14 * s, cy - 62 * s, 5 * s, '#1b1b1b'); circle(cx + 14 * s, cy - 62 * s, 5 * s, '#1b1b1b'); circle(cx - 12.5 * s, cy - 64 * s, 1.6 * s, '#fff'); circle(cx + 15.5 * s, cy - 64 * s, 1.6 * s, '#fff'); }
+      tri(cx, cy - 18 * s, cx - 18 * s, cy - 28 * s, cx - 18 * s, cy - 8 * s, '#e53935'); tri(cx, cy - 18 * s, cx + 18 * s, cy - 28 * s, cx + 18 * s, cy - 8 * s, '#e53935'); circle(cx, cy - 18 * s, 5 * s, '#c62828');
+      ctx.restore();
+      if (a > 0) for (let i = 0; i < 5; i++) { const t = (a * 2 + i * 0.2) % 1; heart(cx + (i - 2) * 30 * s, cy - 90 * s - t * 50 * s, (7 + t * 4) * s, '#ff4f8b'); } }],
+  ['plush', 'Felt Elephant', '🐘', 'TOOT TOOT!', 'A sewing room in Germany, 1880', ['Plush is a soft, fuzzy cloth. Stuffed toys are often called plushies!', 'In 1880, Margarete Steiff in Germany sewed little felt elephants.', 'They were made to hold sewing pins, but kids loved to play with them! Her company later made some of the very first teddy bears.'],
+    (cx, cy, s, a) => { const G = '#9fa8b8', G2 = '#7d8799', up = a > 0 ? Math.sin(Math.min(1, a * 2) * Math.PI / 2) : 0, bob = Math.sin(frame * 0.05) * s;
+      shadow(cx, cy + 54 * s, s, 62);
+      for (const lx of [-34, -12, 18, 40]) rr(cx + lx * s, cy + 18 * s, 18 * s, 34 * s, 7 * s, lx < 0 ? G2 : G);
+      ellipse(cx + 8 * s, cy + 8 * s, 56 * s, 38 * s, G); ctx.strokeStyle = G2; ctx.lineWidth = 3 * s; ctx.beginPath(); ctx.moveTo(cx + 62 * s, cy); ctx.quadraticCurveTo(cx + 74 * s, cy + 10 * s, cx + 70 * s, cy + 22 * s); ctx.stroke();
+      rr(cx - 6 * s, cy - 28 * s, 50 * s, 36 * s, 8 * s, '#e53935'); ctx.fillStyle = '#fdd835'; for (let i = 0; i < 5; i++) circle(cx - 1 * s + i * 10 * s, cy + 4 * s, 2.5 * s, '#fdd835');
+      const hx = cx - 40 * s, hy = cy - 30 * s + bob;
+      ctx.strokeStyle = G; ctx.lineWidth = 15 * s; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(hx - 22 * s, hy + 6 * s);
+      ctx.quadraticCurveTo(hx - 46 * s, hy + 20 * s - up * 50 * s, hx - 44 * s + up * 4 * s, hy + 48 * s - up * 100 * s); ctx.stroke(); ctx.lineCap = 'butt';
+      circle(hx, hy, 34 * s, G); ellipse(hx + 22 * s, hy - 2 * s, 22 * s, 30 * s, G2); ellipse(hx + 22 * s, hy - 2 * s, 15 * s, 22 * s, '#f8bbd0');
+      circle(hx - 12 * s, hy - 8 * s, 4.5 * s, '#1b1b1b'); circle(hx - 11 * s, hy - 10 * s, 1.5 * s, '#fff'); circle(hx - 4 * s, hy + 8 * s, 5 * s, 'rgba(255,128,171,.6)');
+      ctx.strokeStyle = '#1b1b1b'; ctx.lineWidth = 2 * s; ctx.beginPath(); ctx.arc(hx - 10 * s, hy + 10 * s, 6 * s, 0.4, Math.PI - 0.6); ctx.stroke();
+      if (a > 0) { for (let i = 0; i < 4; i++) { const t = (a * 2.5 + i * 0.25) % 1; heart(hx - 44 * s + Math.sin(t * 6 + i) * 14 * s, hy - 56 * s - t * 50 * s, 6 * s, '#ff80ab'); } if (a > 0.3 && a < 0.8) text('TOOT!', hx - 36 * s, hy - 70 * s, 22 * s, '#fff'); } }],
+  ['slinky', 'Slinky', '〰️', 'WALK DOWN THE STAIRS!', 'A store in Philadelphia, 1945', ['The Slinky was first sold in 1945, in a store in Philadelphia.', 'An engineer named Richard James saw a spring fall off a shelf and keep moving. That gave him the idea!', 'His wife Betty picked the name "Slinky." It can walk down stairs all by itself!'],
+    (cx, cy, s, a) => { const st = [[cx - 56 * s, cy - 20 * s], [cx + 2 * s, cy + 15 * s], [cx + 58 * s, cy + 50 * s]];
+      [[-88, -20, 60, '#a1887f'], [-28, 15, 58, '#bcaaa4'], [30, 50, 58, '#d7ccc8']].forEach(([x, y, w, c]) => { rr(cx + x * s, cy + y * s, w * s, (56 - y) * s, 3 * s, c); ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.fillRect(cx + x * s, cy + y * s, w * s, 4 * s); ctx.fillStyle = 'rgba(0,0,0,.12)'; ctx.fillRect(cx + (x + w) * s - 3 * s, cy + y * s, 3 * s, (56 - y) * s); });
+      const N = 12, HS = 46 * s, hop = a > 0 ? Math.min(1.999, a * 2.2) : 0, k = Math.floor(hop), p = hop - k, [x0, y0] = st[k], [x1, y1] = st[k + 1];
+      for (let i = 0; i < N; i++) { const u = i / (N - 1), q = a > 0 ? clamp(p * 1.6 - (1 - u) * 0.6, 0, 1) : 0;
+        const x = lerp(x0, x1, q), y = lerp(y0 - 4 * s - u * HS, y1 - 4 * s - (1 - u) * HS, q) - Math.sin(q * Math.PI) * 46 * s;
+        ctx.strokeStyle = '#607d8b'; ctx.lineWidth = 2.6 * s; ctx.beginPath(); ctx.ellipse(x, y, 24 * s, 7 * s, 0, 0, 7); ctx.stroke();
+        ctx.strokeStyle = '#eceff1'; ctx.lineWidth = 1.6 * s; ctx.beginPath(); ctx.ellipse(x, y - 1 * s, 22 * s, 6 * s, 0, Math.PI * 1.1, Math.PI * 1.7); ctx.stroke(); }
+      if (a <= 0) toyFace(x0, y0 - 24 * s, s * 0.8); }],
+  ['frisbee', 'Frisbee', '🥏', 'THROW IT!', 'College lawns, then a toy factory in 1948', ['Long ago, college students tossed empty metal pie tins from a bakery called Frisbie\'s.', 'In 1948, Fred Morrison made a flying disc out of plastic.', 'It was named the Frisbee after those pie tins! Spinning helps it fly nice and steady.'],
+    (cx, cy, s, a) => { const th = a > 0 ? a * Math.PI * 2 : 0, fx = cx + Math.sin(th) * 90 * s, fy = cy - 34 * s - Math.sin(th / 2) * 50 * s, spin = frame * 0.2 + a * 30;
+      shadow(cx, cy + 54 * s, s, 40);
+      rr(cx - 4 * s, cy - 20 * s, 8 * s, 72 * s, 3 * s, '#8d6e63'); rr(cx - 24 * s, cy + 46 * s, 48 * s, 8 * s, 3 * s, '#6d4c41');
+      ellipse(cx + 54 * s, cy + 44 * s, 28 * s, 9 * s, '#b0bec5'); ellipse(cx + 54 * s, cy + 42 * s, 20 * s, 6 * s, '#cfd8dc'); text('PIE TIN', cx + 54 * s, cy + 30 * s, 11 * s, '#546e7a', 'center', false);
+      ctx.save(); ctx.translate(fx, fy); ctx.rotate(a > 0 ? Math.sin(th) * 0.3 : -0.15);
+      ellipse(0, 6 * s, 66 * s, 20 * s, '#d84315'); ellipse(0, 0, 66 * s, 20 * s, '#ff7043'); ctx.strokeStyle = '#ffab91'; ctx.lineWidth = 3 * s;
+      for (const r of [0.75, 0.5]) { ctx.beginPath(); ctx.ellipse(0, 0, 66 * r * s, 20 * r * s, 0, 0, 7); ctx.stroke(); }
+      for (let i = 0; i < 4; i++) { const an = spin + i * 1.57; circle(Math.cos(an) * 56 * s, Math.sin(an) * 15 * s, 3 * s, '#fff3e0'); }
+      toyFace(0, -2 * s, s * 0.7); ctx.restore();
+      if (a > 0) { ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 3 * s; for (let i = 1; i < 4; i++) { const b = th - i * 0.25; ctx.beginPath(); ctx.arc(cx + Math.sin(b) * 90 * s, cy - 34 * s - Math.sin(b / 2) * 50 * s, 4 * s, 0, 7); ctx.stroke(); }
+        if (a > 0.3 && a < 0.7) text('WHOOSH!', cx, cy + 20 * s, 22 * s, '#fff'); } }],
+  ['bricks', 'Building Bricks', '🧱', 'BUILD IT!', 'Toy factories, starting in the late 1940s', ['Plastic building bricks with bumps on top came out in the late 1940s.', 'In 1958, tubes were added inside the bricks, so they snap together nice and tight!', 'Just six of the classic bricks with 8 bumps can be put together in over 915 million ways!'],
+    (cx, cy, s, a) => { const B = [[-70, 34, 70, 4, '#e53935'], [0, 34, 70, 4, '#1e88e5'], [-70, 16, 52, 3, '#fdd835'], [18, 16, 52, 3, '#43a047'], [-70, -2, 140, 8, '#1e88e5'], [-52, -20, 104, 6, '#e53935'], [-34, -38, 68, 4, '#fdd835'], [-16, -56, 32, 2, '#43a047']];
+      shadow(cx, cy + 54 * s, s, 76); rr(cx - 18 * s, cy + 16 * s, 36 * s, 18 * s, 2 * s, '#4e342e'); circle(cx + 10 * s, cy + 26 * s, 2 * s, GOLD);
+      B.forEach((b, k) => { const t0 = k / B.length * 0.7, drop = a > 0 ? (1 - clamp((a - t0) / 0.12, 0, 1)) : 0; if (drop >= 1) return;
+        brick(cx + b[0] * s, cy + b[1] * s - drop * drop * 160 * s, b[2] * s, 18 * s, b[4], b[3], s); });
+      if (a <= 0 || a > 0.8) toyFace(cx, cy + 6 * s, s * 0.8, awake(), '#fff');
+      if (a > 0.8) text('SNAP!', cx, cy - 80 * s, 24 * s, '#fff'); }],
+  ['cube', 'Puzzle Cube', '🟥', 'TWIST + SOLVE!', 'Hungary, 1974', ['This twisty puzzle cube was invented in 1974 by Erno Rubik, a teacher in Hungary.', 'It can be mixed up in over 43 quintillion ways. That is 43 with 18 zeros after it!', 'The fastest people can solve it in less than 4 seconds!'],
+    (cx, cy, s, a) => { const e = 54 * s, O = [cx, cy - 16 * s], R = [e * 0.87, -e * 0.5], L = [-e * 0.87, -e * 0.5], D = [0, e];
+      const COL = { w: '#fafafa', y: '#fdd835', r: '#e53935', o: '#fb8c00', b: '#1e88e5', g: '#43a047' }, MIX = ['wrgbyowbo', 'rgyowbrgw', 'boywgrygb'], SOLVED = ['wwwwwwwww', 'rrrrrrrrr', 'bbbbbbbbb'], keys = 'wyrobg';
+      const done = a > 0.62, shuf = a > 0 && !done ? Math.floor(frame / 5) : 0;
+      shadow(cx, cy + 50 * s, s, 52);
+      [[R, L], [L, D], [R, D]].forEach(([u, v], f) => {
+        ctx.fillStyle = '#212121'; ctx.beginPath(); ctx.moveTo(O[0], O[1]); ctx.lineTo(O[0] + u[0], O[1] + u[1]); ctx.lineTo(O[0] + u[0] + v[0], O[1] + u[1] + v[1]); ctx.lineTo(O[0] + v[0], O[1] + v[1]); ctx.closePath(); ctx.fill();
+        for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) { const ch = done ? SOLVED[f][i * 3 + j] : shuf ? keys[(i * 7 + j * 3 + f * 5 + shuf) % 6] : MIX[f][i * 3 + j];
+          const P = (ii, jj) => [O[0] + u[0] * ii / 3 + v[0] * jj / 3, O[1] + u[1] * ii / 3 + v[1] * jj / 3], q = [P(i + 0.1, j + 0.1), P(i + 0.9, j + 0.1), P(i + 0.9, j + 0.9), P(i + 0.1, j + 0.9)];
+          ctx.fillStyle = COL[ch]; ctx.beginPath(); q.forEach((pt, n) => n ? ctx.lineTo(pt[0], pt[1]) : ctx.moveTo(pt[0], pt[1])); ctx.closePath(); ctx.fill();
+          if (f) { ctx.fillStyle = f === 1 ? 'rgba(0,0,0,.12)' : 'rgba(0,0,0,.25)'; ctx.fill(); } } });
+      toyFace(cx - 23 * s, cy + 6 * s, s * 0.6, awake(), '#fff');
+      if (done) { for (let i = 0; i < 6; i++) sparkle(cx + Math.cos(i + a * 6) * 80 * s, cy - 20 * s + Math.sin(i * 1.7) * 50 * s, 10 * s, '#fff59d', i); text('SOLVED!', cx, cy - 86 * s, 24 * s, '#fff'); } }],
+  ['tinbot', 'Tin Robot', '🤖', 'BEEP BEEP!', 'Japan, in the 1950s', ['Toy robots made of thin tin metal came from Japan in the 1950s.', 'Some were wind-up toys. Later ones used batteries to walk, light up and make sounds!', 'Today, old tin robots are collected, and some are worth a LOT of money!'],
+    (cx, cy, s, a) => { const step = a > 0 ? Math.sin(a * 40) : 0, wv = a > 0 || awake() > 0.3 ? Math.sin(frame * 0.2) * 0.5 : 0, blink = Math.floor(frame / 8);
+      shadow(cx, cy + 54 * s, s, 44);
+      for (const d of [-1, 1]) { const lift = Math.max(0, step * d) * 8 * s; rr(cx + d * 17 * s - 9 * s, cy + 18 * s - lift, 18 * s, 30 * s, 3 * s, '#90a4ae'); rr(cx + d * 17 * s - 13 * s, cy + 42 * s - lift, 26 * s, 10 * s, 3 * s, '#37474f'); }
+      for (const d of [-1, 1]) { ctx.save(); ctx.translate(cx + d * 42 * s, cy - 30 * s); ctx.rotate(d * 0.25 - (d > 0 && wv ? 2.4 + wv : 0)); rr(-7 * s, 0, 14 * s, 40 * s, 5 * s, '#b0bec5');
+        circle(0, 44 * s, 9 * s, '#78909c'); circle(0, 49 * s, 5 * s, '#90a4ae'); ctx.restore(); }
+      rr(cx - 40 * s, cy - 40 * s, 80 * s, 64 * s, 8 * s, '#d32f2f'); rr(cx - 30 * s, cy - 30 * s, 60 * s, 36 * s, 5 * s, '#eceff1');
+      for (const d of [-1, 1]) { circle(cx + d * 14 * s, cy - 17 * s, 9 * s, '#fff'); ctx.strokeStyle = '#263238'; ctx.lineWidth = 2 * s; ctx.beginPath(); ctx.arc(cx + d * 14 * s, cy - 17 * s, 9 * s, 0, 7); ctx.stroke();
+        const an = frame * 0.05 * d + (a > 0 ? a * 20 : 0); ctx.beginPath(); ctx.moveTo(cx + d * 14 * s, cy - 17 * s); ctx.lineTo(cx + d * 14 * s + Math.cos(an) * 7 * s, cy - 17 * s + Math.sin(an) * 7 * s); ctx.stroke(); }
+      ['#ffeb3b', '#4caf50', '#29b6f6'].forEach((c, i) => circle(cx - 14 * s + i * 14 * s, cy + 13 * s, 4.5 * s, a > 0 && (blink + i) % 3 === 0 ? '#fff' : c));
+      for (const [rx, ry] of [[-35, -35], [35, -35], [-35, 19], [35, 19]]) circle(cx + rx * s, cy + ry * s, 2 * s, '#ffcdd2');
+      rr(cx - 30 * s, cy - 92 * s, 60 * s, 50 * s, 10 * s, '#b0bec5'); circle(cx - 33 * s, cy - 67 * s, 6 * s, '#78909c'); circle(cx + 33 * s, cy - 67 * s, 6 * s, '#78909c');
+      for (const d of [-1, 1]) { circle(cx + d * 13 * s, cy - 72 * s, 11 * s, '#fff59d'); circle(cx + d * 13 * s, cy - 71 * s, 5 * s, '#263238'); circle(cx + d * 11 * s, cy - 74 * s, 2 * s, '#fff'); }
+      rr(cx - 16 * s, cy - 56 * s, 32 * s, 9 * s, 3 * s, '#455a64'); for (let i = 0; i < 4; i++) rr(cx - 12 * s + i * 7 * s, cy - 55 * s, 2 * s, 7 * s, 1, '#cfd8dc');
+      ctx.strokeStyle = '#78909c'; ctx.lineWidth = 3 * s; ctx.beginPath(); ctx.moveTo(cx, cy - 92 * s); ctx.lineTo(cx, cy - 104 * s); ctx.stroke(); circle(cx, cy - 106 * s, 6 * s, a > 0 && blink % 2 ? '#fff' : '#ff5252');
+      if (a > 0.2 && a < 0.8) text('BEEP BEEP!', cx, cy - 120 * s, 22 * s, '#fff'); }],
+  ['windup', 'Wind-Up Robot', '🔑', 'WIND THE KEY!', 'A clockwork toy shop', ['Inside a wind-up toy is a curly metal spring.', 'Turning the key winds the spring up tight. As it unwinds, it turns little gears that make the toy move!', 'Clockwork wind-up toys became popular way back in the 1800s.'],
+    (cx, cy, s, a) => { const kr = frame * 0.03 + (a > 0 ? a * 50 : 0), tilt = a > 0 ? Math.sin(a * 30) * 0.12 : 0, hop = a > 0 ? Math.abs(Math.sin(a * 30)) * 6 * s : 0;
+      shadow(cx, cy + 54 * s, s, 44); ctx.save(); ctx.translate(cx, cy + 50 * s - hop); ctx.rotate(tilt); ctx.translate(-cx, -cy - 50 * s);
+      for (const d of [-1, 1]) ellipse(cx + d * 20 * s, cy + 46 * s, 16 * s, 8 * s, '#ff7043');
+      rr(cx + 44 * s, cy - 14 * s, 14 * s, 8 * s, 3 * s, '#c79100'); const kx = cx + 62 * s, ksq = Math.cos(kr);
+      for (const d of [-1, 1]) ellipse(kx, cy - 10 * s + d * 12 * s, Math.max(1, Math.abs(ksq) * 8 * s), 10 * s, GOLD); circle(kx, cy - 10 * s, 4 * s, '#c79100');
+      for (const d of [-1, 1]) ellipse(cx + d * 46 * s, cy + 2 * s, 9 * s, 16 * s, '#00897b', d * 0.4);
+      ellipse(cx, cy - 6 * s, 46 * s, 54 * s, '#26a69a'); rr(cx - 46 * s, cy + 14 * s, 92 * s, 8 * s, 4 * s, '#00796b');
+      circle(cx, cy - 22 * s, 30 * s, '#b0bec5'); circle(cx, cy - 22 * s, 24 * s, '#e0f7fa'); ellipse(cx - 10 * s, cy - 32 * s, 8 * s, 4 * s, 'rgba(255,255,255,.8)', -0.5);
+      eyes(cx, cy - 26 * s, s, 9, 4.5, DARK); smile(cx, cy - 18 * s, s, 6, DARK, a > 0 ? 1 : 0);
+      for (let i = 0; i < 3; i++) circle(cx - 12 * s + i * 12 * s, cy + 32 * s, 3 * s, '#ffeb3b');
+      ctx.restore(); if (a > 0.1 && a < 0.8) text('CLICK CLICK!', cx, cy - 82 * s, 20 * s, '#fff'); }],
+];
+const HALLS = [
+  { name: '🏺 HALL 1: LONG, LONG AGO', ids: ['top', 'yoyo', 'train'], wall: '#fff3e0', trim: '#8d6e63', floor: '#bcaaa4', intro: 'Hi! I\'m Robo, your guide! These toys are SUPER old. Kids played with tops and yo-yos thousands of years ago!' },
+  { name: '🧸 HALL 2: CUDDLY + BOUNCY', ids: ['teddy', 'plush', 'slinky'], wall: '#fce4ec', trim: '#ad1457', floor: '#d7a9b8', intro: 'Soft toys and a springy one! Psst... tap 🌙 NIGHT to see what toys do when the lights go low!' },
+  { name: '🧱 HALL 3: BUILD, TOSS + TWIST', ids: ['bricks', 'frisbee', 'cube'], wall: '#e3f2fd', trim: '#1565c0', floor: '#9fb8cf', intro: 'Toys you build, toys you throw, and a twisty puzzle!' },
+  { name: '🤖 THE ROBOT WING', ids: ['tinbot', 'windup'], wall: '#e8eaf6', trim: '#455a64', floor: '#9fa8da', intro: 'My favorite wing! Toy robots, just like me. Beep boop!' },
+  { name: '🎁 THE GIFT SHOP', ids: [], wall: '#fff3e0', trim: OR, shop: true, titleCol: '#fff', intro: 'Welcome to the Gift Shop! Every gift is free. Pick one to print!' },
+];
+// ---------- 🔊 each toy's own (soft) sound ----------
+const ACT_SOUNDS = {
+  top: () => { for (let i = 0; i < 10; i++) beep(500 + i * 40, i * 0.08, 0.1, 'sine', 0.2); glide(700, 300, 0.9, 0.9, 0.2); },
+  yoyo: () => { for (let i = 0; i < 3; i++) { glide(600, 300, i * 0.83, 0.4, 0.25); glide(300, 600, i * 0.83 + 0.4, 0.4, 0.25); } },
+  train: () => { for (let i = 0; i < 8; i++) beep(i % 2 ? 140 : 180, i * 0.15, 0.08, 'triangle', 0.25); [523, 659].forEach(f => beep(f, 0.4, 0.5, 'sine', 0.2)); [523, 659].forEach(f => beep(f, 1.1, 0.5, 'sine', 0.2)); },
+  teddy: () => [392, 494, 587, 784].forEach((f, i) => beep(f, i * 0.12, 0.3, 'sine', 0.3)),
+  plush: () => { glide(300, 520, 0.3, 0.35, 0.25, 'triangle'); glide(300, 520, 0.75, 0.35, 0.25, 'triangle'); },
+  slinky: () => { glide(400, 900, 0, 0.3, 0.2); beep(220, 0.42, 0.15, 'sine', 0.3); glide(400, 900, 0.45, 0.3, 0.2); beep(196, 0.9, 0.15, 'sine', 0.3); },
+  frisbee: () => glide(300, 900, 0, 1.2, 0.2),
+  bricks: () => { for (let i = 0; i < 8; i++) beep(700 + i * 60, i * 0.18 + 0.1, 0.05, 'square', 0.15); [523, 659, 784, 1047].forEach((f, i) => beep(f, 1.5 + i * 0.08, 0.2, 'triangle', 0.25)); },
+  cube: () => { for (let i = 0; i < 10; i++) beep(300 + (i % 3) * 80, i * 0.1, 0.05, 'square', 0.12); [784, 988, 1175, 1568].forEach((f, i) => beep(f, 1.1 + i * 0.1, 0.25, 'triangle', 0.25)); },
+  tinbot: () => [880, 660, 880, 660, 990].forEach((f, i) => beep(f, i * 0.14, 0.09, 'square', 0.15)),
+  windup: () => { for (let i = 0; i < 12; i++) beep(1200, i * 0.08, 0.03, 'square', 0.1); for (let i = 0; i < 6; i++) beep(i % 2 ? 330 : 262, 1 + i * 0.15, 0.1, 'triangle', 0.25); },
+};
+// ---------- 🌙 NIGHT MODE: the lights go low and the toys come alive (cozy, never scary) ----------
+const DANCE = { top: 'dance', yoyo: 'hop', train: 'march', teddy: 'sway', plush: 'dance', slinky: 'hop', bricks: 'hop', frisbee: 'dance', cube: 'dance', tinbot: 'march', windup: 'march' };
+// Twinkle Twinkle Little Star, played softly like a music box
+const LULLABY = [60, 60, 67, 67, 69, 69, 67, 0, 65, 65, 64, 64, 62, 62, 60, 0, 67, 67, 65, 65, 64, 64, 62, 0, 67, 67, 65, 65, 64, 64, 62, 0, 60, 60, 67, 67, 69, 69, 67, 0, 65, 65, 64, 64, 62, 62, 60, 0];
+const LBASS = [48, 53, 48, 43, 48, 43, 48, 43, 48, 53, 48, 43];
+const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
+let musicStep = 0, nextNoteT = 0;
+function lullabyTick() {
+  if (!AC) return; const now = AC.currentTime; if (nextNoteT < now) nextNoteT = now + 0.05;
+  while (nextNoteT < now + 0.3) { const m = LULLABY[musicStep % LULLABY.length], t = nextNoteT - now;
+    if (m) { beep(mtof(m + 12), t, 0.9, 'sine', 0.22); beep(mtof(m + 24), t, 0.4, 'sine', 0.05); }
+    if (musicStep % 4 === 0) beep(mtof(LBASS[(musicStep / 4) % LBASS.length]), t, 1.9, 'triangle', 0.14);
+    musicStep++; nextNoteT += 0.42; }
+}
+function setNight(on) {
+  nightOn = on; sfx.click();
+  if (on) { musicStep = 0; nextNoteT = 0; say('🌙 Shhh... the lights are low. Look! The toys are waking up!'); [784, 659, 523, 392].forEach((f, i) => beep(f, i * 0.15, 0.5, 'sine', 0.2)); }
+  else { say('☀️ Good morning, toys! Back to your spots!'); [392, 523, 659, 784].forEach((f, i) => beep(f, i * 0.12, 0.3, 'triangle', 0.2)); }
+}
+const NIGHT_STARS = Array.from({ length: 40 }, (_, i) => [(i * 197) % 960, 84 + (i * 83) % 200, 3 + (i % 3) * 2]);
+const HOOK = {
+  update() {
+    const want = nightOn && (state === 'hall' || state === 'close') && !HALLS[hall].shop ? 1 : 0;
+    NIGHT += (want - NIGHT) * 0.04; if (Math.abs(want - NIGHT) < 0.002) NIGHT = want;
+    if (want && state === 'hall') lullabyTick();
+  },
+  key(k, H0) { if ((k.n || k.N) && !H0.shop) { setNight(!nightOn); return true; } return false; },
+  tap(t, H0) { if (!H0.shop && inBox(t, BTN_TOP)) { setNight(!nightOn); return true; } return false; },
+  topButton() { button(BTN_TOP, nightOn ? '☀️ DAY' : '🌙 NIGHT', nightOn ? '#f9a825' : '#3949ab', 20); },
+  hallBack(H0) {
+    if (NIGHT <= 0.01) return;
+    ctx.fillStyle = `rgba(14,18,52,${0.72 * NIGHT})`; ctx.fillRect(0, 0, W, 482);
+    ctx.save(); ctx.globalAlpha = NIGHT;
+    for (const [x, y, r] of NIGHT_STARS) { ctx.globalAlpha = NIGHT * (0.5 + 0.5 * Math.sin(frame * 0.05 + x)); star(x, y, r, '#fff9c4'); }
+    ctx.globalAlpha = NIGHT; glow(928, 100, 50, 'rgba(255,249,196,.6)'); circle(928, 100, 18, '#fff9c4'); circle(922, 96, 4, 'rgba(0,0,0,.08)'); circle(934, 106, 3, 'rgba(0,0,0,.08)');
+    ctx.restore();
+    if (!H0.shop) H0.ids.forEach((id, k) => { const p = exhibitPos(hall, k); glow(p.x, 250, 130, 'rgba(255,224,150,.55)', NIGHT); });
+  },
+  xform(k, id, p) {
+    const N = NIGHT, f = frame + k * 37; if (N <= 0.01) return;
+    const st = DANCE[id] || 'dance';
+    if (st === 'dance') { ctx.translate(p.x, 300); ctx.rotate(Math.sin(f * 0.07) * 0.16 * N); ctx.translate(-p.x, -300); ctx.translate(0, -Math.abs(Math.sin(f * 0.14)) * 8 * N); }
+    else if (st === 'march') ctx.translate(Math.sin(f * 0.035) * 18 * N, -Math.abs(Math.sin(f * 0.21)) * 6 * N);
+    else if (st === 'hop') ctx.translate(0, -Math.abs(Math.sin(f * 0.09)) * 22 * N);
+    else { ctx.translate(p.x, 300); ctx.rotate(Math.sin(f * 0.05) * 0.08 * N); ctx.translate(-p.x, -300); }
+  },
+  hallFront(H0) {
+    if (NIGHT < 0.3 || H0.shop) return;
+    ctx.save(); for (let i = 0; i < 8; i++) { const t = ((frame * 0.004 + i * 0.125) % 1); ctx.globalAlpha = NIGHT * Math.sin(t * Math.PI);
+      text(i % 2 ? '♪' : '♫', 80 + (i * 131) % 820 + Math.sin(t * 8 + i) * 14, 400 - t * 280, 26, ['#fff59d', '#b3e5fc', '#f8bbd0', '#c5e1a5'][i % 4], 'center', false); }
+    ctx.restore();
+  },
+  guidePose() { return NIGHT > 0.5 ? { pose: 'happy' } : {}; },
+};
+// ---------- the museum engine (same walk-through as The MacBook Museum) ----------
+let save = { seen: {} };
+try { const s = JSON.parse(localStorage.getItem(MUSEUM.saveKey) || 'null'); if (s && s.seen) save = s; } catch (_) {}
+function writeSave() { try { localStorage.setItem(MUSEUM.saveKey, JSON.stringify(save)); } catch (_) {} }
+const CI = {}; CHARS.forEach((c, i) => CI[c[0]] = i);
+function drawChar(i, cx, cy, s, a = 0) { ctx.save(); try { CHARS[i][6](cx, cy, s, a); } finally { ctx.restore(); } }
+let state = 'title', hall = 0, tap = null, sel = 0, showI = 0, actT = 0, msg = '', msgT = 0, parts = [], posterPick = false;
+const seenCount = () => CHARS.filter(c => save.seen[c[0]]).length;
+const START = { x: 360, y: 400, w: 240, h: 70 };
+const BTN_PREV = { x: 14, y: 488, w: 130, h: 44 }, BTN_NEXT = { x: 816, y: 488, w: 130, h: 44 }, BTN_PASS = { x: 160, y: 488, w: 300, h: 44 }, BTN_SHOP = { x: 476, y: 488, w: 324, h: 44 };
+const BTN_BACK = { x: 14, y: 12, w: 110, h: 42 }, BTN_ACT = { x: 580, y: 400, w: 350, h: 64 }, BTN_TOP = { x: 826, y: 12, w: 122, h: 44 };
+function exhibitPos(h, k) { const H0 = HALLS[h], n = H0.ids.length; return H0.grand ? { x: W / 2, y: H0.gy || 250, s: H0.gs || 1.45 } : { x: (k + 0.5) * W / n, y: 262, s: n > 4 ? 0.85 : 1.0 }; }
+function exhibitRect(h, k) {
+  const H0 = HALLS[h]; if (H0.custom && HOOK.rect) return HOOK.rect(h, k);
+  const p = exhibitPos(h, k), w = H0.grand ? 420 : W / H0.ids.length - 14; return { x: p.x - w / 2, y: 90, w, h: H0.grand ? 370 : 380 };
+}
+function say(s) { msg = s; msgT = 140 + Math.min(260, s.length * 3); }
+function confetti(x, y, n = 40) { for (let i = 0; i < n; i++) parts.push({ x, y, vx: (Math.random() - 0.5) * 9, vy: -Math.random() * 8 - 2, c: [OR, GOLD, CREAM, OR2, '#fff'][i % 5], life: 70 + Math.random() * 40 }); }
+function markSeen(id) {                                      // 📘 a passport stamp (and the trophy when every exhibit is seen)
+  if (save.seen[id]) return false;
+  save.seen[id] = 1; writeSave(); sfx.stamp(); say('📘 NEW STAMP in your Museum Passport!'); confetti(W / 2, 120, 30);
+  if (seenCount() === CHARS.length && !save.allDone) { save.allDone = 1; writeSave(); trophy(MUSEUM.trophyId); setTimeout(() => { say(MUSEUM.doneMsg); confetti(W / 2, 200, 120); }, 700); }
+  return true;
+}
+function openExhibit(id) { showI = CI[id]; state = 'close'; actT = 0; sfx.whoosh(); markSeen(id); }
+function goHall(h) { hall = (h + HALLS.length) % HALLS.length; sel = 0; posterPick = false; sfx.whoosh(); if (HALLS[hall].intro) say(HALLS[hall].intro); }
+// ---------- 🎁 souvenirs ----------
+const SOUV = [
+  { k: 'one', icon: '🖼️', name: 'Exhibit Poster', tip: 'Pick ANY exhibit!' },
+  { k: 'all', icon: '🏛️', name: 'Museum Poster', tip: 'Everything!' },
+  { k: 'color', icon: '🖍️', name: 'Coloring Page', tip: 'Color it in!' },
+  { k: 'cards', icon: '💌', name: 'Postcards', tip: 'Mail them to family!' },
+  { k: 'stickers', icon: '⭐', name: 'Sticker Sheet', tip: 'Cut them out!' },
+  { k: 'pass', icon: '📘', name: 'Museum Passport', tip: 'With your stamps!' },
+];
+const souvRect = i => ({ x: 30 + (i % 6) * 152, y: 140 + Math.floor(i / 6) * 176, w: 140, h: 176 });
+let pickKind = 'one';
+const pickRect = i => ({ x: 18 + (i % 6) * 156, y: 76 + Math.floor(i / 6) * 200, w: 148, h: 190 });
+// ---------- input ----------
+C.addEventListener('mousedown', e => { const r = C.getBoundingClientRect(); tap = { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height }; });
+const press = {};
+addEventListener('keydown', e => { press[e.key] = true; });
+function update() {
+  frame++; if (msgT > 0) msgT--; if (actT > 0) { actT++; if (actT > 150) actT = 0; }
+  for (const p of parts) { p.x += p.vx; p.y += p.vy; p.vy += 0.2; p.life--; } parts = parts.filter(p => p.life > 0);
+  const t = tap, k = Object.assign({}, press); tap = null; for (const key in press) delete press[key];
+  if (HOOK.update) HOOK.update();
+  const ok = k.Enter || k[' '], esc = k.Escape;
+  if (state === 'title') { if (ok || inBox(t, START)) { state = 'hall'; sfx.click(); if (HALLS[hall].intro) say(HALLS[hall].intro); } return; }
+  if (state === 'close') {
+    if (esc || inBox(t, BTN_BACK)) { state = 'hall'; sfx.click(); }
+    else if (ok || inBox(t, BTN_ACT) || (t && t.x < 540 && t.y > 60)) { actT = 1; sfx.act(CHARS[showI][0]); }      // tap the exhibit itself too!
+    return;
+  }
+  if (state === 'pass') { if (esc || ok || inBox(t, BTN_BACK)) { state = 'hall'; sfx.click(); } return; }
+  const H0 = HALLS[hall];
+  if (HOOK.key && HOOK.key(k, H0)) return;
+  if (k.ArrowRight) { if (!H0.shop && sel < H0.ids.length - 1) sel++; else goHall(hall + 1); }
+  if (k.ArrowLeft) { if (!H0.shop && sel > 0) sel--; else { goHall(hall - 1); sel = Math.max(0, HALLS[hall].ids.length - 1); } }
+  if (esc && posterPick) { posterPick = false; return; }
+  if (ok && !H0.shop && H0.ids[sel]) { openExhibit(H0.ids[sel]); return; }
+  if (!t) return;
+  if (posterPick) {
+    if (inBox(t, BTN_BACK)) { posterPick = false; sfx.click(); return; }
+    CHARS.forEach((c, i) => { if (inBox(t, pickRect(i))) { sfx.click(); openPrint(pickKind, i); } });
+    return;
+  }
+  if (inBox(t, BTN_PREV)) { goHall(hall - 1); return; }
+  if (inBox(t, BTN_NEXT)) { goHall(hall + 1); return; }
+  if (inBox(t, BTN_PASS)) { state = 'pass'; sfx.click(); return; }
+  if (inBox(t, BTN_SHOP)) { goHall(HALLS.length - 1); return; }
+  if (HOOK.tap && HOOK.tap(t, H0)) return;
+  if (H0.shop) { SOUV.forEach((sv, i) => { if (inBox(t, souvRect(i))) { sfx.click(); if (sv.k === 'one' || sv.k === 'color') { posterPick = true; pickKind = sv.k; } else openPrint(sv.k); } }); return; }
+  H0.ids.forEach((id, i) => { if (inBox(t, exhibitRect(hall, i))) { sel = i; openExhibit(id); } });
+}
+// ---------- drawing the museum ----------
+function guide(x, y, s, extra = {}) { drawRobo(x, y, Object.assign({ s, face: 1, t: frame, pose: 'idle', mouth: msgT > 0 }, extra)); }
+function drawHall() {
+  const H0 = HALLS[hall];
+  ctx.fillStyle = H0.wall; ctx.fillRect(0, 0, W, 420);
+  ctx.fillStyle = H0.floor || '#90a4ae'; ctx.fillRect(0, 420, W, 62); ctx.fillStyle = 'rgba(0,0,0,.08)'; for (let x = 0; x < W; x += 60) ctx.fillRect(x, 420, 2, 62);
+  if (HOOK.hallBack) HOOK.hallBack(H0);
+  ctx.fillStyle = H0.trim; ctx.fillRect(0, 70, W, 6); ctx.fillRect(0, 410, W, 10);
+  fit(H0.name, W / 2, 50, 32, 620, H0.titleCol || '#fff');
+  if (H0.shop) drawShop();
+  else if (H0.custom) HOOK.custom(H0);
+  else if (H0.grand) {
+    const id = H0.ids[0], p = exhibitPos(hall, 0);
+    const g = ctx.createRadialGradient(W / 2, p.y, 20, W / 2, p.y, 300); g.addColorStop(0, 'rgba(255,255,255,.28)'); g.addColorStop(1, 'rgba(255,255,255,0)'); ctx.fillStyle = g; ctx.fillRect(0, 76, W, 334);
+    drawChar(CI[id], p.x, p.y, p.s);
+    rr(W / 2 - 170, 424, 340, 50, 10, GOLD); fit(CHARS[CI[id]][1].toUpperCase(), W / 2, 448, 22, 320, '#14213d', 'center', false);
+    text(save.seen[id] ? '✅ visited' : '👆 tap me!', W / 2, 467, 15, '#14213d', 'center', false);
+  } else H0.ids.forEach((id, k) => {
+    const p = exhibitPos(hall, k), seen = save.seen[id], selk = k === sel;
+    rr(p.x - 84, 92, 168, 212, 14, 'rgba(0,0,0,.07)');
+    if (selk) { const g = ctx.createRadialGradient(p.x, p.y, 10, p.x, p.y, 110); g.addColorStop(0, 'rgba(255,255,255,.55)'); g.addColorStop(1, 'rgba(255,255,255,0)'); ctx.fillStyle = g; ctx.fillRect(p.x - 110, p.y - 130, 220, 240); }
+    rr(p.x - 60, 312, 120, 98, 6, H0.ped || '#f5f5f5'); rr(p.x - 70, 300, 140, 16, 4, H0.ped2 || '#e0e0e0'); ctx.fillStyle = 'rgba(0,0,0,.05)'; ctx.fillRect(p.x - 40, 322, 6, 80); ctx.fillRect(p.x + 34, 322, 6, 80);
+    ctx.save(); if (HOOK.xform) HOOK.xform(k, id, p);
+    drawChar(CI[id], p.x, p.y - 20 + Math.sin(frame * 0.04 + k) * 2, p.s); ctx.restore();
+    const pw = Math.min(176, W / H0.ids.length - 14); rr(p.x - pw / 2, 424, pw, 46, 8, H0.trim); fit(CHARS[CI[id]][1], p.x, 446, 17, pw - 10, '#fff', 'center', false); text(seen ? '✅ visited' : '👆 tap me!', p.x, 464, 13, '#fff', 'center', false);
+  });
+  if (HOOK.hallFront) HOOK.hallFront(H0);
+  if (!posterPick) guide(50, 72, 1.25, HOOK.guidePose ? HOOK.guidePose() : {});
+}
+function drawShop() {
+  if (posterPick) {
+    ctx.fillStyle = MUSEUM.pickBg; ctx.fillRect(0, 0, W, H); text(pickKind === 'color' ? '🖍️ Which one do you want to color?' : '🖼️ Which poster do you want?', W / 2, 50, 30, OR3, 'center', false);
+    CHARS.forEach((c, i) => { const b = pickRect(i); rr(b.x, b.y, b.w, b.h, 16, '#fff'); ctx.save(); ctx.beginPath(); ctx.rect(b.x, b.y, b.w, b.h - 40); ctx.clip(); drawChar(i, b.x + b.w / 2, cyFor(i, b.y + 96, 0.62), scaleFor(i, 0.62)); ctx.restore();
+      const ln = wrap(c[1], 16, b.w - 12).slice(0, 2); ln.forEach((l, j) => fit(l, b.x + b.w / 2, b.y + b.h - 12 - (ln.length - 1 - j) * 18, 16, b.w - 10, OR3, 'center', false)); });
+    button(BTN_BACK, '⬅ BACK', '#455a64', 18); return;
+  }
+  SOUV.forEach((sv, i) => { const b = souvRect(i); rr(b.x, b.y + 5, b.w, b.h, 16, 'rgba(0,0,0,.2)'); rr(b.x, b.y, b.w, b.h, 16, '#fff');
+    emoji(sv.icon, b.x + b.w / 2, b.y + 62, 46); const ln = wrap(sv.name, 16, b.w - 12).slice(0, 2); ln.forEach((l, j) => fit(l, b.x + b.w / 2, b.y + 98 + j * 18 - (ln.length - 1) * 5, 16, b.w - 10, OR3, 'center', false));
+    fit(sv.tip, b.x + b.w / 2, b.y + 140, 13, b.w - 10, '#455a64', 'center', false); text('🖨️ PRINT', b.x + b.w / 2, b.y + 163, 14, '#43a047', 'center', false); });
+  text('Every gift is FREE! Tip: turn on color printing!', W / 2, 112, 20, OR3, 'center', false);
+  text('🎉 Thanks for visiting ' + MUSEUM.name + '! Come back soon!', W / 2, 368, 20, OR3, 'center', false);
+}
+function drawBar() {
+  rr(0, 482, W, 58, 0, 'rgba(20,33,61,.92)');
+  button(BTN_PREV, '◀ BACK', '#607d8b', 20); button(BTN_NEXT, 'NEXT ▶', '#607d8b', 20);
+  button(BTN_PASS, `📘 PASSPORT  ${seenCount()}/${CHARS.length}`, '#5c6bc0', 20); button(BTN_SHOP, '🎁 GIFT SHOP', '#00897b', 22);
+}
+function drawBubble() {                                       // 🤖 Robo's speech bubble
+  if (msgT <= 0 || posterPick) return;
+  const ln = wrap(msg, 19, 700).slice(0, 2), h = 18 + ln.length * 24;
+  rr(104, 82, 740, h, 14, 'rgba(255,255,255,.95)'); tri(82, 70, 112, 88, 112, 104, 'rgba(255,255,255,.95)');
+  ln.forEach((l, j) => fit(l, 474, 106 + j * 24, 19, 710, '#1a237e', 'center', false));
+}
+function drawClose() {
+  const c = CHARS[showI], a = actT > 0 ? actT / 150 : 0;
+  ctx.fillStyle = MUSEUM.closeBg; ctx.fillRect(0, 0, W, H);
+  if (HOOK.closeBack) HOOK.closeBack(c);
+  const g = ctx.createRadialGradient(290, 260, 20, 290, 260, 280); g.addColorStop(0, MUSEUM.closeGlow); g.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = g; ctx.fillRect(0, 0, 600, H);
+  drawChar(showI, 290, 280, (c[7] || {}).cs || 1.6, a);
+  rr(560, 60, 380, 420, 20, '#f5f9ff'); rr(570, 70, 360, 66, 14, OR);
+  fit(c[2] + ' ' + c[1], 750, 113, 30, 340, '#fff'); fit('📍 ' + c[4], 750, 162, 16, 350, '#455a64', 'center', false);
+  let size = 17, gap = 22; const count = sz => c[5].reduce((n, f) => n + wrap('• ' + f, sz, 340).length, 0);
+  if (count(17) * 22 + c[5].length * 6 > 196) { size = 15; gap = 19; }
+  let y = 196; for (const f of c[5]) { for (const ln of wrap('• ' + f, size, 340)) { text(ln, 580, y, size, '#263238', 'left', false); y += gap; } y += 5; }
+  button(BTN_ACT, '✨ ' + c[3], '#43a047', 24);
+  button(BTN_BACK, '⬅ BACK', '#455a64', 18);
+  guide(44, 528, 1.3, { pose: a > 0 ? 'happy' : 'idle' });
+  if (msgT > 0) { rr(140, 8, 400, 40, 12, 'rgba(0,0,0,.6)'); fit(msg, 340, 35, 18, 380, '#fff59d'); }
+}
+function drawPass() {
+  ctx.fillStyle = '#283593'; ctx.fillRect(0, 0, W, H); rr(40, 60, W - 80, 420, 20, '#f5f9ff');
+  text('📘 MY MUSEUM PASSPORT', W / 2, 46, 30, '#fff');
+  CHARS.forEach((c, i) => { const x = 115 + (i % 6) * 146, y = 150 + Math.floor(i / 6) * 190, seen = save.seen[c[0]];
+    ctx.strokeStyle = seen ? '#c62828' : '#bdbdbd'; ctx.lineWidth = 4; ctx.setLineDash(seen ? [] : [8, 6]); ctx.beginPath(); ctx.arc(x, y, 58, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+    if (seen) { ctx.save(); ctx.beginPath(); ctx.arc(x, y, 55, 0, 7); ctx.clip(); drawChar(i, x, cyFor(i, y + 14, 0.4), scaleFor(i, 0.4)); ctx.restore(); } else text('?', x, y + 12, 32, '#bdbdbd', 'center', false);
+    const ln = wrap(c[1], 15, 140).slice(0, 2); ln.forEach((l, j) => fit(l, x, y + 80 + j * 17, 15, 142, '#263238', 'center', false)); });
+  button(BTN_BACK, '⬅ BACK', '#455a64', 18);
+}
+function drawTitle() {
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, MUSEUM.titleBg[0]); g.addColorStop(1, MUSEUM.titleBg[1]); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  if (HOOK.titleBack) HOOK.titleBack();
+  for (let i = 0; i < 6; i++) rr(70 + i * 150, 130, 24, 300, 6, 'rgba(255,255,255,.55)');
+  tri(30, 130, W - 30, 130, W / 2, 30, MUSEUM.roof); rr(30, 124, W - 60, 16, 4, MUSEUM.roof2); rr(30, 430, W - 60, 20, 4, MUSEUM.roof2);
+  sparkle(W / 2, 86, 26, GOLD, frame * 0.02);
+  fit(MUSEUM.title, W / 2, 200, 58, 860, OR);
+  text('💡 Ben\'s idea!', W / 2, 240, 24, OR3, 'center', false);
+  MUSEUM.titleIds.forEach((id, i) => drawChar(CI[id], 210 + i * 135, 330 + Math.sin(frame * 0.05 + i) * 4, 0.55));
+  drawRobo(70, 420, { s: 2.2, face: 1, t: frame, pose: 'happy' });
+  button(START, '▶ COME IN!', '#43a047', 30);
+  text(MUSEUM.tagline, W / 2, 500, 18, OR3, 'center', false);
+}
+function draw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
+  if (state === 'title') drawTitle();
+  else if (state === 'close') drawClose();
+  else if (state === 'pass') drawPass();
+  else { drawHall(); if (!posterPick) { drawBar(); if (HOOK.topButton && !HALLS[hall].shop) HOOK.topButton(); } drawBubble(); }
+  for (const p of parts) { ctx.globalAlpha = Math.min(1, p.life / 20); ctx.fillStyle = p.c; ctx.fillRect(p.x - 4, p.y - 4, 8, 8); }
+  ctx.globalAlpha = 1;
+}
+let last = performance.now(), acc = 0;
+function loop(now) { acc += Math.min(100, now - last); last = now; while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; } draw(); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+// ---------- 🖨️ printing the souvenirs (same gift shop as The MacBook Museum) ----------
+const PW = 850, PH = 1100;
+function makePage(fn) {
+  const cv = document.createElement('canvas'); cv.width = PW; cv.height = PH;
+  const old = ctx; ctx = cv.getContext('2d'); PRINTING = true;
+  try { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, PW, PH); fn(); } finally { ctx = old; PRINTING = false; }
+  return cv;
+}
+const ptext = (s, x, y, size, color = '#222', align = 'center') => text(s, x, y, size, color, align, false);
+function cutBox(x, y, w, h, r = 18) { ctx.save(); ctx.setLineDash([10, 7]); ctx.strokeStyle = '#9e9e9e'; ctx.lineWidth = 2; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); ctx.stroke(); ctx.restore(); }
+function bigTitle(str, x, y, size, fill, edge, maxW = PW - 80) {
+  ctx.save(); ctx.font = `bold ${size}px "Trebuchet MS", Arial`; const mw = ctx.measureText(str).width; if (mw > maxW) { size = Math.floor(size * maxW / mw); ctx.font = `bold ${size}px "Trebuchet MS", Arial`; }
+  ctx.textAlign = 'center'; ctx.lineJoin = 'round'; ctx.strokeStyle = edge; ctx.lineWidth = size / 6; ctx.strokeText(str, x, y); ctx.fillStyle = fill; ctx.fillText(str, x, y); ctx.restore();
+}
+const MUS = MUSEUM.title;
+function pageOne(i) {
+  const c = CHARS[i];
+  return makePage(() => {
+    const g = ctx.createLinearGradient(0, 0, 0, PH); g.addColorStop(0, MUSEUM.posterBg[0]); g.addColorStop(1, MUSEUM.posterBg[1]); ctx.fillStyle = g; ctx.fillRect(0, 0, PW, PH);
+    ctx.strokeStyle = OR; ctx.lineWidth = 10; ctx.strokeRect(14, 14, PW - 28, PH - 28);
+    for (let k = 0; k < 14; k++) sparkle((k * 211) % PW, 180 + (k * 137) % 600, 10 + (k % 3) * 4, 'rgba(255,255,255,.45)', k);
+    bigTitle(c[1].toUpperCase() + '!', PW / 2, 110, 74, '#fff', OR3);
+    ptext(MUS + '  •  SOUVENIR POSTER', PW / 2, 160, 22, OR3);
+    drawChar(i, PW / 2, cyFor(i, 500, 3), scaleFor(i, 3));
+    rr(70, 790, PW - 140, 250, 26, 'rgba(255,255,255,.92)');
+    let y = 836; for (const f of c[5].slice(0, 3)) { for (const ln of wrap('• ' + f, 23, PW - 200)) { ptext(ln, 100, y, 23, '#263238', 'left'); y += 30; } y += 5; }
+  });
+}
+function pageAll() {
+  return makePage(() => {
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, PW, PH); ctx.strokeStyle = OR; ctx.lineWidth = 10; ctx.strokeRect(14, 14, PW - 28, PH - 28);
+    bigTitle(MUS, PW / 2, 90, 60, '#fff', OR3); ptext('💡 A museum invented by Ben', PW / 2, 132, 22, OR3);
+    CHARS.forEach((c, i) => { const n = CHARS.length, last = i === n - 1 && n % 3 === 1, x = last ? 36 + 262 : 36 + (i % 3) * 262, y = 156 + Math.floor(i / 3) * 228, w = 252, h = 218;
+      rr(x, y, w, h, 16, PAST[i % PAST.length]); ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h - 30); ctx.clip(); drawChar(i, x + w / 2, cyFor(i, y + 110, 0.8), scaleFor(i, 0.8)); ctx.restore(); fit(c[1], x + w / 2, y + 204, 20, w - 16, OR3, 'center', false); });
+  });
+}
+function pagesCards() {
+  const pages = [];
+  for (let pg = 0; pg < Math.ceil(CHARS.length / 4); pg++) pages.push(makePage(() => {
+    ptext(`✂️ ${MUS} POSTCARDS (page ${pg + 1})  Cut on the dotted lines!`, PW / 2, 30, 18, '#555');
+    CHARS.slice(pg * 4, pg * 4 + 4).forEach((c, k) => { const i = pg * 4 + k, x = 25 + (k % 2) * 405, y = 48 + Math.floor(k / 2) * 525, w = 395, h = 510;
+      rr(x, y, w, h, 14, PAST[i % PAST.length]); rr(x + 12, y + 12, w - 24, 250, 10, '#fff'); ctx.save(); ctx.beginPath(); ctx.rect(x + 12, y + 12, w - 24, 250); ctx.clip(); drawChar(i, x + w / 2, cyFor(i, y + 165, 1.15), scaleFor(i, 1.15)); ctx.restore();
+      ptext('Greetings from', x + w / 2, y + 300, 20, '#455a64'); fit(MUS + '!', x + w / 2, y + 334, 28, w - 30, OR3, 'center', false); fit('Starring the ' + c[1], x + w / 2, y + 364, 18, w - 30, '#455a64', 'center', false);
+      ['To: ______________________', 'Hi! ______________________', '__________________________', 'From: ____________________'].forEach((ln, j) => ptext(ln, x + 24, y + 404 + j * 28, 18, '#555', 'left'));
+      cutBox(x - 4, y - 4, w + 8, h + 8, 16); });
+  }));
+  return pages;
+}
+function pagesStickers() {
+  const all = CHARS.map((c, i) => i).concat(['robo', 'master']), pages = [];
+  for (let pg = 0; pg < Math.ceil(all.length / 12); pg++) pages.push(makePage(() => {
+    ptext(`⭐ ${MUS} STICKERS (page ${pg + 1})  Cut them out and stick them with tape!`, PW / 2, 34, 20, '#555');
+    all.slice(pg * 12, pg * 12 + 12).forEach((it, k) => { const x = 150 + (k % 3) * 275, y = 170 + Math.floor(k / 3) * 250, r = 110;
+      circle(x, y, r, typeof it === 'number' ? PAST[it % PAST.length] : '#bbdefb'); ctx.strokeStyle = OR; ctx.lineWidth = 6; ctx.beginPath(); ctx.arc(x, y, r - 4, 0, 7); ctx.stroke();
+      if (it === 'robo') { drawRobo(x, y + 30, { s: 2.2, face: 1, t: 0, pose: 'idle' }); ptext('ROBO, OUR GUIDE', x, y + 64, 18, OR3); }
+      else if (it === 'master') { ptext('🏆', x, y + 8, 60); ptext('MUSEUM MASTER', x, y + 60, 19, OR3); }
+      else { ctx.save(); ctx.beginPath(); ctx.arc(x, y, r - 8, 0, 7); ctx.clip(); drawChar(it, x, cyFor(it, y + 2, 0.7), scaleFor(it, 0.7)); ctx.restore(); const ln = wrap(CHARS[it][1], 18, 150); ln.forEach((l, j) => fit(l, x, y + 70 + j * 20, 18, 150, OR3, 'center', false)); }
+      ctx.save(); ctx.setLineDash([9, 6]); ctx.strokeStyle = '#9e9e9e'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 8, 0, 7); ctx.stroke(); ctx.restore(); });
+  }));
+  return pages;
+}
+function pagePass() {
+  return makePage(() => {
+    ctx.fillStyle = '#283593'; ctx.fillRect(0, 0, PW, PH); rr(30, 30, PW - 60, PH - 60, 24, '#f5f9ff');
+    bigTitle('MUSEUM PASSPORT', PW / 2, 110, 58, GOLD, '#283593'); ptext(MUS + '  •  Name: Ben', PW / 2, 156, 24, '#283593');
+    CHARS.forEach((c, i) => { const n = CHARS.length, last = i === n - 1 && n % 3 === 1, x = last ? 425 : 175 + (i % 3) * 250, y = 250 + Math.floor(i / 3) * 205, seen = save.seen[c[0]];
+      ctx.strokeStyle = seen ? '#c62828' : '#bdbdbd'; ctx.lineWidth = 4; ctx.setLineDash(seen ? [] : [10, 7]); ctx.beginPath(); ctx.arc(x, y, 66, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+      if (seen) { ctx.save(); ctx.beginPath(); ctx.arc(x, y, 62, 0, 7); ctx.clip(); drawChar(i, x, cyFor(i, y + 14, 0.45), scaleFor(i, 0.45)); ctx.restore(); ptext('VISITED!', x, y + 58, 14, '#c62828'); } else ptext('stamp here', x, y + 6, 16, '#bdbdbd');
+      fit(c[1], x, y + 90, 17, 230, '#283593', 'center', false); });
+  });
+}
+function outlineOf(i, size, sc) {                            // 🖍️ turns an exhibit into a coloring-book outline
+  const cv = document.createElement('canvas'); cv.width = size; cv.height = size;
+  const old = ctx; ctx = cv.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, size, size); PRINTING = true;
+  try { drawChar(i, size / 2, cyFor(i, size / 2 + size * 0.1, sc), scaleFor(i, sc)); } finally { ctx = old; PRINTING = false; }
+  const c2 = cv.getContext('2d'), src = c2.getImageData(0, 0, size, size).data, out = c2.createImageData(size, size), o = out.data;
+  const lum = k => src[k] * 0.3 + src[k + 1] * 0.59 + src[k + 2] * 0.11;
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    const k = (y * size + x) * 4; let edge = false;
+    for (const [dx, dy] of [[1, 0], [0, 1], [2, 0], [0, 2]]) { if (x + dx >= size || y + dy >= size) continue; const k2 = ((y + dy) * size + x + dx) * 4;
+      if (Math.abs(lum(k) - lum(k2)) > 26 || Math.abs(src[k] - src[k2]) + Math.abs(src[k + 2] - src[k2 + 2]) > 70) { edge = true; break; } }
+    const v = edge ? 40 : 255; o[k] = o[k + 1] = o[k + 2] = v; o[k + 3] = 255;
+  }
+  c2.putImageData(out, 0, 0); return cv;
+}
+function outlineText(str, x, y, size) { ctx.save(); ctx.font = `bold ${size}px "Trebuchet MS", Arial`; ctx.textAlign = 'center'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#333'; ctx.lineWidth = 3; ctx.strokeText(str, x, y); ctx.restore(); }
+function pageColor(i) {
+  return makePage(() => {
+    outlineText('COLOR ME!', PW / 2, 110, 90);
+    const cv = outlineOf(i, 700, 2.9); ctx.drawImage(cv, (PW - 700) / 2, 160);
+    ctx.save(); ctx.font = 'bold 64px "Trebuchet MS", Arial'; const mw = ctx.measureText(CHARS[i][1].toUpperCase()).width; ctx.restore();
+    outlineText(CHARS[i][1].toUpperCase(), PW / 2, 960, Math.min(64, Math.floor(64 * (PW - 80) / mw)));
+    ptext(MUS + '  •  Coloring Page', PW / 2, 1040, 20, '#999');
+  });
+}
+let printBox = null;
+function openPrint(k, i) {
+  const pages = k === 'one' ? [pageOne(i)] : k === 'color' ? [pageColor(i)] : k === 'all' ? [pageAll()] : k === 'cards' ? pagesCards() : k === 'stickers' ? pagesStickers() : [pagePass()];
+  const name = k === 'one' ? CHARS[i][1] + ' Poster' : k === 'color' ? CHARS[i][1] + ' Coloring Page' : SOUV.find(s => s.k === k).name;
+  printBox = document.createElement('div'); printBox.id = 'printBox';
+  const bar = document.createElement('div'); bar.className = 'pbBar';
+  const back = document.createElement('button'); back.className = 'pbBack'; back.textContent = '⬅ BACK';
+  const pr = document.createElement('button'); pr.className = 'pbPrint'; pr.textContent = pages.length > 1 ? `🖨️ PRINT (${pages.length} pages)` : '🖨️ PRINT';
+  back.onclick = () => { if (printBox) { printBox.remove(); printBox = null; } sfx.click(); };
+  pr.onclick = () => { try { window.print(); } catch (_) {} };
+  bar.append(back, pr); printBox.appendChild(bar);
+  const tip = document.createElement('div'); tip.className = 'pbTip'; tip.textContent = '🎁 ' + name + '  •  Tip: turn on color printing!'; printBox.appendChild(tip);
+  for (const cv of pages) { const img = new Image(); img.className = 'pbPage'; img.alt = name; img.src = cv.toDataURL('image/png'); printBox.appendChild(img); }
+  document.body.appendChild(printBox);
+}
+const scaleFor = (i, base) => base * ((CHARS[i][7] || {}).ps || 1);
+const cyFor = (i, cy, s) => cy + ((CHARS[i][7] || {}).dy || 0) * s;
+</script>

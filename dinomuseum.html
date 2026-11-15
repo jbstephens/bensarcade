@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>The Dino Bones Museum</title>
+<script src="touchpad.js?v=10"></script>
+<style>
+  html, body { height: 100%; }
+  body { margin: 0; background: #2b2118; display: flex; align-items: center; justify-content: center; overflow: hidden; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  canvas { width: min(100vw, calc(100vh * 960 / 540)); height: auto; display: block; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,.5); touch-action: none; }
+</style>
+<canvas id="game" width="960" height="540"></canvas>
+<script>
+// 🦖 THE DINO BONES MUSEUM: Ben's idea! Giant dinosaur skeletons that wake up and WAVE when you tap them,
+// a dig site where you brush away sand, amber, fossil footprints, a passport, and a gift shop.
+// Only TRUE facts on the cards. Guide: Robo (drawn with the same code as Robo's Movie).
+// ---------- shared core: helpers, Robo (copied from robomovie.html), sounds ----------
+const C = document.getElementById('game');
+let ctx = C.getContext('2d');
+const W = 960, H = 540;
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+let frame = 0;
+function rrect(x, y, w, h, r) {
+  ctx.beginPath();
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function roundRect(x, y, w, h, r, fill) { ctx.fillStyle = fill; rrect(x, y, Math.max(0, w), Math.max(0, h), r); ctx.fill(); }
+function rr(x, y, w, h, r, fill, stroke, lw = 3) {
+  rrect(x, y, Math.max(0, w), Math.max(0, h), r);
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw; ctx.stroke(); }
+}
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, 7); ctx.fill(); }
+const dot = circle;
+function ellipse(x, y, rx, ry, fill, rot = 0) { ctx.fillStyle = fill; ctx.beginPath(); ctx.ellipse(x, y, Math.max(0, rx), Math.max(0, ry), rot, 0, 7); ctx.fill(); }
+const ell = (x, y, rx, ry, c, rot = 0) => ellipse(x, y, Math.max(0.1, rx), Math.max(0.1, ry), c, rot);
+function glow(x, y, r, col, a = 1) {
+  r = Math.max(1, r);
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.save(); ctx.globalAlpha = clamp(a, 0, 1); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); ctx.restore();
+}
+function star(x, y, r, fill, rot = 0, pts = 5, inner = 0.48) {
+  ctx.fillStyle = fill; ctx.beginPath();
+  for (let i = 0; i < pts * 2; i++) { const a = -Math.PI / 2 + rot + i * Math.PI / pts, q = i % 2 ? r * inner : r; ctx.lineTo(x + Math.cos(a) * Math.max(0, q), y + Math.sin(a) * Math.max(0, q)); }
+  ctx.closePath(); ctx.fill();
+}
+function tri(a, b, c, d, e, f, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.lineTo(e, f); ctx.closePath(); ctx.fill(); }
+function poly(pts, fill, stroke, lw = 2) { ctx.beginPath(); pts.forEach((p, i) => ctx[i ? 'lineTo' : 'moveTo'](p[0], p[1])); ctx.closePath(); if (fill) { ctx.fillStyle = fill; ctx.fill(); } if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw; ctx.stroke(); } }
+function line(x1, y1, x2, y2, col, lw) { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+function text(str, x, y, size, color = '#fff', align = 'center', outline = true) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; ctx.textAlign = align; ctx.textBaseline = 'alphabetic'; ctx.lineJoin = 'round';
+  if (outline) { ctx.strokeStyle = typeof outline === 'string' ? outline : 'rgba(0,0,0,.6)'; ctx.lineWidth = Math.max(3, size / 6); ctx.strokeText(str, x, y); }
+  ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function fit(str, x, y, size, maxW, color, align, outline) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; const w = ctx.measureText(str).width || 0;
+  text(str, x, y, w > maxW ? Math.max(9, Math.floor(size * maxW / w)) : size, color, align, outline);
+}
+function emoji(e, x, y, size) { ctx.font = `${size}px "Apple Color Emoji", "Segoe UI Emoji", Arial`; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = '#000'; ctx.fillText(e, x, y); }
+function wrap(str, size, maxW) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; const out = []; let ln = '';
+  for (const wd of String(str).split(' ')) { const t = ln ? ln + ' ' + wd : wd; if (ln && ctx.measureText(t).width > maxW) { out.push(ln); ln = wd; } else ln = t; }
+  if (ln) out.push(ln); return out;
+}
+function button(b, label, fill, size = 22) {
+  rr(b.x, b.y + 4, b.w, b.h, 14, 'rgba(0,0,0,.35)'); rr(b.x, b.y, b.w, b.h, 14, fill);
+  fit(label, b.x + b.w / 2, b.y + b.h / 2 + size * 0.36, size, b.w - 12);
+}
+const inBox = (t, b) => t && t.x >= b.x && t.x <= b.x + b.w && t.y >= b.y && t.y <= b.y + b.h;
+function bubble(x, y, w, h, tx, ty, fill = '#fff') {          // speech bubble with a little tail pointing at (tx, ty)
+  rr(x, y, w, h, 14, fill, 'rgba(0,0,0,.25)', 2);
+  ctx.fillStyle = fill; ctx.beginPath(); ctx.moveTo(clamp(tx, x + 16, x + w - 30), y + h - 1); ctx.lineTo(tx, ty); ctx.lineTo(clamp(tx, x + 16, x + w - 30) + 16, y + h - 1); ctx.closePath(); ctx.fill();
+}
+
+const ROBO = { head: '#ffffff', body: '#f5f7ff', visor: '#111827', eye: '#40c4ff', legs: '#3d5afe', pod: '#2979ff', edge: '#9fa8da' };
+// o = { s, face, t, pose (idle/off/walk/run/wobble/jump/happy/fall/sit/wave), eyes 0..1, mouth, parts (bitmask: 1 body+legs, 2 head+visor, 4 ear pods, 8 antenna), dizzy }
+function drawRobo(x, y, o = {}) {
+  const s = o.s || 2.6, f = o.face || 1, t = o.t || frame, pose = o.pose || 'idle', parts = o.parts === undefined ? 15 : o.parts;
+  const eyes = o.eyes === undefined ? 1 : o.eyes;
+  let tilt = o.tilt || 0, bob = 0, lA = 0, lB = 0, sq = 1;
+  if (pose === 'walk' || pose === 'run') { const k = t * (pose === 'run' ? 0.5 : 0.3); lA = Math.max(0, Math.sin(k)) * 4; lB = Math.max(0, -Math.sin(k)) * 4; bob = -Math.abs(Math.sin(k)) * 1.5; }
+  else if (pose === 'wobble') { const k = t * 0.16; tilt += Math.sin(k) * 0.22; lA = Math.max(0, Math.sin(k)) * 5; lB = Math.max(0, -Math.sin(k)) * 5; }
+  else if (pose === 'jump') { lA = lB = 4; sq = 1.06; }
+  else if (pose === 'happy') { bob = -Math.abs(Math.sin(t * 0.25)) * 4; tilt += Math.sin(t * 0.25) * 0.08; }
+  else if (pose === 'fall') { tilt += -0.5; bob = 3; }
+  else if (pose === 'sit') { lA = lB = 3; bob = 3; }
+  else if (pose !== 'off') bob = Math.sin(t * 0.06) * 0.6;
+  ctx.save(); ctx.translate(x, y); ctx.rotate(tilt * f); ctx.scale(s * f, s * sq); ctx.translate(0, bob);
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  if (parts & 1) {
+    ctx.fillStyle = ROBO.legs; ctx.fillRect(-11, -7 - lA, 8, 7); ctx.fillRect(3, -7 - lB, 8, 7);
+    roundRect(-13, -21, 26, 17, 6, ROBO.body);
+    ctx.strokeStyle = ROBO.edge; ctx.lineWidth = 0.8; rrect(-13, -21, 26, 17, 6); ctx.stroke();
+    circle(0, -12, 3, ROBO.pod); circle(-0.8, -12.8, 1, 'rgba(255,255,255,.7)');
+  }
+  if (parts & 8) {                                     // 📡 the little antenna (wiggles when he moves)
+    const tip = Math.sin(t * 0.12) * (pose === 'idle' || pose === 'off' ? 0.6 : 2);
+    ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 1.4; ctx.beginPath(); ctx.moveTo(0, -40); ctx.quadraticCurveTo(tip * 0.4, -45, tip, -49); ctx.stroke();
+    const lit = pose === 'off' ? 0.25 : 0.6 + (o.mouth ? 0.4 * Math.abs(Math.sin(t * 0.4)) : 0);
+    if (pose !== 'off') glow(tip, -50, 7, 'rgba(64,196,255,.8)', lit);
+    circle(tip, -50, 2.6, ROBO.pod); circle(tip - 0.8, -50.8, 0.8, 'rgba(255,255,255,.8)');
+  }
+  if (parts & 4) { roundRect(-20, -31, 6, 9, 3, ROBO.pod); roundRect(14, -31, 6, 9, 3, ROBO.pod); }
+  if (parts & 2) {
+    roundRect(-17, -40, 34, 22, 12, ROBO.head);
+    ctx.strokeStyle = ROBO.edge; ctx.lineWidth = 0.8; rrect(-17, -40, 34, 22, 12); ctx.stroke();
+    roundRect(-13, -36, 26, 13, 9, ROBO.visor);
+    ellipse(-7, -34, 4, 1.2, 'rgba(255,255,255,.18)', -0.2);
+    if (eyes > 0.01) {
+      ctx.save(); ctx.globalAlpha *= clamp(eyes, 0, 1);
+      glow(3, -29.5, 16, 'rgba(64,196,255,.45)', eyes);
+      const ey = -29.5;
+      if (o.dizzy) {                                   // 💫 swirly dizzy eyes
+        ctx.strokeStyle = ROBO.eye; ctx.lineWidth = 1.1;
+        for (const ex of [-3, 9]) { ctx.beginPath(); for (let a = 0; a < 12; a += 0.4) ctx.lineTo(ex + Math.cos(a + t * 0.2) * a * 0.3, ey + Math.sin(a + t * 0.2) * a * 0.3); ctx.stroke(); }
+      } else if (pose === 'happy' || o.happy) {        // ^ ^ happy eyes
+        ctx.strokeStyle = ROBO.eye; ctx.lineWidth = 1.8;
+        for (const ex of [-3, 9]) { ctx.beginPath(); ctx.arc(ex, ey + 2, 3.2, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+      } else {
+        const blink = (t % 200) < 6 ? 0.6 : 5, talk = o.mouth ? 0.85 + 0.15 * Math.sin(t * 0.6) : 1;
+        ctx.fillStyle = ROBO.eye; ctx.beginPath();
+        ctx.ellipse(-3, ey, 3.5, Math.max(0.5, blink * talk), 0, 0, 7); ctx.ellipse(9, ey, 3.5, Math.max(0.5, blink * talk), 0, 0, 7); ctx.fill();
+        if (blink > 1) { circle(-2, ey - 2, 1, 'rgba(255,255,255,.85)'); circle(10, ey - 2, 1, 'rgba(255,255,255,.85)'); }
+      }
+      if (o.mouth) { ctx.strokeStyle = ROBO.eye; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(1, -25); ctx.lineTo(1 + 2 + Math.abs(Math.sin(t * 0.5)) * 3, -25); ctx.stroke(); }
+      ctx.restore();
+    }
+  }
+  if (o.wave) {                                        // 👋 a little waving hand
+    const a = Math.sin(t * 0.3) * 0.5;
+    ctx.save(); ctx.translate(13, -16); ctx.rotate(-1.2 + a); roundRect(-2, -14, 4, 14, 2, ROBO.pod); circle(0, -15, 3.4, ROBO.head); ctx.restore();
+  }
+  ctx.restore();
+  if (o.dizzy) for (let i = 0; i < 3; i++) { const a = t * 0.08 + i * 2.1; star(x + Math.cos(a) * 22 * s / 2.6, y - 118 * s / 2.6 + Math.sin(a) * 6, 7, '#ffd54f', a); }
+}
+
+// ---------- sounds (soft! master volume 0.12) ----------
+let AC = null, MASTER = null;
+function beep(f, t = 0, d = 0.12, type = 'triangle', v = 0.35) {
+  try { if (!AC) { AC = new (window.AudioContext || window.webkitAudioContext)(); MASTER = AC.createGain(); MASTER.gain.value = 0.12; MASTER.connect(AC.destination); }
+    const o = AC.createOscillator(), g = AC.createGain(), n = AC.currentTime + t;
+    o.type = type; o.frequency.value = f; g.gain.setValueAtTime(0.0001, n); g.gain.linearRampToValueAtTime(Math.min(0.5, v), n + 0.015); g.gain.exponentialRampToValueAtTime(0.001, n + d);
+    o.connect(g); g.connect(MASTER); o.start(n); o.stop(n + d + 0.05); } catch (_) {}
+}
+const tune = (notes, gap = 0.12, d = 0.18, type = 'triangle', v = 0.35) => notes.forEach((f, i) => f && beep(f, i * gap, d, type, v));
+const sfx = {
+  click: () => beep(660, 0, 0.07),
+  whoosh: () => beep(320, 0, 0.25, 'sine', 0.3),
+  stamp: () => { beep(200, 0, 0.12, 'sine', 0.4); tune([784, 988, 1175], 0.07, 0.15); },
+  yay: () => tune([523, 659, 784, 1047], 0.1, 0.3),
+};
+// ---------- 🦴 bone drawing kit (all skeletons face RIGHT, feet on y = 0, about 300 wide and 220 tall) ----------
+const BONE = '#f1e6cc', BONE2 = '#e2d1ad', BONED = '#a88d62', HOLE = '#4a3a2a';
+const life = a => a > 0 ? Math.sin(Math.PI * clamp(a, 0, 1)) : 0;                  // 0 -> 1 -> 0: wakes up, then goes back to sleep
+const waveOf = a => Math.sin(a * Math.PI * 9);
+function bone(x1, y1, x2, y2, w, col = BONE) {
+  ctx.lineCap = 'round';
+  line(x1, y1, x2, y2, BONED, w + 2.4); circle(x1, y1, w * 0.72 + 1.2, BONED); circle(x2, y2, w * 0.72 + 1.2, BONED);
+  line(x1, y1, x2, y2, col, w); circle(x1, y1, w * 0.72, col); circle(x2, y2, w * 0.72, col);
+  line(x1 + (x2 - x1) * 0.2, y1 + (y2 - y1) * 0.2 - w * 0.2, x1 + (x2 - x1) * 0.75, y1 + (y2 - y1) * 0.75 - w * 0.2, 'rgba(255,255,255,.45)', Math.max(1, w * 0.25));
+}
+function limb(x, y, segs, w) {                    // segs = [[length, angle]] (angle 0 = straight down, + = forward); returns all joints
+  const pts = [[x, y]];
+  segs.forEach(([len, ang], i) => { const nx = x + Math.sin(ang) * len, ny = y + Math.cos(ang) * len; bone(x, y, nx, ny, w * (1 - i * 0.18)); x = nx; y = ny; pts.push([x, y]); });
+  return pts;
+}
+function toes(x, y, n, len, dir = 1, w = 3, spread = 0.25) {   // little toe bones with claws, fanned out along the ground
+  for (let i = 0; i < n; i++) { const a = (i - (n - 1) / 2) * spread, ex = x + Math.cos(a) * len * dir, ey = Math.min(-0.5, y + Math.sin(a) * len * 0.3 + 2);
+    bone(x, y, ex, ey, w); tri(ex, ey - w * 0.5, ex, ey + w * 0.5, ex + 5 * dir, ey + 1, BONED); }
+}
+function sample(pts, step = 7) {                   // turns a few spine points into many evenly spaced vertebrae
+  const out = [];
+  for (let i = 0; i < pts.length - 1; i++) { const [x1, y1, s1] = pts[i], [x2, y2, s2] = pts[i + 1], d = Math.hypot(x2 - x1, y2 - y1), n = Math.max(1, Math.round(d / step));
+    for (let k = 0; k < n; k++) { const t = k / n; out.push([lerp(x1, x2, t), lerp(y1, y2, t), lerp(s1, s2, t), Math.atan2(y2 - y1, x2 - x1)]); } }
+  const L = pts[pts.length - 1]; out.push([L[0], L[1], L[2], out.length ? out[out.length - 1][3] : 0]); return out;
+}
+function spine(v, spikes = 1) {                    // a chain of vertebrae with little bony spines on top
+  for (const [x, y, s, a] of v) { const nx = Math.sin(a), ny = -Math.cos(a), h = s * 1.3 * spikes;
+    if (h > 1) line(x, y, x + nx * h, y + ny * h, BONED, Math.max(1.5, s * 0.5) + 1.6); }
+  for (const [x, y, s, a] of v) { const nx = Math.sin(a), ny = -Math.cos(a), h = s * 1.3 * spikes;
+    if (h > 1) line(x, y, x + nx * h, y + ny * h, BONE2, Math.max(1.5, s * 0.5));
+    ctx.save(); ctx.translate(x, y); ctx.rotate(a); rr(-s * 0.55, -s * 0.5, s * 1.1, s, s * 0.3, BONE, BONED, 1.2); ctx.restore(); }
+}
+function ribs(v, x1, x2, depth, back = 0.35) {      // curved ribs hanging under the spine between x1 and x2 (depth = function of x)
+  ctx.lineCap = 'round';
+  for (const [x, y, s] of v) { if (x < x1 || x > x2) continue; const d = depth(x);
+    for (const [col, lw] of [[BONED, 4.4], [BONE, 2.6]]) { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(x, y + s * 0.3); ctx.quadraticCurveTo(x + d * 0.35, y + d * 0.5, x - d * back, y + d); ctx.stroke(); } }
+}
+function cuteEye(x, y, r, k, tilt = 0) {           // a friendly cartoon eye that appears in the eye hole when the skeleton wakes up
+  if (k < 0.05) return;
+  ctx.save(); ctx.globalAlpha *= clamp(k * 2, 0, 1);
+  const blink = (frame % 120) < 7 ? 0.2 : 1;
+  ellipse(x, y, r, r * blink, '#fff'); if (blink > 0.5) { circle(x + r * 0.15, y + r * 0.1, r * 0.55, '#3e2723'); circle(x + r * 0.35, y - r * 0.15, r * 0.2, '#fff'); }
+  glow(x + r * 0.4, y + r * 1.6, r * 1.4, 'rgba(255,128,171,.7)', k);
+  ctx.restore();
+}
+function hiBubble(x, y, k, word = 'Hi!') {
+  if (k < 0.3) return; ctx.save(); ctx.globalAlpha *= clamp((k - 0.3) * 3, 0, 1);
+  ctx.font = 'bold 17px "Trebuchet MS", Arial'; const bw = ctx.measureText(word).width + 24; bubble(x - bw / 2, y - 40, bw, 32, x - 14, y, '#fff'); text(word, x, y - 18, 17, '#6d4c41', 'center', false); ctx.restore();
+}
+function dinoStand(w, h = 6) { rr(-w / 2, -h, w, h, 3, '#78909c', '#455a64', 1.5); }
+function rod(x, y, h) { rr(x - 2.5, y, 5, h, 2, '#90a4ae', '#546e7a', 1); }
+function teethRow(x1, x2, y, size, dir, n) {        // dir 1 = pointing down, -1 = up
+  for (let i = 0; i < n; i++) { const x = lerp(x1, x2, (i + 0.5) / n), sz = size * (0.7 + 0.3 * Math.sin(i * 1.7) ** 2); tri(x - sz * 0.35, y, x + sz * 0.35, y, x + sz * 0.1, y + sz * dir, '#fffaf0'); }
+}
+// ---------- T. REX ----------
+function drawTRex(cx, by, s, a) {
+  const k = life(a), wv = waveOf(a), t = frame;
+  ctx.translate(cx, by); ctx.scale(s, s);
+  dinoStand(260); rod(-30, -110, 104); rod(40, -100, 94);
+  const sway = k * Math.sin(t * 0.06) * 6;
+  const v = sample([[-150, -100 + sway, 2.5], [-110, -114 + sway * 0.5, 4.5], [-60, -125, 7], [-20, -130, 8.5], [25, -124, 8], [55, -113, 7], [70, -122, 6.5], [78, -138, 6], [84, -150, 6]]);
+  // far legs + far arm (a bit darker, behind)
+  ctx.save(); ctx.globalAlpha = 0.75;
+  const f = limb(-14, -116, [[47, 0.15], [44, -0.5], [32, 0.75]], 9); toes(f[3][0], f[3][1], 3, 18, 1, 3);
+  limb(50, -106, [[15, 0.4], [12, 1.2]], 3.5);
+  ctx.restore();
+  // hips (ilium, pubis with its "boot", ischium)
+  bone(-15, -118, 6, -84, 7); ellipse(8, -81, 13, 5, BONE); ctx.strokeStyle = BONED; ctx.lineWidth = 1.5; ctx.stroke();
+  bone(-28, -116, -44, -88, 5);
+  ribs(v, -8, 56, x => 38 + 22 * Math.sin((x + 8) / 64 * Math.PI) * 0.9);
+  for (let x = -6; x < 54; x += 8) bone(x, -76 + Math.abs(x - 24) * 0.12, x + 6, -74 + Math.abs(x - 24) * 0.12, 1.8);   // belly ribs (gastralia)
+  spine(v);
+  ellipse(-20, -124, 26, 11, BONE); ctx.strokeStyle = BONED; ctx.lineWidth = 1.5; ctx.stroke();
+  const n = limb(-18, -118, [[48, 0.45], [46, -0.35], [30, 0.55]], 10); toes(n[3][0], n[3][1], 3, 20, 1, 3.4);
+  // the famous tiny arm... that WAVES!
+  const arm = limb(52, -108, [[16, 0.6 + k * 0.5], [13, 1.45 + k * (1.25 + 0.4 * wv)]], 4);
+  const [hx, hy] = arm[2], fa = 1.45 + k * (1.25 + 0.4 * wv);
+  for (const d of [-0.3, 0.3]) bone(hx, hy, hx + Math.sin(fa + d) * 7, hy + Math.cos(fa + d) * 7, 1.8);
+  // skull
+  ctx.save(); ctx.translate(84, -152); ctx.rotate(-0.08 * k + Math.sin(t * 0.05) * 0.03 * k);
+  ctx.save(); ctx.translate(4, 8); ctx.rotate(0.12 * k + 0.04);            // lower jaw
+  poly([[0, 0], [28, 4], [58, 0], [60, 5], [30, 13], [2, 10]], BONE, BONED, 1.5); teethRow(14, 56, 1, 6, -1, 8); circle(12, 5, 3, HOLE); ctx.restore();
+  poly([[0, -16], [10, -24], [32, -21], [56, -14], [67, -7], [69, 1], [60, 5], [30, 7], [8, 9], [-2, 5]], BONE, BONED, 1.5);
+  teethRow(14, 62, 6, 8, 1, 9);
+  ellipse(10, -6, 5, 7, HOLE); ellipse(39, -6, 10, 5.5, HOLE, -0.1); ellipse(61, -6, 3, 2, HOLE);
+  circle(24, -12, 5.5, HOLE); cuteEye(24, -12, 5.5, k);
+  line(4, -18, 50, -15, 'rgba(255,255,255,.5)', 1.5);
+  ctx.restore();
+  hiBubble(118, -178, k, 'Hi! RAWR!');
+}
+// ---------- TRICERATOPS ----------
+function drawTrike(cx, by, s, a) {
+  const k = life(a), wv = waveOf(a), t = frame;
+  ctx.translate(cx, by); ctx.scale(s, s);
+  dinoStand(270); rod(-40, -96, 90); rod(30, -90, 84);
+  const sway = k * Math.sin(t * 0.06) * 5;
+  const v = sample([[-150, -46 + sway, 2.5], [-115, -68 + sway * 0.5, 4.5], [-75, -92, 7], [-40, -104, 8.5], [0, -104, 8.5], [40, -96, 8], [62, -88, 7]]);
+  ctx.save(); ctx.globalAlpha = 0.75;
+  let f = limb(-34, -98, [[50, -0.05], [40, 0.12]], 10); toes(f[2][0], f[2][1], 3, 12, 1, 3);
+  f = limb(44, -90, [[42, -0.1], [38, 0.05]], 9); toes(f[2][0], f[2][1], 3, 10, 1, 3);
+  ctx.restore();
+  bone(-34, -100, -16, -66, 6); bone(-48, -100, -64, -70, 5);
+  ribs(v, -30, 46, x => 50 + 12 * Math.sin((x + 30) / 76 * Math.PI));
+  spine(v);
+  ellipse(-40, -100, 28, 11, BONE); ctx.strokeStyle = BONED; ctx.lineWidth = 1.5; ctx.stroke();
+  const h = limb(-40, -100, [[50, 0.1], [40, -0.1]], 11); toes(h[2][0], h[2][1], 3, 13, 1, 3.4);
+  const fr = limb(40, -92, [[42, -0.25 + k * 0.7], [38, 0.2 + k * (1.3 + 0.35 * wv)]], 10); toes(fr[2][0], fr[2][1], 3, 11, 1, 3);
+  // skull: big solid frill, two long brow horns, a nose horn and a parrot beak
+  ctx.save(); ctx.translate(64, -90); ctx.rotate(-0.1 * k * (1 + 0.3 * Math.sin(t * 0.08)));
+  ctx.beginPath(); ctx.moveTo(4, -2); ctx.arc(0, -10, 46, Math.PI * 1.05, Math.PI * 1.75); ctx.closePath();
+  ctx.fillStyle = BONE2; ctx.fill(); ctx.strokeStyle = BONED; ctx.lineWidth = 1.5; ctx.stroke();
+  for (let i = 0; i <= 8; i++) { const an = Math.PI * (1.05 + i * 0.0875); circle(Math.cos(an) * 46, -10 + Math.sin(an) * 46, 4.5, BONE); }
+  for (let i = 1; i < 5; i++) { const an = Math.PI * (1.05 + i * 0.14); line(0, -8, Math.cos(an) * 38, -10 + Math.sin(an) * 38, 'rgba(168,141,98,.35)', 2); }
+  poly([[-4, -16], [30, -20], [60, 0], [70, 12], [62, 20], [40, 16], [10, 16], [-4, 8]], BONE, BONED, 1.5);
+  poly([[8, 14], [40, 16], [60, 20], [52, 30], [14, 28]], BONE2, BONED, 1.5);                 // lower jaw
+  for (const [bx, by2, tx, ty, w0] of [[24, -18, 66, -52, 6], [18, -16, 58, -48, 5], [54, -4, 62, -18, 4]]) poly([[bx - w0, by2], [bx + w0, by2 + 2], [tx, ty]], BONE, BONED, 1.5);
+  circle(30, -8, 6, HOLE); cuteEye(30, -8, 6, k); ellipse(52, 4, 5, 3, HOLE);
+  ctx.restore();
+  hiBubble(130, -170, k, 'Hello!');
+}
+// ---------- STEGOSAURUS ----------
+function drawStego(cx, by, s, a) {
+  const k = life(a), wv = waveOf(a), t = frame;
+  ctx.translate(cx, by); ctx.scale(s, s);
+  dinoStand(270); rod(-35, -120, 114); rod(40, -94, 88);
+  const sw = k * Math.sin(t * 0.07) * 8;
+  const v = sample([[-148, -52 + sw, 2.5], [-115, -80 + sw * 0.5, 4], [-75, -110, 6.5], [-35, -128, 8], [5, -120, 8], [40, -98, 7], [70, -78, 5], [95, -62, 4]]);
+  ctx.save(); ctx.globalAlpha = 0.75;
+  let f = limb(-30, -122, [[60, -0.05], [50, 0.08]], 10); toes(f[2][0], f[2][1], 3, 12, 1, 3);
+  f = limb(44, -94, [[44, -0.15], [38, 0.08]], 8); toes(f[2][0], f[2][1], 3, 9, 1, 3);
+  ctx.restore();
+  // back plates in two rows (the biggest ones over the hips), then the tail spikes
+  const plates = v.filter(p => p[0] > -118 && p[0] < 78).filter((_, i) => i % 2 === 0);
+  plates.forEach(([x, y], i) => { const hgt = 10 + 26 * Math.sin(clamp((x + 118) / 196, 0, 1) * Math.PI), off = i % 2 ? 7 : -7, lean = -0.25;
+    ctx.save(); ctx.translate(x + off, y - 4); ctx.rotate(lean);
+    poly([[-hgt * 0.38, 0], [-hgt * 0.42, -hgt * 0.55], [0, -hgt], [hgt * 0.42, -hgt * 0.55], [hgt * 0.38, 0]], i % 2 ? BONE2 : BONE, BONED, 1.4);
+    for (let g = -1; g <= 1; g++) line(g * hgt * 0.12, -2, g * hgt * 0.2, -hgt * 0.8, 'rgba(168,141,98,.4)', 1);
+    ctx.restore(); });
+  const tip = v[0], tA = Math.atan2(v[3][1] - tip[1], v[3][0] - tip[0]);
+  [[-2.4, 30], [-2.0, 30], [-2.9, 26], [-2.6, 26]].forEach(([an, L], i) => { const bx = tip[0] + (i % 2) * 9 + 6, b2 = tip[1] - 4 - (i % 2) * 5, a2 = an + tA;
+    poly([[bx - 5, b2 + 1], [bx + 5, b2 - 1], [bx + Math.cos(a2) * L, b2 + Math.sin(a2) * L]], BONE, BONED, 1.4); });
+  bone(-30, -124, -12, -90, 6); bone(-44, -122, -62, -96, 5);
+  ribs(v, -26, 42, x => 44 + 12 * Math.sin((x + 26) / 68 * Math.PI), 0.25);
+  spine(v, 0.6);
+  ellipse(-35, -124, 26, 10, BONE); ctx.strokeStyle = BONED; ctx.lineWidth = 1.5; ctx.stroke();
+  const h = limb(-35, -124, [[62, 0.05], [50, -0.06]], 11); toes(h[2][0], h[2][1], 3, 13, 1, 3.4);
+  const fr = limb(40, -96, [[46, -0.1 + k * 0.7], [40, 0.12 + k * (1.3 + 0.35 * wv)]], 9); toes(fr[2][0], fr[2][1], 3, 10, 1, 3);
+  ctx.save(); ctx.translate(96, -62); ctx.rotate(0.15 - 0.25 * k);           // a small, long, low head with a beak
+  poly([[-4, -6], [14, -9], [30, -5], [36, 2], [30, 6], [4, 7], [-4, 4]], BONE, BONED, 1.3);
+  circle(10, -3, 3.2, HOLE); cuteEye(10, -3, 3.4, k); ellipse(28, -1, 2.2, 1.5, HOLE);
+  ctx.restore();
+  hiBubble(130, -100, k, 'Hiya!');
+}
+// ---------- BRACHIOSAURUS ----------
+function drawBrachio(cx, by, s, a) {
+  const k = life(a), wv = waveOf(a), t = frame, nod = k * Math.sin(t * 0.07) * 6;
+  ctx.translate(cx, by); ctx.scale(s, s);
+  dinoStand(270); rod(-45, -122, 116); rod(40, -142, 136);
+  const v = sample([[-150, -62, 2.5], [-120, -92, 4.5], [-80, -118, 7], [-45, -130, 8.5], [0, -140, 9], [40, -150, 9], [60, -166, 7.5], [74, -186 + nod * 0.4, 6.5], [86, -203 + nod * 0.8, 5.5], [96, -214 + nod, 5]]);
+  ctx.save(); ctx.globalAlpha = 0.75;
+  let f = limb(-40, -124, [[64, -0.02], [50, 0.06]], 11); toes(f[2][0], f[2][1], 4, 9, 1, 3, 0.18);
+  f = limb(46, -144, [[70, -0.08], [60, 0.04]], 10); toes(f[2][0], f[2][1], 4, 8, 1, 3, 0.18);
+  ctx.restore();
+  bone(-40, -126, -24, -94, 7); bone(-54, -124, -70, -98, 6);
+  ribs(v, -38, 48, x => 58 + 12 * Math.sin((x + 38) / 86 * Math.PI), 0.25);
+  spine(v, 0.8);
+  for (const p of v) if (p[0] > 44) { ctx.save(); ctx.translate(p[0], p[1]); ctx.rotate(p[3]); line(-6, 3, 6, 3, BONED, 1.2); ctx.restore(); }   // neck ribs
+  ellipse(-45, -126, 26, 11, BONE); ctx.strokeStyle = BONED; ctx.lineWidth = 1.5; ctx.stroke();
+  const h = limb(-45, -126, [[66, 0.05], [50, -0.05]], 12); toes(h[2][0], h[2][1], 4, 10, 1, 3.4, 0.18);
+  const fr = limb(40, -146, [[70, -0.05 + k * 0.45], [62, 0.05 + k * (1.0 + 0.3 * wv)]], 11); toes(fr[2][0], fr[2][1], 4, 8, 1, 3, 0.18);
+  ctx.save(); ctx.translate(98, -215 + nod); ctx.rotate(0.25 - 0.2 * k);
+  poly([[-4, -4], [4, -14], [14, -15], [18, -8], [28, -4], [32, 3], [26, 7], [2, 7], [-4, 3]], BONE, BONED, 1.3);   // the high bony arch over the nose
+  ellipse(12, -8, 4, 3, HOLE); circle(6, -3, 3.4, HOLE); cuteEye(6, -3, 3.6, k); teethRow(12, 28, 6, 3, 1, 5);
+  ctx.restore();
+  hiBubble(140, -232 + nod, k, 'Hello!');
+}
+// ---------- VELOCIRAPTOR (turkey-sized, so it's small on a tall stand) ----------
+function drawRaptor(cx, by, s, a, lying = false) {
+  const k = life(a), wv = waveOf(a), t = frame;
+  ctx.translate(cx, by); ctx.scale(s, s);
+  if (!lying) { rr(-70, -60, 140, 60, 6, '#8d6e63', '#5d4037', 2); text('ABOUT TURKEY SIZE', 0, -26, 12, '#fff3e0', 'center', false); ctx.translate(0, -60); ctx.scale(0.8, 0.8); }
+  const v = sample([[-150, -92 + k * Math.sin(t * 0.08) * 4, 2], [-100, -93, 3], [-50, -96, 4], [-20, -99, 5], [15, -95, 5], [30, -93, 4.5], [40, -103, 4], [46, -117, 3.5]]);
+  ctx.save(); ctx.globalAlpha = 0.75;
+  let f = limb(-14, -94, [[34, 0.3], [38, -0.6], [24, 0.8]], 6); toes(f[3][0], f[3][1], 2, 13, 1, 2.4);
+  limb(26, -90, [[22, 0.3], [20, 1.0]], 3);
+  ctx.restore();
+  bone(-16, -96, -6, -74, 4); bone(-26, -95, -36, -78, 3.5);
+  ribs(v, -12, 32, x => 24 + 6 * Math.sin((x + 12) / 44 * Math.PI));
+  spine(v, 0.7);
+  ellipse(-18, -97, 15, 6, BONE); ctx.strokeStyle = BONED; ctx.lineWidth = 1.2; ctx.stroke();
+  const n = limb(-18, -94, [[34, 0.6], [38, -0.4], [24, 0.5]], 7); const [fx, fy] = n[3];
+  toes(fx, fy, 2, 15, 1, 2.6);
+  bone(fx, fy, fx + 6, fy - 8, 2.4); ctx.strokeStyle = BONED; ctx.lineWidth = 3.5; ctx.beginPath(); ctx.arc(fx + 12, fy - 6, 7, Math.PI * 1.05, Math.PI * 1.75); ctx.stroke();   // the big sickle claw, held up
+  ctx.strokeStyle = '#fffaf0'; ctx.lineWidth = 2; ctx.stroke();
+  const fa = 1.3 + k * (1.3 + 0.45 * wv), arm = limb(30, -90, [[22, 0.5 + k * 0.5], [20, fa]], 3.6), [hx, hy] = arm[2];
+  for (const d of [-0.35, 0, 0.35]) { const ex = hx + Math.sin(fa + d) * 10, ey = hy + Math.cos(fa + d) * 10; bone(hx, hy, ex, ey, 1.6); circle(ex, ey, 1.6, BONED); }
+  ctx.save(); ctx.translate(46, -118); ctx.rotate(0.12 - 0.2 * k);
+  poly([[-4, -6], [10, -10], [30, -8], [44, -3], [46, 2], [26, 4], [0, 5], [-5, 1]], BONE, BONED, 1.3);
+  poly([[0, 5], [26, 4], [44, 3], [42, 7], [20, 10], [2, 9]], BONE2, BONED, 1.2); teethRow(12, 42, 4, 3, 1, 8);
+  circle(9, -3, 4, HOLE); cuteEye(9, -3, 4, k); ellipse(24, -2, 6, 3, HOLE);
+  ctx.restore();
+  if (!lying) hiBubble(90, -150, k, 'Hi hi!');
+}
+// ---------- PTERANODON (a flying reptile, hung from the ceiling on wires) ----------
+function drawPtera(cx, by, s, a) {
+  const k = life(a), t = frame, flap = k * Math.sin(t * 0.12) * 0.28, bob = k * Math.sin(t * 0.12 + 1) * 4;
+  ctx.translate(cx, by); ctx.scale(s, s);
+  for (const x of [-120, 120]) line(x, -136 + bob, x * 0.8, -300, 'rgba(120,120,120,.7)', 1);
+  ctx.translate(0, bob);
+  for (const sd of [-1, 1]) {
+    ctx.save(); ctx.translate(sd * 8, -140); ctx.rotate(sd * flap);
+    const P = [[0, 0], [sd * 26, -6], [sd * 64, -2], [sd * 86, 2], [sd * 116, -10], [sd * 146, -22]];
+    ctx.fillStyle = 'rgba(214,190,150,.35)'; ctx.beginPath(); ctx.moveTo(0, 0); P.forEach(p => ctx.lineTo(p[0], p[1]));
+    ctx.quadraticCurveTo(sd * 90, 18, sd * 8, 28); ctx.closePath(); ctx.fill(); ctx.strokeStyle = 'rgba(168,141,98,.6)'; ctx.lineWidth = 1; ctx.stroke();
+    bone(0, 0, P[1][0], P[1][1], 4.5); bone(P[1][0], P[1][1], P[2][0], P[2][1], 4); bone(P[2][0], P[2][1], P[3][0], P[3][1], 3.4);
+    bone(P[3][0], P[3][1], P[4][0], P[4][1], 3); bone(P[4][0], P[4][1], P[5][0], P[5][1], 2.4);    // the giant 4th finger holds up the wing
+    for (const d of [-8, -4, 0]) bone(P[3][0], P[3][1], P[3][0] + sd * 7, P[3][1] + d - 6, 1.2);   // three little clawed fingers
+    ctx.restore();
+  }
+  const v = sample([[0, -112, 3], [0, -128, 5], [0, -148, 5]], 6);
+  ribs(v.map(p => [p[0] - 6, p[1], p[2]]), -20, 20, () => 10, -0.2); ribs(v.map(p => [p[0] + 6, p[1], p[2]]), -20, 20, () => 10, 0.2);
+  for (const p of v) rr(p[0] - 3.5, p[1] - 2.5, 7, 5, 2, BONE, BONED, 1);
+  for (const sd of [-1, 1]) { bone(sd * 5, -112, sd * 12, -96, 2.6); bone(sd * 12, -96, sd * 10, -82, 2); toes(sd * 10, -82, 3, 6, sd, 1); }
+  bone(0, -148, 4, -160, 3.5);
+  ctx.save(); ctx.translate(4, -162); ctx.rotate(-0.05 - k * 0.15);
+  poly([[-46, -18], [-30, -12], [-6, -8], [16, -6], [58, 0], [16, 4], [-2, 6], [-8, 0]], BONE, BONED, 1.3);   // long crest + toothless beak
+  poly([[-2, 6], [16, 4], [56, 2], [16, 9], [0, 10]], BONE2, BONED, 1.2);
+  circle(4, -1, 3.6, HOLE); cuteEye(4, -1, 3.8, k);
+  ctx.restore();
+  hiBubble(70, -190, k, 'Hi there!');
+}
+// ---------- MOSASAUR (a giant sea reptile, "swimming" on a stand) ----------
+function drawMosa(cx, by, s, a) {
+  const k = life(a), wv = waveOf(a), t = frame, sw = k * Math.sin(t * 0.08);
+  ctx.translate(cx, by); ctx.scale(s, s);
+  dinoStand(200); rod(-10, -118, 112);
+  const v = sample([[-150, -92 + sw * 8, 2], [-136, -104 + sw * 6, 2.5], [-110, -114 + sw * 3, 4], [-70, -120, 5.5], [-30, -124, 7], [10, -126, 7.5], [50, -124, 6.5], [62, -124, 6]]);
+  ctx.fillStyle = 'rgba(144,202,249,.3)'; ctx.beginPath(); ctx.moveTo(-138, -102 + sw * 6); ctx.quadraticCurveTo(-146, -140, -128, -150 + sw * 4); ctx.quadraticCurveTo(-136, -118, -112, -112); ctx.closePath(); ctx.fill();   // shark-like tail fin
+  ctx.strokeStyle = 'rgba(100,150,200,.6)'; ctx.lineWidth = 1; ctx.stroke();
+  function paddle(x, y, size, ang) {
+    ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
+    ctx.fillStyle = 'rgba(214,190,150,.3)'; ctx.beginPath(); ctx.ellipse(-size * 0.55, size * 0.8, size * 0.45, size * 0.9, 0.5, 0, 7); ctx.fill();
+    bone(0, 0, -size * 0.15, size * 0.35, size * 0.22);
+    for (let d = 0; d < 5; d++) { let px = -size * 0.15 + (d - 2) * size * 0.08, py = size * 0.4; for (let j = 0; j < 5 - Math.abs(d - 2); j++) { px -= size * 0.11; py += size * 0.2; circle(px, py, size * 0.06, BONE); ctx.strokeStyle = BONED; ctx.lineWidth = 0.8; ctx.stroke(); } }
+    ctx.restore();
+  }
+  paddle(-34, -116, 34, 0.5 + sw * 0.2);
+  ribs(v, -60, 52, x => 22 + 10 * Math.sin((x + 60) / 112 * Math.PI), 0.3);
+  spine(v, 0.7);
+  paddle(42, -118, 38, 0.3 - k * (1.6 + 0.4 * wv));
+  ctx.save(); ctx.translate(62, -126); ctx.rotate(-0.04 * k);
+  ctx.save(); ctx.translate(2, 6); ctx.rotate(0.03 + 0.12 * k);
+  poly([[0, 0], [40, 3], [76, 2], [78, 6], [40, 12], [2, 10]], BONE2, BONED, 1.2); teethRow(10, 74, 2, 6, -1, 11); ctx.restore();
+  poly([[-4, -10], [20, -16], [56, -12], [80, -4], [82, 2], [60, 6], [20, 7], [-4, 4]], BONE, BONED, 1.3); teethRow(10, 78, 5, 7, 1, 12);
+  circle(26, -7, 5, HOLE); cuteEye(26, -7, 5, k); ellipse(52, -6, 9, 3, HOLE);
+  ctx.restore();
+  hiBubble(120, -160, k, 'Splash! Hi!');
+}
+// ---------- 🖌️ DIG SITE: brush away the sand! ----------
+const DIG = { cols: 28, rows: 12, x0: -140, y0: -156, cell: 10 };
+let sand = new Array(DIG.cols * DIG.rows).fill(1), digDone = false;
+const sandLeft = () => sand.reduce((q, v) => q + (v > 0.2 ? 1 : 0), 0) / sand.length;
+function brushAt(lx, ly) {
+  let hit = false;
+  for (let r = 0; r < DIG.rows; r++) for (let c = 0; c < DIG.cols; c++) { const x = DIG.x0 + (c + 0.5) * DIG.cell, y = DIG.y0 + (r + 0.5) * DIG.cell, d = Math.hypot(x - lx, y - ly);
+    if (d < 22 && sand[r * DIG.cols + c] > 0) { sand[r * DIG.cols + c] = Math.max(0, sand[r * DIG.cols + c] - 0.35 * (1 - d / 26)); hit = true; } }
+  if (hit && frame % 6 === 0) beep(1800 + Math.random() * 600, 0, 0.05, 'sine', 0.08);
+  if (!digDone && sandLeft() < 0.12) { digDone = true; sand.fill(0); say('🦴 You found a whole Velociraptor fossil!', 220); confetti(280, 260, 60); sfx.yay(); }
+}
+function drawDig(cx, by, s, a) {
+  ctx.translate(cx, by); ctx.scale(s, s);
+  rr(-150, -40, 300, 40, 6, '#8d6e63', '#5d4037', 2); for (const x of [-130, 120]) rr(x, -40, 10, 40, 2, '#6d4c41');
+  rr(-148, -166, 296, 130, 8, '#6d4c41'); rr(-142, -158, 284, 118, 6, '#a1887f');
+  ctx.save(); rrect(-142, -158, 284, 118, 6); ctx.clip();
+  ctx.fillStyle = 'rgba(0,0,0,.08)'; for (let i = 0; i < 30; i++) ctx.fillRect(-140 + (i * 53) % 280, -156 + (i * 37) % 112, 6, 3);
+  ctx.save(); ctx.translate(-10, 56); ctx.rotate(0.05); drawRaptor(8, -96, 0.8, 0, true); ctx.restore();
+  for (let r = 0; r < DIG.rows; r++) for (let c = 0; c < DIG.cols; c++) { const v = sand[r * DIG.cols + c]; if (v <= 0) continue;
+    const x = DIG.x0 + c * DIG.cell, y = DIG.y0 + r * DIG.cell; ctx.fillStyle = `rgba(230,196,128,${clamp(v * 1.4, 0, 1)})`; ctx.fillRect(x - 0.5, y - 0.5, DIG.cell + 1, DIG.cell + 1);
+    if ((r * 7 + c * 3) % 5 === 0 && v > 0.5) circle(x + 4, y + 5, 1.2, 'rgba(160,120,60,.5)'); }
+  ctx.restore();
+  ctx.save(); ctx.translate(122, -176); ctx.rotate(0.5 + (a > 0 ? Math.sin(frame * 0.4) * 0.3 : 0));   // a little brush
+  rr(-3, -30, 6, 30, 2, '#a1887f'); rr(-7, 0, 14, 6, 2, '#5d4037'); for (let i = -5; i <= 5; i += 2) line(i, 6, i * 1.2, 16, '#ffcc80', 1.6);
+  ctx.restore();
+  text(digDone ? '🦴 FOUND IT!' : `Sand left: ${Math.round(sandLeft() * 100)}%`, 0, -12, 15, '#fff3e0', 'center', false);
+}
+// ---------- 🟠 AMBER ----------
+function drawAmber(cx, by, s, a) {
+  const k = life(a), t = frame;
+  ctx.translate(cx, by); ctx.scale(s, s);
+  rr(-50, -100, 100, 100, 8, '#5d4037', '#3e2723', 2); rr(-62, -110, 124, 14, 5, '#795548');
+  ctx.save(); ctx.translate(0, -150);
+  if (k > 0) glow(0, 0, 110, 'rgba(255,236,150,.9)', k);
+  const g = ctx.createRadialGradient(-12, -14, 4, 0, 0, 56); g.addColorStop(0, '#ffe082'); g.addColorStop(0.5, '#ffa000'); g.addColorStop(1, '#bf5f00');
+  poly([[-54, -6], [-34, -36], [6, -44], [44, -26], [56, 8], [30, 36], [-14, 40], [-46, 24]], g, '#8a4b00', 2);
+  ctx.globalAlpha = 0.55 + 0.45 * k;                                            // a tiny bug trapped inside long, long ago
+  ellipse(0, 2, 13, 6, '#4e342e'); circle(14, 0, 5, '#4e342e');
+  ctx.strokeStyle = '#4e342e'; ctx.lineWidth = 1.2; for (const d of [-6, 0, 6]) { ctx.beginPath(); ctx.moveTo(d, 6); ctx.lineTo(d - 6, 18); ctx.moveTo(d, -2); ctx.lineTo(d - 4, -2); ctx.stroke(); }
+  ctx.beginPath(); ctx.moveTo(17, -3); ctx.quadraticCurveTo(26, -14, 30, -10); ctx.stroke();
+  ellipse(-6, -8, 14, 5, 'rgba(255,255,255,.55)', -0.5); ellipse(4, -9, 12, 4, 'rgba(255,255,255,.45)', 0.4);
+  ctx.globalAlpha = 1;
+  for (const [x, y, r] of [[-30, 14, 2.5], [24, 20, 2], [-20, -20, 1.6], [34, -8, 1.8]]) circle(x, y, r, 'rgba(255,255,255,.5)');
+  ellipse(-24, -18, 12, 5, 'rgba(255,255,255,.6)', -0.6);
+  ctx.restore();
+  if (k > 0.2) for (let i = 0; i < 6; i++) { const an = i * 1.05 + t * 0.02; star(Math.cos(an) * 80, -150 + Math.sin(an) * 70, 5, '#fff59d'); }
+}
+// ---------- 👣 FOSSIL FOOTPRINTS ----------
+function track(x, y, sz, lit) {
+  ctx.save(); ctx.translate(x, y);
+  for (const [an, L] of [[-0.45, 1], [0, 1.15], [0.45, 1]]) { ctx.save(); ctx.rotate(an); ellipse(0, -sz * 0.75 * L, sz * 0.22, sz * 0.6 * L, lit ? 'rgba(255,213,79,.9)' : '#6d5a48'); tri(-sz * 0.12, -sz * 1.3 * L, sz * 0.12, -sz * 1.3 * L, 0, -sz * 1.55 * L, lit ? '#ffb300' : '#5d4a3a'); ctx.restore(); }
+  ellipse(0, 0, sz * 0.38, sz * 0.32, lit ? 'rgba(255,213,79,.9)' : '#6d5a48');
+  ctx.restore();
+}
+function drawTracks(cx, by, s, a) {
+  ctx.translate(cx, by); ctx.scale(s, s);
+  rr(-150, -30, 300, 30, 5, '#78909c', '#455a64', 2);
+  poly([[-148, -40], [-120, -190], [130, -200], [150, -36]], '#a1887f', '#6d4c41', 3);
+  ctx.fillStyle = 'rgba(0,0,0,.08)'; for (let i = 0; i < 18; i++) ctx.fillRect(-120 + (i * 61) % 250, -180 + (i * 29) % 130, 14, 3);
+  const n = 6, lit = a > 0 ? Math.floor(a * (n + 2)) : -1;
+  for (let i = 0; i < n; i++) track(-100 + i * 40, -70 - i * 20 + (i % 2 ? -12 : 12), 15, i <= lit && a > 0);
+  for (let i = 0; i < 3; i++) track(70 + i * 18, -150 + i * 30, 8, false);
+}
+// ---------- the exhibits: [card facts are TRUE] ----------
+const EX = [
+  { id: 'trex', name: 'Tyrannosaurus rex', icon: '🦖', act: 'WAKE UP + WAVE!', tag: 'Hall of Giants  •  meat-eater', draw: drawTRex,
+    facts: ['T. rex lived about 68 to 66 million years ago, in what is now western North America.', 'Its arms were tiny, with just two fingers on each hand.', 'Its biggest teeth were about as long as a banana!', 'The famous T. rex skeleton named "Sue" was found in South Dakota in 1990.'] },
+  { id: 'trike', name: 'Triceratops', icon: '🦕', act: 'WAKE UP + WAVE!', tag: 'Hall of Giants  •  plant-eater', draw: drawTrike,
+    facts: ['Its name means "three-horned face".', 'It lived at the same time as T. rex, about 68 to 66 million years ago.', 'Its big frill was made of solid bone.', 'It snipped plants with a beak, like a giant parrot.'] },
+  { id: 'stego', name: 'Stegosaurus', icon: '🦕', act: 'WAKE UP + WAVE!', tag: 'Hall of Giants  •  plant-eater', draw: drawStego,
+    facts: ['Stegosaurus lived about 150 million years ago, much EARLIER than T. rex.', 'T. rex lived closer in time to YOU than to Stegosaurus!', 'It had big bony plates on its back and four spikes on its tail.', 'People call those tail spikes a "thagomizer". The name came from a funny cartoon!'] },
+  { id: 'brachio', name: 'Brachiosaurus', icon: '🦕', act: 'WAKE UP + WAVE!', tag: 'Long-Neck Hall  •  plant-eater', draw: drawBrachio,
+    facts: ['It lived about 154 million years ago, long before T. rex.', 'Its front legs were LONGER than its back legs, like a giraffe.', 'It could reach its head up higher than a 3-story building.', 'It ate leaves from the tops of tall trees.'] },
+  { id: 'raptor', name: 'Velociraptor', icon: '🦖', act: 'WAKE UP + WAVE!', tag: 'Long-Neck Hall  •  small and speedy', draw: drawRaptor, hallS: 1.15,
+    facts: ['A real Velociraptor was only about as big as a turkey!', 'It had feathers. Scientists found bumps on its arm bones where feathers were attached.', 'It had a big curved claw on each foot.', 'It lived in Mongolia, about 75 to 71 million years ago.'] },
+  { id: 'ptera', name: 'Pteranodon', icon: '🪽', act: 'WAKE UP + FLAP!', tag: 'Sky + Sea Hall  •  a flying reptile', draw: drawPtera, noStand: true,
+    facts: ['Pteranodon was NOT a dinosaur. It was a pterosaur, a flying reptile.', 'Its name means "wing without teeth". It had no teeth at all!', 'Its wing was held up by one super-long finger.', 'Big ones had wings about 18 feet (5.6 meters) across.'] },
+  { id: 'mosa', name: 'Mosasaur', icon: '🌊', act: 'WAKE UP + WAVE!', tag: 'Sky + Sea Hall  •  a sea reptile', draw: drawMosa,
+    facts: ['Mosasaurs were NOT dinosaurs. They were giant sea reptiles, related to lizards.', 'They swam with flippers and a tail fin a bit like a shark\'s.', 'The first one was found in the 1700s near the Meuse River in the Netherlands. "Mosa" means Meuse!', 'They lived until 66 million years ago.'] },
+  { id: 'dig', name: 'Dig Site', icon: '🖌️', act: 'BRUSH!', tag: 'Fossil Lab  •  rub with your finger!', draw: drawDig, closeS: 1.75, closeY: 470, hint: '👆 Rub the sand with your finger to brush it away!',
+    drag: (x, y) => brushAt((x - 280) / 1.75, (y - 470) / 1.75),
+    onAct: () => { for (let i = 0; i < 6; i++) { const left = []; sand.forEach((v, j) => { if (v > 0) left.push(j); }); if (!left.length) break; const j = left[Math.floor(Math.random() * left.length)]; brushAt(DIG.x0 + (j % DIG.cols + 0.5) * DIG.cell, DIG.y0 + (Math.floor(j / DIG.cols) + 0.5) * DIG.cell); } actT = 0; },
+    snd: () => {}, facts: ['Scientists who dig up fossils are called paleontologists.', 'They brush sand away gently with little brushes, so the bones don\'t break.', 'A fossil forms when bones get buried, and over a very long time they turn into stone.', 'The word "dinosaur" means "terrible lizard". It was made up in 1842.'] },
+  { id: 'amber', name: 'Amber', icon: '🟠', act: 'HOLD IT TO THE LIGHT!', tag: 'Fossil Lab  •  a golden time capsule', draw: drawAmber,
+    snd: () => tune([784, 988, 1175, 1568], 0.12, 0.4, 'sine'), facts: ['Amber is tree sap that got hard over millions of years.', 'Tiny bugs got stuck in the sticky sap, and stayed inside ever since!', 'In 2016, scientists found a feathered dinosaur tail inside amber. It was about 99 million years old!', 'Amber can float in very salty water.'] },
+  { id: 'tracks', name: 'Fossil Footprints', icon: '👣', act: 'FOLLOW THE TRACKS!', tag: 'Fossil Lab  •  real dinosaur steps', draw: drawTracks,
+    snd: () => { for (let i = 0; i < 6; i++) beep(140, i * 0.32, 0.18, 'sine', 0.45); }, facts: ['Footprints that turned into stone are called trace fossils.', 'How far apart the steps are tells scientists how fast a dinosaur was walking.', 'Three-toed tracks were often made by dinosaurs that walked on two legs.', 'You can see real dinosaur footprints at Dinosaur Valley State Park in Texas.'] },
+];
+// ---------- halls ----------
+function hallBack(wall, wall2, trim, floor) {
+  const g = ctx.createLinearGradient(0, 0, 0, 420); g.addColorStop(0, wall); g.addColorStop(1, wall2); ctx.fillStyle = g; ctx.fillRect(0, 0, W, 420);
+  for (let i = 0; i < 4; i++) { const x = 120 + i * 240; ctx.fillStyle = 'rgba(255,255,255,.18)'; ctx.beginPath(); ctx.moveTo(x - 50, 330); ctx.lineTo(x - 50, 150); ctx.arc(x, 150, 50, Math.PI, 0); ctx.lineTo(x + 50, 330); ctx.fill(); }
+  for (let i = 0; i <= 4; i++) { const x = i * 240; rr(x - 14, 90, 28, 320, 4, 'rgba(255,255,255,.22)'); }
+  ctx.fillStyle = trim; ctx.fillRect(0, 76, W, 6); ctx.fillRect(0, 408, W, 12);
+  ctx.fillStyle = floor; ctx.fillRect(0, 420, W, 62); ctx.fillStyle = 'rgba(0,0,0,.08)'; for (let x = 0; x < W; x += 60) ctx.fillRect(x, 420, 2, 62);
+}
+const HALLS = [
+  { name: '🦖 HALL 1: THE GIANTS', ids: ['trex', 'trike', 'stego'], guide: 'Tap a skeleton. It will wake up and WAVE at you!', trim: '#8d6e63', back: () => hallBack('#f3e5c8', '#e2c99a', '#8d6e63', '#a1887f') },
+  { name: '🦕 HALL 2: LONG NECK + SPEEDY CLAWS', ids: ['brachio', 'raptor'], guide: 'Long neck, tiny raptor! Which one is your favorite?', trim: '#6d4c41', back: () => hallBack('#efe0c4', '#d9bf8f', '#6d4c41', '#8d6e63') },
+  { name: '🌊 HALL 3: SKY + SEA REPTILES', ids: ['ptera', 'mosa'], guide: 'These two are NOT dinosaurs! They are reptile cousins.', trim: '#1565c0', back: () => { hallBack('#cfe8f7', '#9ccbe8', '#1565c0', '#78909c'); for (let i = 0; i < 9; i++) ellipse((i * 131 + frame * 0.2) % (W + 80) - 40, 360 + Math.sin(i + frame * 0.02) * 6, 40, 6, 'rgba(255,255,255,.25)'); } },
+  { name: '🔬 HALL 4: THE FOSSIL LAB', ids: ['dig', 'amber', 'tracks'], guide: 'Be a scientist! Brush the sand to find a fossil.', trim: '#2e7d32', back: () => hallBack('#e8f0e0', '#c8d8b8', '#2e7d32', '#8d9b7d') },
+  { name: '🎁 THE DINO GIFT SHOP', ids: [], shop: true, guide: 'Pick any souvenir you like. They are all FREE!', trim: '#00897b', back: () => hallBack('#fff3e0', '#ffe0b2', '#00897b', '#bcaaa4') },
+];
+// ---------- 🎁 souvenirs ----------
+function plushRex(x, y, sc) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(sc, sc);
+  ctx.fillStyle = '#66bb6a'; ctx.beginPath(); ctx.moveTo(-20, 18); ctx.quadraticCurveTo(-56, 20, -60, 2); ctx.quadraticCurveTo(-40, 6, -18, -2); ctx.fill();
+  ellipse(0, 10, 24, 22, '#66bb6a'); ellipse(2, 16, 14, 13, '#c5e1a5'); ellipse(14, -22, 22, 17, '#66bb6a');
+  rr(-12, 26, 10, 12, 4, '#43a047'); rr(6, 26, 10, 12, 4, '#43a047'); rr(18, 4, 8, 4, 2, '#43a047');
+  circle(18, -26, 4, '#fff'); circle(19, -26, 2.4, '#263238'); ctx.strokeStyle = '#2e7d32'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(20, -16, 9, 0.2, 1.2); ctx.stroke();
+  for (let i = 0; i < 4; i++) tri(-8 + i * 8, -6 - i * 5, -2 + i * 8, -14 - i * 5, 4 + i * 8, -6 - i * 5, '#ffca28');
+  ctx.restore();
+}
+const SHOP = [
+  { k: 'plush', name: 'T. rex Plush', draw: (x, y) => plushRex(x, y, 1.2) },
+  { k: 'bone', name: 'Bone Pencil', draw: (x, y) => { ctx.translate(x, y); ctx.rotate(-0.4); bone(-60, 0, 60, 0, 10); rr(60, -4, 18, 8, 2, '#ffca28'); tri(78, -4, 78, 4, 88, 0, '#f5d6a0'); } },
+  { k: 'amberkey', name: 'Amber Keychain', draw: (x, y) => { ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, y - 44, 12, 0, 7); ctx.stroke(); line(x, y - 32, x, y - 20, '#90a4ae', 2); ctx.translate(x, y + 2); ctx.scale(0.5, 0.5); const g = ctx.createRadialGradient(-10, -10, 4, 0, 0, 50); g.addColorStop(0, '#ffe082'); g.addColorStop(1, '#e65100'); poly([[-40, -20], [0, -40], [40, -16], [36, 24], [-6, 40], [-40, 18]], g, '#8a4b00', 3); ellipse(0, 0, 10, 5, '#4e342e'); } },
+  { k: 'egg', name: 'Dino Egg', draw: (x, y) => { ellipse(x, y, 34, 44, '#fff8e1'); ctx.strokeStyle = '#bcaaa4'; ctx.lineWidth = 2; ctx.stroke(); for (const [dx, dy, r] of [[-12, -18, 6], [10, -4, 8], [-6, 18, 5], [14, 22, 4]]) circle(x + dx, y + dy, r, '#a5d6a7'); } },
+  { k: 'hat', name: 'Explorer Hat', draw: (x, y) => { ellipse(x, y + 18, 70, 16, '#c8a165'); ctx.fillStyle = '#d7b377'; ctx.beginPath(); ctx.moveTo(x - 38, y + 16); ctx.quadraticCurveTo(x - 36, y - 34, x, y - 36); ctx.quadraticCurveTo(x + 36, y - 34, x + 38, y + 16); ctx.fill(); rr(x - 38, y, 76, 12, 3, '#6d4c41'); } },
+  { k: 'card', name: 'Skeleton Postcard', draw: (x, y) => { rr(x - 70, y - 46, 140, 92, 6, '#e3f2fd', '#90a4ae', 2); ctx.save(); ctx.beginPath(); ctx.rect(x - 66, y - 42, 132, 84); ctx.clip(); drawTRex(x, y + 42, 0.38, 0); ctx.restore(); text('Greetings!', x, y - 26, 14, '#1565c0', 'center', false); } },
+];
+// ---------- the museum's look ----------
+const MUSE = {
+  key: 'dinoMuseum', trophyId: 'dinoMuseum', accent: '#8d6e63', dark: '#3e2723', master: 'Dino Museum Master!',
+  confetti: ['#ffca28', '#8d6e63', '#66bb6a', '#fff3e0', '#ff7043'],
+  closeBack: () => { const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#2b2118'); g.addColorStop(1, '#4e3b2a'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); glow(280, 300, 300, 'rgba(255,224,160,.45)'); },
+  drawTitle: () => {
+    hallBack('#f3e5c8', '#d9bf8f', '#8d6e63', '#a1887f');
+    tri(30, 150, W - 30, 150, W / 2, 84, '#8d6e63'); rr(30, 146, W - 60, 14, 4, '#6d4c41');
+    rr(W / 2 - 300, 6, 600, 72, 18, 'rgba(62,39,35,.85)');
+    text('THE DINO BONES MUSEUM', W / 2, 54, 44, '#ffe0a3', 'center', '#3e2723');
+    text('💡 Ben\'s idea!', W / 2, 136, 22, '#fff', 'center', '#6d4c41');
+    ctx.save(); drawTRex(250, 392, 0.95, ((frame % 400) / 400)); ctx.restore();
+    ctx.save(); drawStego(700, 392, 0.85, 0); ctx.restore();
+    drawRobo(470, 400, { s: 1.8, pose: 'happy' });
+    button(START, '▶ COME IN!', '#43a047', 30);
+    ctx.fillStyle = '#3e2723'; ctx.fillRect(0, 482, W, 58); text('Tap the skeletons • brush for fossils • collect stamps!', W / 2, 518, 20, '#ffe0a3', 'center', false);
+  },
+};
+// ---------- the museum engine (same way of walking + tapping as the MacBook Museum) ----------
+let save = { seen: {}, bag: {} };
+try { const s = JSON.parse(localStorage.getItem(MUSE.key) || 'null'); if (s && s.seen) save = Object.assign({ seen: {}, bag: {} }, s); } catch (_) {}
+function writeSave() { try { localStorage.setItem(MUSE.key, JSON.stringify(save)); } catch (_) {} }
+const EI = {}; EX.forEach((e, i) => EI[e.id] = i);
+function drawEx(i, cx, by, s, a = 0) { ctx.save(); try { EX[i].draw(cx, by, s, a); } finally { ctx.restore(); } }
+let state = 'title', hall = 0, tap = null, sel = 0, showI = 0, actT = 0, msg = '', msgT = 0, parts = [], hallT = 0, down = false, shopPop = null;
+const seenCount = () => EX.filter(e => save.seen[e.id]).length;
+const START = { x: 360, y: 410, w: 240, h: 70 };
+const BTN_PREV = { x: 14, y: 488, w: 130, h: 44 }, BTN_NEXT = { x: 816, y: 488, w: 130, h: 44 }, BTN_PASS = { x: 160, y: 488, w: 300, h: 44 }, BTN_SHOP = { x: 476, y: 488, w: 324, h: 44 };
+const BTN_BACK = { x: 14, y: 12, w: 110, h: 42 }, BTN_ACT = { x: 580, y: 412, w: 350, h: 62 };
+const ART = { x: 0, y: 60, w: 560, h: 480 };
+const actLen = e => e.actLen || 180;
+function slotPos(h, k) { const n = HALLS[h].ids.length, sw = W / n; return { x: (k + 0.5) * sw, y: 392, s: Math.min(1.3, (sw - 24) / 300) * (EX[EI[HALLS[h].ids[k]]].hallS || 1), w: sw }; }
+function slotRect(h, k) { const p = slotPos(h, k); return { x: p.x - p.w / 2 + 4, y: 80, w: p.w - 8, h: 395 }; }
+function say(s, t = 170) { msg = s; msgT = t; }
+function confetti(x, y, n = 40) { const cs = MUSE.confetti; for (let i = 0; i < n; i++) parts.push({ x, y, vx: (Math.random() - 0.5) * 9, vy: -Math.random() * 8 - 2, c: cs[i % cs.length], life: 70 + Math.random() * 40 }); }
+function openExhibit(id) {
+  showI = EI[id]; state = 'close'; actT = 0; sfx.whoosh(); const e = EX[showI]; if (e.onOpen) e.onOpen();
+  if (!save.seen[id]) { save.seen[id] = 1; writeSave(); sfx.stamp(); say('📘 NEW STAMP in your Museum Passport!'); confetti(W / 2, 120, 30);
+    if (seenCount() === EX.length && !save.allDone) { save.allDone = 1; writeSave(); trophy(MUSE.trophyId); setTimeout(() => { say('🏆 You saw EVERY exhibit! ' + MUSE.master, 260); confetti(W / 2, 200, 120); sfx.yay(); }, 700); } }
+}
+function goHall(h) { hall = (h + HALLS.length) % HALLS.length; sel = 0; hallT = 0; shopPop = null; sfx.whoosh(); }
+// ---------- input (taps, drags, and arrow keys / Enter / Escape) ----------
+const toXY = e => { const r = C.getBoundingClientRect(); return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height }; };
+C.addEventListener('mousedown', e => { tap = toXY(e); down = true; });
+addEventListener('mouseup', () => { down = false; });
+C.addEventListener('mousemove', e => { if (!down || !(e.buttons & 1)) return; const p = toXY(e); if (state === 'close' && EX[showI].drag && p.x < 560 && p.y > 60) EX[showI].drag(p.x, p.y); });
+const press = {};
+addEventListener('keydown', e => { press[e.key] = true; if (e.key.startsWith('Arrow') || e.key === ' ') e.preventDefault(); });
+function doAct() { const e = EX[showI]; actT = 1; if (e.onAct) e.onAct(); if (e.snd) e.snd(); else sfx.yay(); }
+function update() {
+  frame++; hallT++; if (msgT > 0) msgT--; if (actT > 0) { actT++; if (actT > actLen(EX[showI])) actT = 0; }
+  for (const p of parts) { p.x += p.vx; p.y += p.vy; p.vy += 0.2; p.life--; } parts = parts.filter(p => p.life > 0);
+  if (state === 'close' && EX[showI].tick) EX[showI].tick();
+  if (shopPop) { shopPop.t++; if (shopPop.t > 150) shopPop = null; }
+  const t = tap, k = Object.assign({}, press); tap = null; for (const key in press) delete press[key];
+  const ok = k.Enter || k[' '], esc = k.Escape;
+  if (state === 'title') { if (ok || inBox(t, START)) { state = 'hall'; hallT = 0; sfx.click(); } return; }
+  if (state === 'close') {
+    const e = EX[showI];
+    if (esc || inBox(t, BTN_BACK)) { state = 'hall'; sfx.click(); }
+    else if (ok || inBox(t, BTN_ACT)) doAct();
+    else if (t && t.x < 560 && t.y > 60) { if (e.tap) e.tap(t.x, t.y); else if (e.drag) e.drag(t.x, t.y); else if (!actT) doAct(); }
+    return;
+  }
+  if (state === 'pass') { if (esc || ok || inBox(t, BTN_BACK)) { state = 'hall'; sfx.click(); } return; }
+  const H0 = HALLS[hall];
+  if (k.ArrowRight) { if (!H0.shop && sel < H0.ids.length - 1) sel++; else goHall(hall + 1); }
+  if (k.ArrowLeft) { if (!H0.shop && sel > 0) sel--; else { goHall(hall - 1); sel = Math.max(0, HALLS[hall].ids.length - 1); } }
+  if (ok && !H0.shop && H0.ids[sel]) { openExhibit(H0.ids[sel]); return; }
+  if (ok && H0.shop) { buySouvenir((Object.keys(save.bag).length) % SHOP.length); return; }
+  if (!t) return;
+  if (inBox(t, BTN_PREV)) { goHall(hall - 1); return; }
+  if (inBox(t, BTN_NEXT)) { goHall(hall + 1); return; }
+  if (inBox(t, BTN_PASS)) { state = 'pass'; sfx.click(); return; }
+  if (inBox(t, BTN_SHOP)) { goHall(HALLS.length - 1); return; }
+  if (t.y < 76 && t.x < 110) { say(H0.guide); tune([880, 660, 880], 0.1, 0.1, 'square', 0.15); return; }
+  if (H0.shop) { SHOP.forEach((sv, i) => { if (inBox(t, shopRect(i))) buySouvenir(i); }); return; }
+  H0.ids.forEach((id, i) => { if (inBox(t, slotRect(hall, i))) { sel = i; openExhibit(id); } });
+}
+// ---------- 🎁 gift shop ----------
+const shopRect = i => ({ x: 30 + (i % 3) * 300, y: 90 + Math.floor(i / 3) * 178, w: 280, h: 166 });
+function buySouvenir(i) {
+  const sv = SHOP[i]; if (!sv) return; const r = shopRect(i);
+  const first = !save.bag[sv.k]; save.bag[sv.k] = 1; writeSave(); shopPop = { i, t: 0 };
+  sfx.stamp(); confetti(r.x + r.w / 2, r.y + 60, 24);
+  say(first ? `🎁 You got the ${sv.name}! It's FREE!` : `🎁 You already have the ${sv.name}. Here's another!`);
+  if (Object.keys(save.bag).length === SHOP.length && first) setTimeout(() => { say('🛍️ You got EVERY souvenir! Thanks for visiting!', 240); confetti(W / 2, 140, 90); sfx.yay(); }, 800);
+}
+function drawShop() {
+  SHOP.forEach((sv, i) => {
+    const b = shopRect(i), got = save.bag[sv.k], pop = shopPop && shopPop.i === i ? Math.sin(Math.min(1, shopPop.t / 30) * Math.PI) * 14 : 0;
+    rr(b.x, b.y + 5, b.w, b.h, 18, 'rgba(0,0,0,.18)'); rr(b.x, b.y - pop, b.w, b.h, 18, '#fff', MUSE.accent, 3);
+    ctx.save(); try { ctx.translate(b.x + b.w / 2, b.y + 66 - pop); ctx.scale(0.82, 0.82); sv.draw(0, 0, 1); } finally { ctx.restore(); }
+    fit(sv.name, b.x + b.w / 2, b.y + b.h - 34 - pop, 19, b.w - 16, MUSE.dark, 'center', false);
+    text(got ? '✅ in your bag!' : '👆 tap to take it!', b.x + b.w / 2, b.y + b.h - 12 - pop, 15, got ? '#2e7d32' : '#6d4c41', 'center', false);
+  });
+  const n = Object.keys(save.bag).length;
+  fit(`🛍️ Your bag: ${n}/${SHOP.length}    Every souvenir is FREE!` + (save.allDone ? '   🏆 Museum Master!' : ''), W / 2, 461, 19, 900, MUSE.dark, 'center', false);
+}
+// ---------- drawing ----------
+function drawGuide(x, y, s) { drawRobo(x, y, { s, mouth: msgT > 0, pose: msgT > 0 ? 'happy' : 'idle', wave: msgT > 0 || hallT < 120 }); }
+function drawHeader(H0) {
+  ctx.fillStyle = 'rgba(0,0,0,.28)'; ctx.fillRect(0, 0, W, 76);
+  fit(H0.name, W / 2 + 40, 34, 28, 740, '#fff');
+  fit('🤖 Robo: "' + H0.guide + '"', W / 2 + 40, 62, 16, 760, '#fff59d', 'center', 'rgba(0,0,0,.5)');
+  drawGuide(52, 74, 1.15);
+}
+function drawHall() {
+  const H0 = HALLS[hall];
+  H0.back();
+  drawHeader(H0);
+  if (H0.shop) return drawShop();
+  H0.ids.forEach((id, k) => {
+    const p = slotPos(hall, k), i = EI[id], e = EX[i], seen = save.seen[id];
+    if (k === sel) glow(p.x, 280, 170, 'rgba(255,255,220,.55)');
+    if (!e.noStand) { rr(p.x - Math.min(150, p.w / 2 - 14), 392, Math.min(300, p.w - 28), 16, 5, H0.stand || '#5d4037'); }
+    drawEx(i, p.x, 392, p.s, 0);
+    const pw = Math.min(260, p.w - 16); rr(p.x - pw / 2, 420, pw, 50, 10, H0.trim);
+    fit(e.icon + ' ' + e.name, p.x, 442, 18, pw - 10, '#fff', 'center', false); text(seen ? '✅ visited' : '👆 tap me!', p.x, 462, 14, '#fff', 'center', false);
+  });
+  if (H0.visitors) { ctx.save(); try { H0.visitors(); } finally { ctx.restore(); } }
+}
+function drawBar() {
+  rr(0, 482, W, 58, 0, 'rgba(20,20,35,.92)');
+  button(BTN_PREV, '◀ BACK', '#607d8b', 20); button(BTN_NEXT, 'NEXT ▶', '#607d8b', 20);
+  button(BTN_PASS, `📘 PASSPORT  ${seenCount()}/${EX.length}`, '#5c6bc0', 20); button(BTN_SHOP, '🎁 GIFT SHOP', '#00897b', 22);
+}
+function drawClose() {
+  const e = EX[showI], a = actT > 0 ? actT / actLen(e) : 0;
+  MUSE.closeBack();
+  drawEx(showI, 280, e.closeY || 462, e.closeS || 1.6, a);
+  rr(566, 56, 380, 432, 20, '#fffdf7'); rr(576, 66, 360, 62, 14, MUSE.accent);
+  fit(e.icon + ' ' + e.name, 756, 108, 30, 340, '#fff'); fit('🏷️ ' + e.tag, 756, 154, 16, 350, '#5d4037', 'center', false);
+  let y = 188; for (const f of e.facts) { for (const ln of wrap('• ' + f, 17, 344)) { if (y < 404) text(ln, 584, y, 17, '#263238', 'left', false); y += 22; } y += 5; }
+  button(BTN_ACT, '✨ ' + (typeof e.act === 'function' ? e.act() : e.act), '#43a047', 24);
+  button(BTN_BACK, '⬅ BACK', '#455a64', 18);
+  if (e.hint) fit(e.hint, 280, 530, 17, 540, '#fff');
+  if (msgT > 0) { rr(140, 8, 410, 40, 12, 'rgba(0,0,0,.65)'); fit(msg, 345, 35, 18, 390, '#fff59d'); }
+}
+function drawPass() {
+  ctx.fillStyle = MUSE.dark; ctx.fillRect(0, 0, W, H); rr(40, 60, W - 80, 420, 20, '#fffdf7');
+  text('📘 MY MUSEUM PASSPORT', W / 2, 46, 30, '#fff');
+  const n = EX.length, cols = Math.min(5, Math.ceil(n / 2)), cw = (W - 120) / cols;
+  EX.forEach((e, i) => { const x = 60 + cw * (i % cols + 0.5), y = 150 + Math.floor(i / cols) * 190, seen = save.seen[e.id];
+    ctx.strokeStyle = seen ? '#c62828' : '#bdbdbd'; ctx.lineWidth = 4; ctx.setLineDash(seen ? [] : [8, 6]); ctx.beginPath(); ctx.arc(x, y, 62, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+    if (seen) { ctx.save(); ctx.beginPath(); ctx.arc(x, y, 60, 0, 7); ctx.clip(); drawEx(i, x, y + 44, 0.36 * (e.stampS || 1), 0); ctx.restore(); } else text('?', x, y + 12, 34, '#bdbdbd', 'center', false);
+    const ln = wrap(e.name, 15, cw - 10).slice(0, 2); ln.forEach((l, j) => fit(l, x, y + 86 + j * 17, 15, cw - 8, '#263238', 'center', false)); });
+  if (save.allDone) fit('🏆 ' + MUSE.master + ' You saw them all!', W / 2, 474, 18, 800, '#c62828', 'center', false);
+  button(BTN_BACK, '⬅ BACK', '#455a64', 18);
+}
+function draw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
+  if (state === 'title') MUSE.drawTitle();
+  else if (state === 'close') drawClose();
+  else if (state === 'pass') drawPass();
+  else { drawHall(); drawBar(); if (msgT > 0) { rr(W / 2 - 300, 84, 600, 40, 12, 'rgba(0,0,0,.65)'); fit(msg, W / 2, 111, 19, 580, '#fff59d'); } }
+  for (const p of parts) { ctx.globalAlpha = Math.min(1, p.life / 20); ctx.fillStyle = p.c; ctx.fillRect(p.x - 4, p.y - 4, 8, 8); }
+  ctx.globalAlpha = 1;
+}
+let last = performance.now(), acc = 0;
+function loop(now) { acc += Math.min(100, now - last); last = now; while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; } draw(); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+</script>

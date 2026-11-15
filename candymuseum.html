@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>The Candy Museum</title>
+<script src="touchpad.js?v=10"></script>
+<style>
+  html, body { height: 100%; }
+  body { margin: 0; background: #4a1942; display: flex; align-items: center; justify-content: center; overflow: hidden; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  canvas { width: min(100vw, calc(100vh * 960 / 540)); height: auto; display: block; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,.5); touch-action: none; }
+</style>
+<canvas id="game" width="960" height="540"></canvas>
+<script>
+// 🍭 THE CANDY MUSEUM: Ben's idea! Giant candy statues (from the Candy Factory), a chocolate river,
+// how chocolate is made, a gumball wall and a cotton candy cloud room. Visitors are Ben's Candy Factory customers.
+// Only TRUE facts on the cards. Guide: Robo (drawn with the same code as Robo's Movie).
+// ---------- shared core: helpers, Robo (copied from robomovie.html), sounds ----------
+const C = document.getElementById('game');
+let ctx = C.getContext('2d');
+const W = 960, H = 540;
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+let frame = 0;
+function rrect(x, y, w, h, r) {
+  ctx.beginPath();
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function roundRect(x, y, w, h, r, fill) { ctx.fillStyle = fill; rrect(x, y, Math.max(0, w), Math.max(0, h), r); ctx.fill(); }
+function rr(x, y, w, h, r, fill, stroke, lw = 3) {
+  rrect(x, y, Math.max(0, w), Math.max(0, h), r);
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw; ctx.stroke(); }
+}
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, 7); ctx.fill(); }
+const dot = circle;
+function ellipse(x, y, rx, ry, fill, rot = 0) { ctx.fillStyle = fill; ctx.beginPath(); ctx.ellipse(x, y, Math.max(0, rx), Math.max(0, ry), rot, 0, 7); ctx.fill(); }
+const ell = (x, y, rx, ry, c, rot = 0) => ellipse(x, y, Math.max(0.1, rx), Math.max(0.1, ry), c, rot);
+function glow(x, y, r, col, a = 1) {
+  r = Math.max(1, r);
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.save(); ctx.globalAlpha = clamp(a, 0, 1); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); ctx.restore();
+}
+function star(x, y, r, fill, rot = 0, pts = 5, inner = 0.48) {
+  ctx.fillStyle = fill; ctx.beginPath();
+  for (let i = 0; i < pts * 2; i++) { const a = -Math.PI / 2 + rot + i * Math.PI / pts, q = i % 2 ? r * inner : r; ctx.lineTo(x + Math.cos(a) * Math.max(0, q), y + Math.sin(a) * Math.max(0, q)); }
+  ctx.closePath(); ctx.fill();
+}
+function tri(a, b, c, d, e, f, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.lineTo(e, f); ctx.closePath(); ctx.fill(); }
+function poly(pts, fill, stroke, lw = 2) { ctx.beginPath(); pts.forEach((p, i) => ctx[i ? 'lineTo' : 'moveTo'](p[0], p[1])); ctx.closePath(); if (fill) { ctx.fillStyle = fill; ctx.fill(); } if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw; ctx.stroke(); } }
+function line(x1, y1, x2, y2, col, lw) { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+function text(str, x, y, size, color = '#fff', align = 'center', outline = true) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; ctx.textAlign = align; ctx.textBaseline = 'alphabetic'; ctx.lineJoin = 'round';
+  if (outline) { ctx.strokeStyle = typeof outline === 'string' ? outline : 'rgba(0,0,0,.6)'; ctx.lineWidth = Math.max(3, size / 6); ctx.strokeText(str, x, y); }
+  ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function fit(str, x, y, size, maxW, color, align, outline) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; const w = ctx.measureText(str).width || 0;
+  text(str, x, y, w > maxW ? Math.max(9, Math.floor(size * maxW / w)) : size, color, align, outline);
+}
+function emoji(e, x, y, size) { ctx.font = `${size}px "Apple Color Emoji", "Segoe UI Emoji", Arial`; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = '#000'; ctx.fillText(e, x, y); }
+function wrap(str, size, maxW) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; const out = []; let ln = '';
+  for (const wd of String(str).split(' ')) { const t = ln ? ln + ' ' + wd : wd; if (ln && ctx.measureText(t).width > maxW) { out.push(ln); ln = wd; } else ln = t; }
+  if (ln) out.push(ln); return out;
+}
+function button(b, label, fill, size = 22) {
+  rr(b.x, b.y + 4, b.w, b.h, 14, 'rgba(0,0,0,.35)'); rr(b.x, b.y, b.w, b.h, 14, fill);
+  fit(label, b.x + b.w / 2, b.y + b.h / 2 + size * 0.36, size, b.w - 12);
+}
+const inBox = (t, b) => t && t.x >= b.x && t.x <= b.x + b.w && t.y >= b.y && t.y <= b.y + b.h;
+function bubble(x, y, w, h, tx, ty, fill = '#fff') {          // speech bubble with a little tail pointing at (tx, ty)
+  rr(x, y, w, h, 14, fill, 'rgba(0,0,0,.25)', 2);
+  ctx.fillStyle = fill; ctx.beginPath(); ctx.moveTo(clamp(tx, x + 16, x + w - 30), y + h - 1); ctx.lineTo(tx, ty); ctx.lineTo(clamp(tx, x + 16, x + w - 30) + 16, y + h - 1); ctx.closePath(); ctx.fill();
+}
+
+const ROBO = { head: '#ffffff', body: '#f5f7ff', visor: '#111827', eye: '#40c4ff', legs: '#3d5afe', pod: '#2979ff', edge: '#9fa8da' };
+// o = { s, face, t, pose (idle/off/walk/run/wobble/jump/happy/fall/sit/wave), eyes 0..1, mouth, parts (bitmask: 1 body+legs, 2 head+visor, 4 ear pods, 8 antenna), dizzy }
+function drawRobo(x, y, o = {}) {
+  const s = o.s || 2.6, f = o.face || 1, t = o.t || frame, pose = o.pose || 'idle', parts = o.parts === undefined ? 15 : o.parts;
+  const eyes = o.eyes === undefined ? 1 : o.eyes;
+  let tilt = o.tilt || 0, bob = 0, lA = 0, lB = 0, sq = 1;
+  if (pose === 'walk' || pose === 'run') { const k = t * (pose === 'run' ? 0.5 : 0.3); lA = Math.max(0, Math.sin(k)) * 4; lB = Math.max(0, -Math.sin(k)) * 4; bob = -Math.abs(Math.sin(k)) * 1.5; }
+  else if (pose === 'wobble') { const k = t * 0.16; tilt += Math.sin(k) * 0.22; lA = Math.max(0, Math.sin(k)) * 5; lB = Math.max(0, -Math.sin(k)) * 5; }
+  else if (pose === 'jump') { lA = lB = 4; sq = 1.06; }
+  else if (pose === 'happy') { bob = -Math.abs(Math.sin(t * 0.25)) * 4; tilt += Math.sin(t * 0.25) * 0.08; }
+  else if (pose === 'fall') { tilt += -0.5; bob = 3; }
+  else if (pose === 'sit') { lA = lB = 3; bob = 3; }
+  else if (pose !== 'off') bob = Math.sin(t * 0.06) * 0.6;
+  ctx.save(); ctx.translate(x, y); ctx.rotate(tilt * f); ctx.scale(s * f, s * sq); ctx.translate(0, bob);
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  if (parts & 1) {
+    ctx.fillStyle = ROBO.legs; ctx.fillRect(-11, -7 - lA, 8, 7); ctx.fillRect(3, -7 - lB, 8, 7);
+    roundRect(-13, -21, 26, 17, 6, ROBO.body);
+    ctx.strokeStyle = ROBO.edge; ctx.lineWidth = 0.8; rrect(-13, -21, 26, 17, 6); ctx.stroke();
+    circle(0, -12, 3, ROBO.pod); circle(-0.8, -12.8, 1, 'rgba(255,255,255,.7)');
+  }
+  if (parts & 8) {                                     // 📡 the little antenna (wiggles when he moves)
+    const tip = Math.sin(t * 0.12) * (pose === 'idle' || pose === 'off' ? 0.6 : 2);
+    ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 1.4; ctx.beginPath(); ctx.moveTo(0, -40); ctx.quadraticCurveTo(tip * 0.4, -45, tip, -49); ctx.stroke();
+    const lit = pose === 'off' ? 0.25 : 0.6 + (o.mouth ? 0.4 * Math.abs(Math.sin(t * 0.4)) : 0);
+    if (pose !== 'off') glow(tip, -50, 7, 'rgba(64,196,255,.8)', lit);
+    circle(tip, -50, 2.6, ROBO.pod); circle(tip - 0.8, -50.8, 0.8, 'rgba(255,255,255,.8)');
+  }
+  if (parts & 4) { roundRect(-20, -31, 6, 9, 3, ROBO.pod); roundRect(14, -31, 6, 9, 3, ROBO.pod); }
+  if (parts & 2) {
+    roundRect(-17, -40, 34, 22, 12, ROBO.head);
+    ctx.strokeStyle = ROBO.edge; ctx.lineWidth = 0.8; rrect(-17, -40, 34, 22, 12); ctx.stroke();
+    roundRect(-13, -36, 26, 13, 9, ROBO.visor);
+    ellipse(-7, -34, 4, 1.2, 'rgba(255,255,255,.18)', -0.2);
+    if (eyes > 0.01) {
+      ctx.save(); ctx.globalAlpha *= clamp(eyes, 0, 1);
+      glow(3, -29.5, 16, 'rgba(64,196,255,.45)', eyes);
+      const ey = -29.5;
+      if (o.dizzy) {                                   // 💫 swirly dizzy eyes
+        ctx.strokeStyle = ROBO.eye; ctx.lineWidth = 1.1;
+        for (const ex of [-3, 9]) { ctx.beginPath(); for (let a = 0; a < 12; a += 0.4) ctx.lineTo(ex + Math.cos(a + t * 0.2) * a * 0.3, ey + Math.sin(a + t * 0.2) * a * 0.3); ctx.stroke(); }
+      } else if (pose === 'happy' || o.happy) {        // ^ ^ happy eyes
+        ctx.strokeStyle = ROBO.eye; ctx.lineWidth = 1.8;
+        for (const ex of [-3, 9]) { ctx.beginPath(); ctx.arc(ex, ey + 2, 3.2, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+      } else {
+        const blink = (t % 200) < 6 ? 0.6 : 5, talk = o.mouth ? 0.85 + 0.15 * Math.sin(t * 0.6) : 1;
+        ctx.fillStyle = ROBO.eye; ctx.beginPath();
+        ctx.ellipse(-3, ey, 3.5, Math.max(0.5, blink * talk), 0, 0, 7); ctx.ellipse(9, ey, 3.5, Math.max(0.5, blink * talk), 0, 0, 7); ctx.fill();
+        if (blink > 1) { circle(-2, ey - 2, 1, 'rgba(255,255,255,.85)'); circle(10, ey - 2, 1, 'rgba(255,255,255,.85)'); }
+      }
+      if (o.mouth) { ctx.strokeStyle = ROBO.eye; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(1, -25); ctx.lineTo(1 + 2 + Math.abs(Math.sin(t * 0.5)) * 3, -25); ctx.stroke(); }
+      ctx.restore();
+    }
+  }
+  if (o.wave) {                                        // 👋 a little waving hand
+    const a = Math.sin(t * 0.3) * 0.5;
+    ctx.save(); ctx.translate(13, -16); ctx.rotate(-1.2 + a); roundRect(-2, -14, 4, 14, 2, ROBO.pod); circle(0, -15, 3.4, ROBO.head); ctx.restore();
+  }
+  ctx.restore();
+  if (o.dizzy) for (let i = 0; i < 3; i++) { const a = t * 0.08 + i * 2.1; star(x + Math.cos(a) * 22 * s / 2.6, y - 118 * s / 2.6 + Math.sin(a) * 6, 7, '#ffd54f', a); }
+}
+
+// ---------- sounds (soft! master volume 0.12) ----------
+let AC = null, MASTER = null;
+function beep(f, t = 0, d = 0.12, type = 'triangle', v = 0.35) {
+  try { if (!AC) { AC = new (window.AudioContext || window.webkitAudioContext)(); MASTER = AC.createGain(); MASTER.gain.value = 0.12; MASTER.connect(AC.destination); }
+    const o = AC.createOscillator(), g = AC.createGain(), n = AC.currentTime + t;
+    o.type = type; o.frequency.value = f; g.gain.setValueAtTime(0.0001, n); g.gain.linearRampToValueAtTime(Math.min(0.5, v), n + 0.015); g.gain.exponentialRampToValueAtTime(0.001, n + d);
+    o.connect(g); g.connect(MASTER); o.start(n); o.stop(n + d + 0.05); } catch (_) {}
+}
+const tune = (notes, gap = 0.12, d = 0.18, type = 'triangle', v = 0.35) => notes.forEach((f, i) => f && beep(f, i * gap, d, type, v));
+const sfx = {
+  click: () => beep(660, 0, 0.07),
+  whoosh: () => beep(320, 0, 0.25, 'sine', 0.3),
+  stamp: () => { beep(200, 0, 0.12, 'sine', 0.4); tune([784, 988, 1175], 0.07, 0.15); },
+  yay: () => tune([523, 659, 784, 1047], 0.1, 0.3),
+};
+// ---------- 🍬 candy + customers: copied from candyfactory.html so they look EXACTLY the same ----------
+const SHAPES = [
+  { id: 'lolli', name: 'Lollipop', icon: '🍭' },
+  { id: 'bear', name: 'Gummy Bear', icon: '🧸' },
+  { id: 'star', name: 'Star', icon: '⭐' },
+  { id: 'donut', name: 'Donut Candy', icon: '🍩' },
+  { id: 'cane', name: 'Candy Cane', icon: '🍬' },
+];
+const COLORS = [
+  { id: 'red', name: 'Red', c: '#ff1744', d: '#b2102f', l: '#ff8a80' },
+  { id: 'orange', name: 'Orange', c: '#ff9100', d: '#c56200', l: '#ffd180' },
+  { id: 'yellow', name: 'Yellow', c: '#ffea00', d: '#c7b400', l: '#ffff8d' },
+  { id: 'green', name: 'Green', c: '#00e676', d: '#00a152', l: '#b9f6ca' },
+  { id: 'blue', name: 'Blue', c: '#2979ff', d: '#004ecb', l: '#82b1ff' },
+  { id: 'purple', name: 'Purple', c: '#d500f9', d: '#9e00c5', l: '#ea80fc' },
+];
+const PLAIN = { id: 'plain', name: 'Plain', c: '#f5f5f5', d: '#bdbdbd', l: '#ffffff' };
+const FLAVORS = [
+  { id: 'straw', name: 'Strawberry', icon: '🍓' },
+  { id: 'lemon', name: 'Lemon', icon: '🍋' },
+  { id: 'blue', name: 'Blueberry', icon: '🫐' },
+  { id: 'rocket', name: 'Rocket Fuel', icon: '🚀' },
+  { id: 'pickle', name: 'Pickle', icon: '🥒' },
+];
+const TOPPINGS = [
+  { id: 'none', name: 'No Topping', icon: '🚫' },
+  { id: 'sprinkles', name: 'Sprinkles', icon: '🌈' },
+  { id: 'eyes', name: 'Googly Eyes', icon: '👀' },
+  { id: 'glitter', name: 'Glitter', icon: '✨' },
+];
+function starPath(x, y, r1, r2, n = 5, rot = -Math.PI / 2) {
+  ctx.beginPath();
+  for (let i = 0; i < n * 2; i++) { const r = i % 2 ? r2 : r1, a = rot + i * Math.PI / n; ctx[i ? 'lineTo' : 'moveTo'](x + Math.cos(a) * r, y + Math.sin(a) * r); }
+  ctx.closePath();
+}
+function twinkle(x, y, r, c = '#fff') {
+  ctx.fillStyle = c; ctx.beginPath();
+  ctx.moveTo(x, y - r); ctx.lineTo(x + r * 0.25, y - r * 0.25); ctx.lineTo(x + r, y); ctx.lineTo(x + r * 0.25, y + r * 0.25);
+  ctx.lineTo(x, y + r); ctx.lineTo(x - r * 0.25, y + r * 0.25); ctx.lineTo(x - r, y); ctx.lineTo(x - r * 0.25, y - r * 0.25); ctx.closePath(); ctx.fill();
+}
+
+// ---------- Candy drawing: c = { shape, color, flavor, topping } (any part can be missing) ----------
+const SPRINKLE_SPOTS = [[-14, -10, 0.4], [8, -16, 1.3], [16, 2, 2.1], [-4, 6, 0.9], [-18, 8, 2.7], [6, 14, 0.2], [-8, -20, 1.8], [18, -8, 0.7], [0, -4, 2.4]];
+const SPRINKLE_COLS = ['#ff1744', '#ffea00', '#00e5ff', '#76ff03', '#ffffff', '#ff4081'];
+function candyCol(c) { return COLORS.find(k => k.id === c.color) || PLAIN; }
+function drawCandy(c, x, y, s = 1, t = frame) {
+  if (!c || !c.shape) return;
+  const K = candyCol(c);
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  let top = -26;                                      // where googly eyes go
+  if (c.shape === 'lolli') {
+    rr(-4, 10, 8, 36, 3, '#fff8e1', '#bcaaa4', 2);      // stick
+    dot(0, -8, 26, K.c); ctx.strokeStyle = K.l; ctx.lineWidth = 5;   // swirl
+    ctx.beginPath(); for (let a = 0; a < 12; a += 0.3) { const r = a * 2; ctx[a ? 'lineTo' : 'moveTo'](Math.cos(a) * r, -8 + Math.sin(a) * r); } ctx.stroke();
+    ctx.strokeStyle = K.d; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(0, -8, 26, 0, Math.PI * 2); ctx.stroke();
+    top = -14;
+  } else if (c.shape === 'bear') {
+    dot(-15, -26, 9, K.c); dot(15, -26, 9, K.c);        // ears
+    ell(0, 10, 22, 24, K.c); dot(0, -14, 19, K.c);      // body + head
+    dot(-20, 4, 8, K.c); dot(20, 4, 8, K.c); dot(-12, 30, 9, K.c); dot(12, 30, 9, K.c);   // paws
+    ell(0, 12, 11, 13, K.l); ell(-6, -22, 5, 3, 'rgba(255,255,255,.6)', -0.5);
+    ell(0, -8, 7, 5, K.l);
+    top = -18;
+  } else if (c.shape === 'star') {
+    starPath(0, 0, 34, 15); ctx.fillStyle = K.c; ctx.fill(); ctx.strokeStyle = K.d; ctx.lineWidth = 3; ctx.stroke();
+    starPath(-2, -2, 18, 8); ctx.fillStyle = K.l; ctx.globalAlpha = 0.5; ctx.fill(); ctx.globalAlpha = 1;
+    top = -6;
+  } else if (c.shape === 'donut') {
+    ctx.fillStyle = K.c; ctx.beginPath(); ctx.arc(0, 0, 30, 0, Math.PI * 2); ctx.arc(0, 0, 10, 0, Math.PI * 2, true); ctx.fill('evenodd');
+    ctx.strokeStyle = K.d; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(0, 0, 30, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.arc(0, 0, 10, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = K.l; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(0, 0, 21, 3.6, 4.8); ctx.stroke();
+    top = -20;
+  } else if (c.shape === 'cane') {
+    ctx.lineWidth = 15; ctx.strokeStyle = K.c;
+    ctx.beginPath(); ctx.moveTo(8, 42); ctx.lineTo(8, -16); ctx.arc(-6, -16, 14, 0, Math.PI, true); ctx.stroke();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 5;     // white stripes
+    for (let yy = 34; yy > -12; yy -= 12) { ctx.beginPath(); ctx.moveTo(1, yy + 4); ctx.lineTo(15, yy - 4); ctx.stroke(); }
+    for (const a of [-0.6, -1.6, -2.6]) { ctx.beginPath(); ctx.moveTo(-6 + Math.cos(a) * 7, -16 + Math.sin(a) * 7); ctx.lineTo(-6 + Math.cos(a - 0.4) * 21, -16 + Math.sin(a - 0.4) * 21); ctx.stroke(); }
+    top = 0;
+  }
+  if (c.topping === 'sprinkles') {
+    for (let i = 0; i < SPRINKLE_SPOTS.length; i++) {
+      const [sx, sy, a] = SPRINKLE_SPOTS[i]; ctx.save(); ctx.translate(sx * (c.shape === 'cane' ? 0.5 : 1) + (c.shape === 'cane' ? 6 : 0), sy * (c.shape === 'cane' ? 2 : 1)); ctx.rotate(a);
+      ctx.fillStyle = SPRINKLE_COLS[i % SPRINKLE_COLS.length]; ctx.fillRect(-4, -1.5, 8, 3); ctx.restore();
+    }
+  } else if (c.topping === 'glitter') {
+    for (let i = 0; i < 6; i++) {
+      const ph = (t * 0.08 + i * 1.7) % 6.28, r = 3 + 4 * Math.abs(Math.sin(ph));
+      twinkle(Math.sin(i * 2.4) * 24, Math.cos(i * 3.1) * 24, r, i % 2 ? '#fff' : '#fff59d');
+    }
+  }
+  if (c.topping === 'eyes') {
+    const ex = c.shape === 'cane' ? -6 : 0, ey = c.shape === 'cane' ? -20 : top;
+    for (const sx of [-9, 9]) {
+      dot(ex + sx, ey, 8, '#fff'); ctx.strokeStyle = '#222'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(ex + sx, ey, 8, 0, Math.PI * 2); ctx.stroke();
+      const a = t * 0.13 + sx; dot(ex + sx + Math.cos(a) * 3.5, ey + 2 + Math.abs(Math.sin(a)) * 2.5, 4, '#111');
+    }
+  }
+  ctx.restore();
+  if (c.flavor) {                                     // a little flavor tag next to the candy
+    const F = FLAVORS.find(f => f.id === c.flavor);
+    if (F) { dot(x + 30 * s, y + 26 * s, 13 * s, 'rgba(255,255,255,.9)'); emoji(F.icon, x + 30 * s, y + 27 * s, 17 * s); }
+  }
+}
+// ---------- Customers drawing: x = middle, y = feet line, mood = 'wait' | 'happy' | 'silly' | 'yum' ----------
+function face(x, y, gap, r, mood, pupil = '#1b1b2f') {
+  for (const sx of [-gap, gap]) {
+    if (mood === 'happy') { ctx.strokeStyle = pupil; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x + sx, y + 2, r * 0.7, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+    else if (mood === 'silly') {                      // swirly eyes
+      dot(x + sx, y, r, '#fff'); ctx.strokeStyle = pupil; ctx.lineWidth = 1.8; ctx.beginPath();
+      for (let a = 0; a < 9; a += 0.4) ctx[a ? 'lineTo' : 'moveTo'](x + sx + Math.cos(a + frame * 0.2 * (sx > 0 ? 1 : -1)) * a * r / 10, y + Math.sin(a + frame * 0.2) * a * r / 10);
+      ctx.stroke();
+    } else {
+      dot(x + sx, y, r, '#fff'); const blink = frame % 200 < 6;
+      if (blink) { ctx.fillStyle = pupil; ctx.fillRect(x + sx - r, y - 1, r * 2, 2.5); } else dot(x + sx + 1, y + 1, r * 0.55, pupil);
+    }
+  }
+  const my = y + r + 7;
+  ctx.strokeStyle = pupil; ctx.lineWidth = 2.5;
+  if (mood === 'happy' || mood === 'yum') { ctx.fillStyle = '#c62828'; ctx.beginPath(); ctx.arc(x, my - 2, r * 0.9, 0.1, Math.PI - 0.1); ctx.closePath(); ctx.fill(); ell(x, my + r * 0.45, r * 0.4, r * 0.25, '#ff8a80'); }
+  else if (mood === 'silly') { ctx.beginPath(); for (let i = -2; i <= 2; i++) ctx[i > -2 ? 'lineTo' : 'moveTo'](x + i * r * 0.4, my + (i % 2 ? 3 : -2)); ctx.stroke(); ell(x + r * 0.4, my + 5, 4, 6, '#ff80ab'); }
+  else { ctx.beginPath(); ctx.arc(x, my - 4, r * 0.6, 0.3, Math.PI - 0.3); ctx.stroke(); }
+}
+function drawCustomer(id, x, y, s, mood, bob = 0) {
+  ctx.save(); ctx.translate(x, y + bob); ctx.scale(s, s);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  if (id === 'robo') {
+    rr(-14, -12, 10, 12, 3, '#3d5afe'); rr(4, -12, 10, 12, 3, '#3d5afe');   // legs
+    rr(-24, -52, 48, 42, 12, '#f5f7ff', '#90a4ae', 2); dot(0, -32, 5, '#2979ff');
+    rr(-41, -96, 9, 18, 4, '#2979ff'); rr(32, -96, 9, 18, 4, '#2979ff');    // ear pods
+    rr(-34, -116, 68, 58, 20, '#ffffff', '#90a4ae', 2);                     // head
+    rr(-27, -108, 54, 40, 14, '#111827');                                   // visor
+    ctx.fillStyle = '#40c4ff'; ctx.strokeStyle = '#40c4ff'; ctx.lineWidth = 4;
+    if (mood === 'happy' || mood === 'yum') { for (const sx of [-11, 11]) { ctx.beginPath(); ctx.arc(sx, -86, 6, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); } ctx.beginPath(); ctx.arc(0, -82, 9, 0.3, Math.PI - 0.3); ctx.stroke(); }
+    else if (mood === 'silly') { ell(-11, -90, 3, 7, '#40c4ff'); ell(11, -88, 7, 3, '#40c4ff'); ctx.beginPath(); ctx.moveTo(-8, -76); ctx.lineTo(-3, -79); ctx.lineTo(2, -76); ctx.lineTo(7, -79); ctx.stroke(); }
+    else { const b = frame % 180 < 6 ? 1 : 7; ell(-11, -88, 4.5, b, '#40c4ff'); ell(11, -88, 4.5, b, '#40c4ff'); }
+    rr(-3, -128, 6, 12, 2, '#90a4ae'); dot(0, -130, 5, frame % 40 < 20 ? '#ff5252' : '#ffeb3b');   // antenna
+  } else if (id === 'sparks') {
+    ell(0, -30, 30, 30, '#f4b942'); ell(0, -24, 18, 20, '#ffe0a3');        // body + tummy
+    ctx.fillStyle = '#e53935'; ctx.fillRect(-24, -62, 48, 8); dot(0, -52, 6, '#ffd740');   // collar + tag
+    dot(0, -92, 32, '#f4b942');                                               // head
+    ell(-30, -92, 11, 24, '#8d5a2b', 0.3); ell(30, -92, 11, 24, '#8d5a2b', -0.3);   // floppy ears
+    ell(0, -76, 17, 13, '#ffe0a3'); ell(0, -84, 7, 5, '#222');                // snout + nose
+    face(0, -100, 12, 6, mood);
+    if (mood === 'happy') ell(6, -64, 6, 9, '#ff80ab');                      // tongue out!
+  } else if (id === 'pages') {
+    ctx.strokeStyle = '#ff9800'; ctx.lineWidth = 9; ctx.beginPath(); ctx.moveTo(22, -20); ctx.quadraticCurveTo(48, -30, 40, -64 + Math.sin(frame * 0.08) * 5); ctx.stroke();
+    ell(0, -32, 28, 32, '#ff9800'); ell(0, -26, 16, 20, '#ffe0b2');
+    ctx.fillStyle = '#e65100'; for (const k of [-1, 0, 1]) ctx.fillRect(k * 10 - 2, -62, 4, 12);
+    ctx.fillStyle = '#ff9800';
+    ctx.beginPath(); ctx.moveTo(-28, -104); ctx.lineTo(-24, -134); ctx.lineTo(-6, -118); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(28, -104); ctx.lineTo(24, -134); ctx.lineTo(6, -118); ctx.fill();
+    dot(0, -94, 30, '#ff9800');
+    ctx.fillStyle = '#e65100'; ctx.fillRect(-3, -124, 6, 12);
+    face(0, -98, 11, 6, mood);
+    dot(0, -86, 3, '#ff80ab');
+    ctx.strokeStyle = '#5d4037'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(10, -84); ctx.lineTo(32, -88); ctx.moveTo(10, -81); ctx.lineTo(32, -78); ctx.moveTo(-10, -84); ctx.lineTo(-32, -88); ctx.moveTo(-10, -81); ctx.lineTo(-32, -78); ctx.stroke();
+    ctx.fillStyle = '#e53935'; ctx.fillRect(-20, -66, 40, 7);               // red bookmark scarf
+  } else if (id === 'gloop') {
+    const wob = Math.sin(frame * 0.1) * 3;
+    ctx.fillStyle = '#9c27b0'; ctx.beginPath();
+    ctx.moveTo(-44, 0); ctx.quadraticCurveTo(-50 - wob, -60, -20, -100); ctx.quadraticCurveTo(0, -112, 20, -100); ctx.quadraticCurveTo(50 + wob, -60, 44, 0); ctx.closePath(); ctx.fill();
+    ell(-18, -80, 8, 14, 'rgba(255,255,255,.25)', 0.3);
+    dot(-30, 4, 8, '#9c27b0'); dot(26, 6, 7, '#9c27b0');                    // drips
+    ctx.fillStyle = '#ffd740'; ctx.beginPath();                              // crown
+    ctx.moveTo(-24, -100); ctx.lineTo(-26, -128); ctx.lineTo(-12, -114); ctx.lineTo(0, -134); ctx.lineTo(12, -114); ctx.lineTo(26, -128); ctx.lineTo(24, -100); ctx.closePath(); ctx.fill();
+    dot(0, -112, 4, '#e53935'); dot(-16, -108, 3, '#2979ff'); dot(16, -108, 3, '#00e676');
+    face(0, -68, 15, 9, mood, '#311b92');
+  } else if (id === 'snatcher') {
+    for (let i = 0; i < 7; i++) { ctx.fillStyle = i % 2 ? '#fff' : '#212121'; ctx.fillRect(-24, -62 + i * 9, 48, 9); }   // striped shirt
+    ctx.strokeStyle = '#9c4dcc'; ctx.lineWidth = 7; ctx.beginPath(); ctx.moveTo(-22, -10); ctx.quadraticCurveTo(-50, -10, -44, -42 + Math.sin(frame * 0.12) * 4); ctx.stroke();
+    ctx.fillStyle = '#9c4dcc';
+    ctx.beginPath(); ctx.moveTo(-28, -96); ctx.lineTo(-24, -130); ctx.lineTo(-4, -112); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(28, -96); ctx.lineTo(24, -130); ctx.lineTo(4, -112); ctx.fill();
+    dot(0, -90, 30, '#9c4dcc');
+    rr(-32, -106, 64, 20, 9, '#111');                                         // burglar mask
+    face(0, -96, 12, 6, mood, '#2e7d32');
+    dot(3, -80, 4, '#f06292');
+    ctx.strokeStyle = '#e1bee7'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(12, -80); ctx.lineTo(34, -84); ctx.moveTo(-10, -80); ctx.lineTo(-32, -84); ctx.stroke();
+  } else if (id === 'eggbert') {
+    ctx.fillStyle = '#43a047';                                               // little wings
+    ctx.beginPath(); ctx.moveTo(-22, -54); ctx.lineTo(-52, -76 + Math.sin(frame * 0.2) * 6); ctx.lineTo(-40, -44); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(22, -54); ctx.lineTo(52, -76 + Math.sin(frame * 0.2) * 6); ctx.lineTo(40, -44); ctx.fill();
+    ell(0, -32, 28, 32, '#66bb6a'); ell(0, -28, 17, 22, '#fff59d');
+    ctx.strokeStyle = '#e6d96b'; ctx.lineWidth = 2; for (let k = 0; k < 3; k++) { ctx.beginPath(); ctx.moveTo(-14, -40 + k * 10); ctx.lineTo(14, -40 + k * 10); ctx.stroke(); }
+    dot(0, -90, 30, '#66bb6a');
+    ctx.fillStyle = '#fffde7'; ctx.beginPath();                               // eggshell hat
+    ctx.moveTo(-22, -108); ctx.lineTo(-14, -100); ctx.lineTo(-6, -110); ctx.lineTo(2, -100); ctx.lineTo(10, -110); ctx.lineTo(18, -100); ctx.lineTo(24, -110);
+    ctx.quadraticCurveTo(0, -140, -22, -108); ctx.fill();
+    face(0, -92, 12, 7, mood);
+    dot(-6, -80, 2, '#2e7d32'); dot(6, -80, 2, '#2e7d32');
+  } else if (id === 'pinch') {
+    ctx.strokeStyle = '#b71c1c'; ctx.lineWidth = 4;
+    for (const sx of [-1, 1]) for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.moveTo(sx * (14 + i * 7), -16); ctx.lineTo(sx * (24 + i * 8), 0); ctx.stroke(); }
+    const wv = Math.sin(frame * 0.12) * 0.3;
+    for (const sx of [-1, 1]) {                                              // claws up!
+      ctx.strokeStyle = '#d32f2f'; ctx.lineWidth = 7; ctx.beginPath(); ctx.moveTo(sx * 30, -36); ctx.lineTo(sx * 46, -70); ctx.stroke();
+      dot(sx * 48, -82, 14, '#ff5252');
+      ctx.fillStyle = '#fff3e0'; ctx.beginPath(); ctx.moveTo(sx * 48, -82); ctx.arc(sx * 48, -82, 15, -Math.PI / 2 - 0.4 - wv, -Math.PI / 2 + 0.4 + wv); ctx.fill();
+    }
+    ell(0, -36, 40, 28, '#ff1744'); ell(-12, -46, 9, 5, 'rgba(255,255,255,.35)', -0.4);
+    for (const sx of [-12, 12]) { ctx.strokeStyle = '#d32f2f'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(sx, -58); ctx.lineTo(sx, -76); ctx.stroke(); }
+    face(0, -80, 12, 8, mood === 'yum' ? 'wait' : mood);
+    ctx.fillStyle = '#212121'; ctx.beginPath(); ctx.moveTo(-30, -92); ctx.quadraticCurveTo(0, -126, 30, -92); ctx.closePath(); ctx.fill();   // captain hat
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('☠', 0, -100);
+    dot(-24, -30, 5, '#ff8a80'); dot(24, -30, 5, '#ff8a80');
+  }
+  ctx.restore();
+}
+
+// ---------- 🗿 giant candy statues (each candy "wakes up" with googly eyes when you tap it) ----------
+const k01 = a => a > 0 ? Math.sin(Math.PI * clamp(a, 0, 1)) : 0;
+function plinth(w, h, col = '#f8bbd0', top = '#f48fb1') { rr(-w / 2, -h, w, h, 6, col, '#ad1457', 2); rr(-w / 2 - 8, -h - 10, w + 16, 12, 5, top, '#ad1457', 2); for (let i = 0; i < 3; i++) line(-w / 2 + 14 + i * (w - 28) / 2, -h + 6, -w / 2 + 14 + i * (w - 28) / 2, -8, 'rgba(255,255,255,.4)', 4); }
+function statue(cx, by, s, a, candy, offY, wig, word) {
+  const k = k01(a), t = frame;
+  ctx.translate(cx, by); ctx.scale(s, s); plinth(110, 40);
+  if (k > 0) glow(0, offY, 130, 'rgba(255,255,255,.7)', k);
+  ctx.save(); ctx.translate(0, offY);
+  if (wig === 'spin') ctx.rotate(k * Math.sin(t * 0.15) * 0.25);
+  if (wig === 'jiggle') ctx.scale(1 + k * 0.08 * Math.sin(t * 0.35), 1 - k * 0.08 * Math.sin(t * 0.35));
+  if (wig === 'hop') ctx.translate(0, -k * Math.abs(Math.sin(t * 0.18)) * 16);
+  drawCandy(Object.assign({}, candy, k > 0.1 ? { topping: 'eyes' } : {}), 0, 0, 2.2, t);
+  ctx.restore();
+  if (k > 0.3) { ctx.save(); ctx.globalAlpha = clamp((k - 0.3) * 3, 0, 1); ctx.font = 'bold 17px "Trebuchet MS", Arial'; const bw = ctx.measureText(word).width + 24; bubble(60 - bw / 2, offY - 120, bw, 32, 40, offY - 80); text(word, 60, offY - 98, 17, '#ad1457', 'center', false); ctx.restore(); }
+  if (k > 0.2) for (let i = 0; i < 6; i++) { const an = i * 1.05 + t * 0.03; twinkle(Math.cos(an) * 90, offY + Math.sin(an) * 80, 6, i % 2 ? '#fff' : '#fff59d'); }
+}
+const drawLolli = (cx, by, s, a) => statue(cx, by, s, a, { shape: 'lolli', color: 'red', topping: 'glitter' }, -142, 'spin', 'Hello! Lick lick!');
+const drawBear = (cx, by, s, a) => statue(cx, by, s, a, { shape: 'bear', color: 'green' }, -130, 'jiggle', 'Hi! I\'m squishy!');
+const drawCane = (cx, by, s, a) => statue(cx, by, s, a, { shape: 'cane', color: 'red', topping: 'sprinkles' }, -146, 'hop', 'Hiya! Minty!');
+// ---------- 🍫 THE CHOCOLATE RIVER (wide, gently flowing) ----------
+function drawRiver(cx, by, s, a) {
+  const k = k01(a), t = frame;
+  ctx.translate(cx, by); ctx.scale(s, s);
+  const g = ctx.createLinearGradient(0, -232, 0, 0); g.addColorStop(0, '#ffe0f0'); g.addColorStop(1, '#ffc1e3');
+  rr(-330, -232, 660, 232, 14, g, '#ad1457', 4);
+  ctx.save(); rrect(-328, -230, 656, 228, 12); ctx.clip();
+  for (const [x, h, c] of [[-250, 70, '#ff80ab'], [-120, 50, '#ce93d8'], [60, 64, '#80deea'], [220, 56, '#fff59d']]) { ell(x, -150, 70, h * 0.6, c); ell(x + 40, -140, 50, h * 0.45, c); }   // candy hills
+  ctx.fillStyle = '#8d6e63'; ctx.beginPath(); ctx.moveTo(-330, -170); ctx.lineTo(-250, -176); ctx.lineTo(-230, -90); ctx.lineTo(-330, -90); ctx.fill();   // a rock with a chocolate waterfall
+  ctx.fillStyle = '#6d3b1f'; ctx.fillRect(-268, -172, 34, 92);
+  for (let i = 0; i < 6; i++) { const yy = -172 + ((t * 1.2 + i * 17) % 92); rr(-264 + (i % 3) * 10, yy, 5, 14, 3, 'rgba(160,100,60,.7)'); }
+  // the river: smooth chocolate bands that slide along
+  const rg = ctx.createLinearGradient(0, -100, 0, -20); rg.addColorStop(0, '#7b4a2a'); rg.addColorStop(1, '#4e2a14');
+  ctx.fillStyle = rg; ctx.beginPath(); ctx.moveTo(-330, -98);
+  for (let x = -330; x <= 330; x += 10) ctx.lineTo(x, -98 + Math.sin(x * 0.03 + t * 0.03) * 4);
+  ctx.lineTo(330, -14); ctx.lineTo(-330, -14); ctx.closePath(); ctx.fill();
+  for (let r = 0; r < 4; r++) { ctx.strokeStyle = `rgba(190,130,90,${0.35 - r * 0.05})`; ctx.lineWidth = 3; ctx.beginPath();
+    for (let x = -330; x <= 330; x += 8) { const y = -80 + r * 16 + Math.sin(x * 0.025 - t * 0.04 + r) * 4; x === -330 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); } ctx.stroke(); }
+  for (let i = 0; i < 7; i++) { const x = ((i * 113 + t * 0.6) % 700) - 350; ell(x, -60 + (i % 3) * 14, 16, 3, 'rgba(255,220,180,.35)'); }   // shiny ripples floating along
+  ctx.fillStyle = '#ffccbc'; ctx.fillRect(-330, -18, 660, 18);                                       // candy bank
+  for (let x = -310; x < 330; x += 40) { ctx.fillStyle = (x / 40) % 2 ? '#ff4081' : '#fff'; ctx.fillRect(x, -18, 20, 18); }
+  [-180, 0, 170].forEach((x, i) => { line(x, -100, x, -175, '#fff8e1', 6); circle(x, -190, 22, ['#ff1744', '#00e676', '#2979ff'][i]); ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(x, -190, 12, 0, 4); ctx.stroke(); });   // lollipop trees
+  // the boat ride (Robo floats by!)
+  const bx = k > 0 ? -300 + a * 600 : 210, bob = Math.sin(t * 0.08) * 3;
+  ctx.save(); ctx.translate(bx, -70 + bob);
+  drawRobo(0, 4, { s: 0.95, pose: k > 0 ? 'happy' : 'idle', wave: k > 0 });
+  ctx.fillStyle = '#ff80ab'; ctx.beginPath(); ctx.moveTo(-40, 0); ctx.lineTo(40, 0); ctx.quadraticCurveTo(36, 22, 0, 22); ctx.quadraticCurveTo(-36, 22, -40, 0); ctx.fill();
+  ctx.fillStyle = '#fff'; for (let i = -3; i <= 3; i++) circle(i * 10, 8, 3, '#fff');
+  ctx.restore();
+  ctx.restore();
+}
+// ---------- 🌱 HOW CHOCOLATE IS MADE: pod → beans → roasting → chocolate ----------
+let chocStep = 0;
+const CHOC_STEPS = ['1. Cacao pods grow on cacao trees.', '2. Inside each pod are the beans.', '3. The beans are dried and roasted.', '4. Then they are ground up into CHOCOLATE!'];
+function cacaoPod(x, y, sc, open) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(sc, sc);
+  if (open) { ell(0, 0, 18, 30, '#f9a825'); ell(0, 0, 11, 23, '#fffde7'); for (let i = 0; i < 6; i++) ell((i % 2 ? 4 : -4), -16 + i * 6.5, 4.5, 3.5, '#6d3b1f'); }
+  else { ell(0, 0, 18, 30, '#f9a825'); ctx.strokeStyle = '#e65100'; ctx.lineWidth = 1.5; for (const d of [-10, -4, 4, 10]) { ctx.beginPath(); ctx.moveTo(d * 0.4, -29); ctx.quadraticCurveTo(d * 1.5, 0, d * 0.4, 29); ctx.stroke(); } ell(-6, -12, 4, 9, 'rgba(255,255,255,.3)', 0.2); }
+  ctx.restore();
+}
+function drawChocMade(cx, by, s, a) {
+  const t = frame;
+  ctx.translate(cx, by); ctx.scale(s, s);
+  rr(-150, -40, 300, 40, 6, '#a1887f', '#5d4037', 2); rr(-150, -200, 300, 160, 12, '#fff8e1', '#8d6e63', 3);
+  const X = [-112, -38, 38, 112], cur = state === 'close' && EX[showI].id === 'chocmade' ? chocStep : -1;
+  X.forEach((x, i) => { if (i === cur) { glow(x, -120, 54, 'rgba(255,213,79,.9)'); rr(x - 34, -186, 68, 132, 10, 'rgba(255,236,179,.7)'); } });
+  line(X[0], -170, X[0], -190, '#6d4c41', 5); cacaoPod(X[0], -130, 1, false); ell(X[0] + 16, -176, 10, 5, '#66bb6a', -0.4);
+  cacaoPod(X[1], -126, 1, true);
+  ctx.fillStyle = '#90a4ae'; ctx.beginPath(); ctx.ellipse(X[2], -110, 30, 10, 0, 0, Math.PI); ctx.fill();   // roasting pan
+  for (let i = 0; i < 9; i++) ell(X[2] - 18 + (i % 5) * 9, -116 - Math.floor(i / 5) * 6, 5, 3.5, '#4e2a14', i);
+  for (let i = 0; i < 3; i++) { const q = (t * 0.01 + i / 3) % 1; ctx.strokeStyle = `rgba(255,255,255,${0.6 * (1 - q)})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(X[2] - 10 + i * 10, -126 - q * 40); ctx.quadraticCurveTo(X[2] - 4 + i * 10, -136 - q * 40, X[2] - 10 + i * 10, -146 - q * 40); ctx.stroke(); }
+  rr(X[3] - 24, -156, 48, 64, 4, '#5d3a1a', '#3e2210', 2); for (let r = 0; r < 4; r++) for (let c = 0; c < 2; c++) rr(X[3] - 20 + c * 21, -152 + r * 15, 19, 13, 2, '#6d4423');   // a chocolate bar
+  rr(X[3] - 26, -110, 52, 30, 3, '#e91e63'); text('YUM', X[3], -90, 12, '#fff', 'center', false);
+  for (let i = 0; i < 3; i++) { const x1 = (X[i] + X[i + 1]) / 2; tri(x1 - 6, -130, x1 - 6, -118, x1 + 6, -124, '#8d6e63'); }
+  ['POD', 'BEANS', 'ROAST', 'CHOCOLATE'].forEach((w, i) => text(w, X[i], -66, 12, i === cur ? '#e65100' : '#5d4037', 'center', false));
+  if (cur >= 0) fit(CHOC_STEPS[cur], 0, -214, 16, 300, '#fff59d');
+}
+// ---------- 🟣 THE GUMBALL WALL ----------
+const GUM_COLS = ['#ff1744', '#ffea00', '#00e676', '#2979ff', '#d500f9', '#ff9100', '#ffffff', '#ff4081'];
+let gums = [], gumCount = 0;
+function dropGum() { gums.push({ x: 0, y: -40, vx: (Math.random() < 0.5 ? -1 : 1) * (1 + Math.random() * 2.5), vy: -5, c: GUM_COLS[gumCount % GUM_COLS.length], life: 260 }); gumCount++; beep(700, 0, 0.08, 'sine', 0.2); beep(500, 0.12, 0.1, 'sine', 0.2); }
+function gumTick() { for (const g of gums) { g.vy += 0.3; g.x += g.vx; g.y += g.vy; if (g.y > -31) { g.y = -31; g.vy *= -0.55; g.vx *= 0.9; if (Math.abs(g.vy) > 1) beep(900 + Math.random() * 300, 0, 0.04, 'sine', 0.08); } if (Math.abs(g.x) > 102) { g.x = Math.sign(g.x) * 102; g.vx *= -1; } g.life--; } gums = gums.filter(g => g.life > 0).slice(-30); }
+function drawGumWall(cx, by, s, a) {
+  const t = frame;
+  ctx.translate(cx, by); ctx.scale(s, s);
+  rr(-150, -224, 300, 224, 10, '#f8bbd0', '#ad1457', 3);
+  for (let r = 0; r < 9; r++) for (let c = 0; c < 13; c++) { const x = -138 + c * 23 + (r % 2) * 11, y = -210 + r * 18; if (Math.abs(x) < 52 && y > -160) continue; circle(x, y, 8, GUM_COLS[(r * 5 + c * 3) % GUM_COLS.length]); circle(x - 2.5, y - 2.5, 2.4, 'rgba(255,255,255,.6)'); }
+  // the big gumball machine in the middle
+  rr(-30, -60, 60, 50, 6, '#e53935', '#8e0000', 2); rr(-10, -36, 20, 16, 4, '#b0bec5', '#607d8b', 1.5);
+  ctx.save(); ctx.translate(0, -28); ctx.rotate(a > 0 ? a * 12 : 0); rr(-8, -2, 16, 4, 2, '#eceff1'); ctx.restore();
+  ctx.save(); ctx.beginPath(); ctx.arc(0, -108, 46, 0, 7); ctx.clip(); ctx.fillStyle = 'rgba(227,242,253,.4)'; ctx.fillRect(-46, -154, 92, 92);
+  for (let i = 0; i < 40; i++) circle(-38 + (i * 17) % 78, -66 - Math.floor(i / 5) * 9 - (i % 2) * 3, 6, GUM_COLS[i % GUM_COLS.length]); ctx.restore();
+  ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(0, -108, 46, 0, 7); ctx.stroke(); ellipse(-18, -128, 10, 5, 'rgba(255,255,255,.7)', -0.6);
+  rr(-12, -162, 24, 10, 4, '#e53935'); rr(-26, -10, 52, 10, 3, '#8e0000');
+  rr(-110, -24, 220, 14, 6, '#ffffff', '#ad1457', 2);                                          // the catching tray
+  if (state === 'close') for (const g of gums) { circle(g.x, g.y, 7, g.c); circle(g.x - 2, g.y - 2, 2, 'rgba(255,255,255,.7)'); }
+}
+// ---------- ☁️ THE COTTON CANDY CLOUD ROOM ----------
+let floss = 0;
+function fluff(x, y, r, col) { for (const [dx, dy, q] of [[-0.6, 0.1, 0.6], [0.6, 0.1, 0.6], [0, -0.3, 0.75], [-0.3, -0.1, 0.7], [0.3, 0.05, 0.7], [0, 0.15, 0.8]]) circle(x + dx * r, y + dy * r, r * q, col); }
+function drawCotton(cx, by, s, a) {
+  const k = k01(a), t = frame, close = state === 'close' && EX[showI].id === 'cotton';
+  ctx.translate(cx, by); ctx.scale(s, s);
+  const g = ctx.createLinearGradient(0, -232, 0, 0); g.addColorStop(0, '#e1f5fe'); g.addColorStop(1, '#fce4ec');
+  rr(-330, -232, 660, 232, 14, g, '#ec407a', 4);
+  ctx.save(); rrect(-328, -230, 656, 228, 12); ctx.clip();
+  for (let i = 0; i < 7; i++) { const x = ((i * 113 + t * 0.25 * (i % 2 ? 1 : 0.6)) % 760) - 380, y = -190 + (i % 3) * 34 + Math.sin(t * 0.02 + i) * 5; fluff(x, y, 26 + (i % 3) * 8, i % 2 ? 'rgba(248,187,208,.95)' : 'rgba(179,229,252,.95)'); }
+  for (let i = 0; i < 5; i++) { const x = -300 + i * 150; fluff(x, -10, 46, i % 2 ? '#f8bbd0' : '#b3e5fc'); }   // cloud "couches" on the floor
+  ctx.restore();
+  // the cotton candy machine
+  rr(-60, -60, 120, 46, 10, '#ff80ab', '#ad1457', 2); ctx.fillStyle = '#ffffff'; for (let i = -2; i <= 2; i++) circle(i * 22, -37, 5, '#fff');
+  ctx.fillStyle = 'rgba(255,255,255,.6)'; ctx.beginPath(); ctx.ellipse(0, -66, 70, 18, 0, 0, 7); ctx.fill(); ctx.strokeStyle = '#ec407a'; ctx.lineWidth = 2; ctx.stroke();
+  const spin = k > 0 ? t * 0.4 : 0; for (let i = 0; i < 12; i++) { const an = spin + i * 0.52; line(Math.cos(an) * 16, -66 + Math.sin(an) * 4, Math.cos(an) * 60, -66 + Math.sin(an) * 15, 'rgba(244,143,177,.5)', 1.5); }
+  circle(0, -66, 12, '#e0e0e0');
+  const f = close ? floss : 0.6, fr = 10 + f * 34;                                              // a paper cone with fluffy floss on top
+  ctx.save(); ctx.translate(110, -60); ctx.rotate(0.15);
+  poly([[-8, 0], [8, 0], [0, 56]], '#fff8e1', '#bcaaa4', 1.5); fluff(0, -fr * 0.55, fr, '#f48fb1'); fluff(-fr * 0.2, -fr * 0.75, fr * 0.6, '#f8bbd0');
+  ctx.restore();
+  if (k > 0) for (let i = 0; i < 10; i++) { const an = t * 0.2 + i * 0.63; circle(Math.cos(an) * 70 * k, -66 + Math.sin(an) * 18 * k, 3, 'rgba(255,255,255,.9)'); }
+}
+// ---------- the exhibits (card facts are TRUE) ----------
+const EX = [
+  { id: 'lolli', name: 'Giant Lollipop', icon: '🍭', act: 'WAKE IT UP!', tag: 'Statue Hall  •  a candy statue', draw: drawLolli, snd: () => tune([784, 988, 1175, 988, 784], 0.1, 0.2),
+    facts: ['A lollipop is hard candy on a stick.', 'Hard candy is made by boiling sugar and water until it is super hot, then letting it cool and get hard.', 'Some lollipops hide a chewy surprise in the middle!'] },
+  { id: 'bear', name: 'Giant Gummy Bear', icon: '🧸', act: 'WAKE IT UP!', tag: 'Statue Hall  •  a candy statue', draw: drawBear, snd: () => { for (let i = 0; i < 6; i++) beep(300 + (i % 2) * 120, i * 0.09, 0.1, 'sine', 0.3); },
+    facts: ['Gummy bears were invented in Germany in 1922, by a candy maker named Hans Riegel.', 'The very first ones were called "dancing bears".', 'Most gummy bears are chewy and bouncy because of gelatin.'] },
+  { id: 'cane', name: 'Giant Candy Cane', icon: '🍬', act: 'WAKE IT UP!', tag: 'Statue Hall  •  a candy statue', draw: drawCane, snd: () => tune([1047, 1319, 1568, 2093], 0.09, 0.3, 'sine'),
+    facts: ['Most candy canes taste like peppermint.', 'The hook on top makes them easy to hang on a Christmas tree.', 'The first candy canes were plain white. Red stripes came later, around the year 1900.'] },
+  { id: 'river', name: 'The Chocolate River', icon: '🍫', act: 'TAKE A BOAT RIDE!', tag: 'Grand Chocolate Hall  •  ride with Robo!', draw: drawRiver, noStand: true, hallS: 0.77, closeS: 0.84, closeY: 420, actLen: 420, stampS: 0.5,
+    snd: () => tune([392, 494, 587, 494, 392, 494, 587, 784], 0.4, 0.5, 'sine'),
+    facts: ['Chocolate melts just below the temperature of your body. That\'s why it melts in your mouth!', 'Milk chocolate was first made in Switzerland in 1875.', 'White chocolate has cocoa butter in it, but none of the brown cocoa. That\'s why it\'s white!', 'This river is pretend. Chocolate rivers are only in stories!'] },
+  { id: 'chocmade', name: 'How Chocolate Is Made', icon: '🌱', act: 'NEXT STEP!', tag: 'Chocolate Lab  •  from tree to treat', draw: drawChocMade, closeS: 1.7, closeY: 470, onOpen: () => { chocStep = 0; },
+    onAct: () => { chocStep = (chocStep + 1) % 4; }, snd: () => tune([523, 659], 0.1, 0.2), tap: () => { chocStep = (chocStep + 1) % 4; actT = 1; tune([523, 659], 0.1, 0.2); },
+    facts: ['Chocolate comes from cacao beans.', 'The beans grow inside big pods on cacao trees. One pod holds about 20 to 60 beans.', 'Cacao trees grow in hot, rainy places near the equator.', 'Long ago, the Maya and Aztec people made chocolate into a drink.'] },
+  { id: 'gum', name: 'The Gumball Wall', icon: '🟣', act: 'TURN THE KNOB!', tag: 'Chocolate Lab  •  pop out a gumball!', draw: drawGumWall, closeS: 1.6, closeY: 470, tick: gumTick, onOpen: () => { gums = []; },
+    onAct: dropGum, snd: () => {}, tap: () => { actT = 1; dropGum(); },
+    facts: ['Bubble gum was invented in 1928 by Walter Diemer.', 'It was pink because pink was the only food coloring he had!', 'Gumball machines have been around for more than 100 years.'] },
+  { id: 'cotton', name: 'Cotton Candy Cloud Room', icon: '☁️', act: 'SPIN SOME!', tag: 'Cloud Room  •  fluffy and sweet', draw: drawCotton, noStand: true, hallS: 0.77, closeS: 0.84, closeY: 420, actLen: 160, stampS: 0.5, onOpen: () => { floss = 0; },
+    onAct: () => { floss = floss >= 1 ? 0.34 : Math.min(1, floss + 0.34); if (floss >= 1) say('☁️ A BIG fluffy cotton candy cloud! Yum!'); }, snd: () => { for (let i = 0; i < 8; i++) beep(600 + i * 60, i * 0.06, 0.12, 'sine', 0.2); },
+    facts: ['Cotton candy is sugar that gets melted and spun into super thin threads.', 'A dentist, William Morrison, and a candy maker, John C. Wharton, invented a cotton candy machine in 1897.', 'It became famous at the 1904 World\'s Fair, where it was called "Fairy Floss".', 'Cotton candy is mostly air!'] },
+];
+// ---------- halls (Ben's Candy Factory customers come to visit!) ----------
+function candyBack(c1, c2, trim, floor) {
+  const g = ctx.createLinearGradient(0, 0, 0, 420); g.addColorStop(0, c1); g.addColorStop(1, c2); ctx.fillStyle = g; ctx.fillRect(0, 0, W, 420);
+  ctx.fillStyle = 'rgba(255,255,255,.3)';                                                        // candy-stripe wallpaper, like the Candy Factory
+  for (let x = -300; x < W; x += 60) { ctx.beginPath(); ctx.moveTo(x, 82); ctx.lineTo(x + 24, 82); ctx.lineTo(x + 24 + 200, 408); ctx.lineTo(x + 200, 408); ctx.fill(); }
+  ctx.fillStyle = trim; ctx.fillRect(0, 76, W, 6); ctx.fillRect(0, 408, W, 12);
+  for (let x = 0; x < W; x += 30) circle(x + 15, 414, 4, x % 60 ? '#fff' : '#ffeb3b');
+  ctx.fillStyle = floor; ctx.fillRect(0, 420, W, 62); ctx.fillStyle = 'rgba(255,255,255,.25)'; for (let x = 0; x < W; x += 60) ctx.fillRect(x, 420, 30, 62);
+}
+const visitor = (id, x, s, mood = 'happy', k = 0) => drawCustomer(id, x, 408, s, mood, -Math.abs(Math.sin(frame * 0.06 + k)) * 5);
+const HALLS = [
+  { name: '🍭 HALL 1: THE GIANT CANDY STATUES', ids: ['lolli', 'bear', 'cane'], guide: 'Tap a statue. Watch it wake up and say hi!', trim: '#d81b60', stand: '#ad1457', back: () => candyBack('#ffd6ec', '#ffb3d9', '#d81b60', '#f48fb1') },
+  { name: '🍫 HALL 2: THE CHOCOLATE RIVER', ids: ['river'], guide: 'Hop in my boat! Tap the river for a ride!', trim: '#6d4c41', back: () => candyBack('#ffe0c2', '#e8b98f', '#6d4c41', '#a1887f'),
+    visitors: () => { visitor('gloop', 70, 0.75, 'yum'); visitor('pages', 890, 0.75, 'happy', 2); } },
+  { name: '🌱 HALL 3: THE CHOCOLATE LAB', ids: ['chocmade', 'gum'], guide: 'Chocolate grows on TREES! Well... the beans do!', trim: '#7b1fa2', stand: '#6a1b9a', back: () => candyBack('#f3e5f5', '#e1bee7', '#7b1fa2', '#ce93d8') },
+  { name: '☁️ HALL 4: THE COTTON CANDY CLOUD ROOM', ids: ['cotton'], guide: 'So fluffy! Tap the machine to spin some cotton candy!', trim: '#ec407a', back: () => candyBack('#e1f5fe', '#fce4ec', '#ec407a', '#f8bbd0'),
+    visitors: () => { visitor('eggbert', 70, 0.72, 'happy'); visitor('pinch', 885, 0.62, 'happy', 2); } },
+  { name: '🎁 THE CANDY GIFT SHOP', ids: [], shop: true, guide: 'Pick any souvenir you like. They are all FREE!', trim: '#00897b', back: () => candyBack('#fff3e0', '#ffe0b2', '#00897b', '#ffcc80') },
+];
+// ---------- 🎁 souvenirs ----------
+const SHOP = [
+  { k: 'lolli', name: 'Swirly Lollipop', draw: () => drawCandy({ shape: 'lolli', color: 'purple', topping: 'glitter' }, 0, -6, 1.15) },
+  { k: 'bears', name: 'Bag of Gummy Bears', draw: () => { rr(-46, -50, 92, 100, 10, 'rgba(255,255,255,.6)', '#ec407a', 3); ['red', 'green', 'yellow', 'orange'].forEach((c, i) => drawCandy({ shape: 'bear', color: c }, -20 + (i % 2) * 40, -18 + Math.floor(i / 2) * 40, 0.5)); rr(-50, -58, 100, 14, 4, '#ec407a'); } },
+  { k: 'cane', name: 'Candy Cane', draw: () => drawCandy({ shape: 'cane', color: 'red' }, 0, -4, 1.2) },
+  { k: 'gum', name: 'Mini Gumball Machine', draw: () => { ctx.translate(0, 52); ctx.scale(0.72, 0.72); rr(-30, -60, 60, 50, 6, '#e53935', '#8e0000', 2); circle(0, -108, 46, 'rgba(227,242,253,.6)'); for (let i = 0; i < 18; i++) circle(-30 + (i * 17) % 62, -76 - Math.floor(i / 4) * 12, 7, GUM_COLS[i % 8]); ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(0, -108, 46, 0, 7); ctx.stroke(); rr(-12, -162, 24, 10, 4, '#e53935'); } },
+  { k: 'bar', name: 'Chocolate Bar', draw: () => { ctx.rotate(-0.15); rr(-40, -48, 80, 96, 6, '#5d3a1a', '#3e2210', 2); for (let r = 0; r < 4; r++) for (let c = 0; c < 2; c++) rr(-34 + c * 35, -42 + r * 22, 31, 18, 3, '#6d4423'); rr(-44, 6, 88, 46, 4, '#e91e63'); text('CANDY MUSEUM', 0, 34, 11, '#fff', 'center', false); } },
+  { k: 'floss', name: 'Cotton Candy Cone', draw: () => { poly([[-10, 0], [10, 0], [0, 60]], '#fff8e1', '#bcaaa4', 1.5); fluff(0, -22, 34, '#f48fb1'); fluff(-8, -32, 20, '#b3e5fc'); } },
+];
+// ---------- the museum's look ----------
+const MUSE = {
+  key: 'candyMuseum', trophyId: 'candyMuseum', accent: '#d81b60', dark: '#4a1942', master: 'Candy Museum Master!',
+  confetti: ['#ff1744', '#ffea00', '#00e676', '#2979ff', '#d500f9', '#fff'],
+  closeBack: () => { const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#ff80ab'); g.addColorStop(1, '#b388ff'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); glow(280, 300, 300, 'rgba(255,255,255,.4)'); },
+  drawTitle: () => {
+    const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#ff80ab'); g.addColorStop(1, '#b388ff'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    for (let i = 0; i < 14; i++) drawCandy({ shape: SHAPES[i % 5].id, color: COLORS[i % 6].id }, (i * 151 + 40) % W, ((frame * 0.6 + i * 97) % 640) - 60, 0.4, frame);
+    ctx.save(); ctx.translate(W / 2, 92); ctx.rotate(Math.sin(frame * 0.05) * 0.03); text('THE CANDY MUSEUM', 0, 0, 70, '#fff59d', 'center', '#880e4f'); ctx.restore();
+    text('💡 Ben\'s idea!', W / 2, 146, 24, '#fff', 'center', '#880e4f');
+    ['pages', 'gloop', 'eggbert'].forEach((id, k) => drawCustomer(id, 80 + k * 90, 470, 0.62, 'happy', -Math.abs(Math.sin(frame * 0.1 + k)) * 8));
+    ['snatcher', 'pinch'].forEach((id, k) => drawCustomer(id, 790 + k * 100, 470, 0.62, 'happy', -Math.abs(Math.sin(frame * 0.1 + k + 2)) * 8));
+    drawCandy({ shape: 'lolli', color: 'red', topping: 'eyes' }, 220, 270, 1.4, frame); drawCandy({ shape: 'star', color: 'yellow', topping: 'glitter' }, 740, 270, 1.4, frame);
+    drawRobo(W / 2, 360, { s: 2.2, pose: 'happy' });
+    button(START, '▶ COME IN!', '#00c853', 30);
+    ctx.fillStyle = 'rgba(74,25,66,.85)'; ctx.fillRect(0, 490, W, 50); text('Tap the candy statues • ride the chocolate river • collect stamps!', W / 2, 522, 20, '#fff59d', 'center', false);
+  },
+};
+// ---------- the museum engine (same way of walking + tapping as the MacBook Museum) ----------
+let save = { seen: {}, bag: {} };
+try { const s = JSON.parse(localStorage.getItem(MUSE.key) || 'null'); if (s && s.seen) save = Object.assign({ seen: {}, bag: {} }, s); } catch (_) {}
+function writeSave() { try { localStorage.setItem(MUSE.key, JSON.stringify(save)); } catch (_) {} }
+const EI = {}; EX.forEach((e, i) => EI[e.id] = i);
+function drawEx(i, cx, by, s, a = 0) { ctx.save(); try { EX[i].draw(cx, by, s, a); } finally { ctx.restore(); } }
+let state = 'title', hall = 0, tap = null, sel = 0, showI = 0, actT = 0, msg = '', msgT = 0, parts = [], hallT = 0, down = false, shopPop = null;
+const seenCount = () => EX.filter(e => save.seen[e.id]).length;
+const START = { x: 360, y: 410, w: 240, h: 70 };
+const BTN_PREV = { x: 14, y: 488, w: 130, h: 44 }, BTN_NEXT = { x: 816, y: 488, w: 130, h: 44 }, BTN_PASS = { x: 160, y: 488, w: 300, h: 44 }, BTN_SHOP = { x: 476, y: 488, w: 324, h: 44 };
+const BTN_BACK = { x: 14, y: 12, w: 110, h: 42 }, BTN_ACT = { x: 580, y: 412, w: 350, h: 62 };
+const ART = { x: 0, y: 60, w: 560, h: 480 };
+const actLen = e => e.actLen || 180;
+function slotPos(h, k) { const n = HALLS[h].ids.length, sw = W / n; return { x: (k + 0.5) * sw, y: 392, s: Math.min(1.3, (sw - 24) / 300) * (EX[EI[HALLS[h].ids[k]]].hallS || 1), w: sw }; }
+function slotRect(h, k) { const p = slotPos(h, k); return { x: p.x - p.w / 2 + 4, y: 80, w: p.w - 8, h: 395 }; }
+function say(s, t = 170) { msg = s; msgT = t; }
+function confetti(x, y, n = 40) { const cs = MUSE.confetti; for (let i = 0; i < n; i++) parts.push({ x, y, vx: (Math.random() - 0.5) * 9, vy: -Math.random() * 8 - 2, c: cs[i % cs.length], life: 70 + Math.random() * 40 }); }
+function openExhibit(id) {
+  showI = EI[id]; state = 'close'; actT = 0; sfx.whoosh(); const e = EX[showI]; if (e.onOpen) e.onOpen();
+  if (!save.seen[id]) { save.seen[id] = 1; writeSave(); sfx.stamp(); say('📘 NEW STAMP in your Museum Passport!'); confetti(W / 2, 120, 30);
+    if (seenCount() === EX.length && !save.allDone) { save.allDone = 1; writeSave(); trophy(MUSE.trophyId); setTimeout(() => { say('🏆 You saw EVERY exhibit! ' + MUSE.master, 260); confetti(W / 2, 200, 120); sfx.yay(); }, 700); } }
+}
+function goHall(h) { hall = (h + HALLS.length) % HALLS.length; sel = 0; hallT = 0; shopPop = null; sfx.whoosh(); }
+// ---------- input (taps, drags, and arrow keys / Enter / Escape) ----------
+const toXY = e => { const r = C.getBoundingClientRect(); return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height }; };
+C.addEventListener('mousedown', e => { tap = toXY(e); down = true; });
+addEventListener('mouseup', () => { down = false; });
+C.addEventListener('mousemove', e => { if (!down || !(e.buttons & 1)) return; const p = toXY(e); if (state === 'close' && EX[showI].drag && p.x < 560 && p.y > 60) EX[showI].drag(p.x, p.y); });
+const press = {};
+addEventListener('keydown', e => { press[e.key] = true; if (e.key.startsWith('Arrow') || e.key === ' ') e.preventDefault(); });
+function doAct() { const e = EX[showI]; actT = 1; if (e.onAct) e.onAct(); if (e.snd) e.snd(); else sfx.yay(); }
+function update() {
+  frame++; hallT++; if (msgT > 0) msgT--; if (actT > 0) { actT++; if (actT > actLen(EX[showI])) actT = 0; }
+  for (const p of parts) { p.x += p.vx; p.y += p.vy; p.vy += 0.2; p.life--; } parts = parts.filter(p => p.life > 0);
+  if (state === 'close' && EX[showI].tick) EX[showI].tick();
+  if (shopPop) { shopPop.t++; if (shopPop.t > 150) shopPop = null; }
+  const t = tap, k = Object.assign({}, press); tap = null; for (const key in press) delete press[key];
+  const ok = k.Enter || k[' '], esc = k.Escape;
+  if (state === 'title') { if (ok || inBox(t, START)) { state = 'hall'; hallT = 0; sfx.click(); } return; }
+  if (state === 'close') {
+    const e = EX[showI];
+    if (esc || inBox(t, BTN_BACK)) { state = 'hall'; sfx.click(); }
+    else if (ok || inBox(t, BTN_ACT)) doAct();
+    else if (t && t.x < 560 && t.y > 60) { if (e.tap) e.tap(t.x, t.y); else if (e.drag) e.drag(t.x, t.y); else if (!actT) doAct(); }
+    return;
+  }
+  if (state === 'pass') { if (esc || ok || inBox(t, BTN_BACK)) { state = 'hall'; sfx.click(); } return; }
+  const H0 = HALLS[hall];
+  if (k.ArrowRight) { if (!H0.shop && sel < H0.ids.length - 1) sel++; else goHall(hall + 1); }
+  if (k.ArrowLeft) { if (!H0.shop && sel > 0) sel--; else { goHall(hall - 1); sel = Math.max(0, HALLS[hall].ids.length - 1); } }
+  if (ok && !H0.shop && H0.ids[sel]) { openExhibit(H0.ids[sel]); return; }
+  if (ok && H0.shop) { buySouvenir((Object.keys(save.bag).length) % SHOP.length); return; }
+  if (!t) return;
+  if (inBox(t, BTN_PREV)) { goHall(hall - 1); return; }
+  if (inBox(t, BTN_NEXT)) { goHall(hall + 1); return; }
+  if (inBox(t, BTN_PASS)) { state = 'pass'; sfx.click(); return; }
+  if (inBox(t, BTN_SHOP)) { goHall(HALLS.length - 1); return; }
+  if (t.y < 76 && t.x < 110) { say(H0.guide); tune([880, 660, 880], 0.1, 0.1, 'square', 0.15); return; }
+  if (H0.shop) { SHOP.forEach((sv, i) => { if (inBox(t, shopRect(i))) buySouvenir(i); }); return; }
+  H0.ids.forEach((id, i) => { if (inBox(t, slotRect(hall, i))) { sel = i; openExhibit(id); } });
+}
+// ---------- 🎁 gift shop ----------
+const shopRect = i => ({ x: 30 + (i % 3) * 300, y: 90 + Math.floor(i / 3) * 178, w: 280, h: 166 });
+function buySouvenir(i) {
+  const sv = SHOP[i]; if (!sv) return; const r = shopRect(i);
+  const first = !save.bag[sv.k]; save.bag[sv.k] = 1; writeSave(); shopPop = { i, t: 0 };
+  sfx.stamp(); confetti(r.x + r.w / 2, r.y + 60, 24);
+  say(first ? `🎁 You got the ${sv.name}! It's FREE!` : `🎁 You already have the ${sv.name}. Here's another!`);
+  if (Object.keys(save.bag).length === SHOP.length && first) setTimeout(() => { say('🛍️ You got EVERY souvenir! Thanks for visiting!', 240); confetti(W / 2, 140, 90); sfx.yay(); }, 800);
+}
+function drawShop() {
+  SHOP.forEach((sv, i) => {
+    const b = shopRect(i), got = save.bag[sv.k], pop = shopPop && shopPop.i === i ? Math.sin(Math.min(1, shopPop.t / 30) * Math.PI) * 14 : 0;
+    rr(b.x, b.y + 5, b.w, b.h, 18, 'rgba(0,0,0,.18)'); rr(b.x, b.y - pop, b.w, b.h, 18, '#fff', MUSE.accent, 3);
+    ctx.save(); try { ctx.translate(b.x + b.w / 2, b.y + 66 - pop); ctx.scale(0.82, 0.82); sv.draw(0, 0, 1); } finally { ctx.restore(); }
+    fit(sv.name, b.x + b.w / 2, b.y + b.h - 34 - pop, 19, b.w - 16, MUSE.dark, 'center', false);
+    text(got ? '✅ in your bag!' : '👆 tap to take it!', b.x + b.w / 2, b.y + b.h - 12 - pop, 15, got ? '#2e7d32' : '#6d4c41', 'center', false);
+  });
+  const n = Object.keys(save.bag).length;
+  fit(`🛍️ Your bag: ${n}/${SHOP.length}    Every souvenir is FREE!` + (save.allDone ? '   🏆 Museum Master!' : ''), W / 2, 461, 19, 900, MUSE.dark, 'center', false);
+}
+// ---------- drawing ----------
+function drawGuide(x, y, s) { drawRobo(x, y, { s, mouth: msgT > 0, pose: msgT > 0 ? 'happy' : 'idle', wave: msgT > 0 || hallT < 120 }); }
+function drawHeader(H0) {
+  ctx.fillStyle = 'rgba(0,0,0,.28)'; ctx.fillRect(0, 0, W, 76);
+  fit(H0.name, W / 2 + 40, 34, 28, 740, '#fff');
+  fit('🤖 Robo: "' + H0.guide + '"', W / 2 + 40, 62, 16, 760, '#fff59d', 'center', 'rgba(0,0,0,.5)');
+  drawGuide(52, 74, 1.15);
+}
+function drawHall() {
+  const H0 = HALLS[hall];
+  H0.back();
+  drawHeader(H0);
+  if (H0.shop) return drawShop();
+  H0.ids.forEach((id, k) => {
+    const p = slotPos(hall, k), i = EI[id], e = EX[i], seen = save.seen[id];
+    if (k === sel) glow(p.x, 280, 170, 'rgba(255,255,220,.55)');
+    if (!e.noStand) { rr(p.x - Math.min(150, p.w / 2 - 14), 392, Math.min(300, p.w - 28), 16, 5, H0.stand || '#5d4037'); }
+    drawEx(i, p.x, 392, p.s, 0);
+    const pw = Math.min(260, p.w - 16); rr(p.x - pw / 2, 420, pw, 50, 10, H0.trim);
+    fit(e.icon + ' ' + e.name, p.x, 442, 18, pw - 10, '#fff', 'center', false); text(seen ? '✅ visited' : '👆 tap me!', p.x, 462, 14, '#fff', 'center', false);
+  });
+  if (H0.visitors) { ctx.save(); try { H0.visitors(); } finally { ctx.restore(); } }
+}
+function drawBar() {
+  rr(0, 482, W, 58, 0, 'rgba(20,20,35,.92)');
+  button(BTN_PREV, '◀ BACK', '#607d8b', 20); button(BTN_NEXT, 'NEXT ▶', '#607d8b', 20);
+  button(BTN_PASS, `📘 PASSPORT  ${seenCount()}/${EX.length}`, '#5c6bc0', 20); button(BTN_SHOP, '🎁 GIFT SHOP', '#00897b', 22);
+}
+function drawClose() {
+  const e = EX[showI], a = actT > 0 ? actT / actLen(e) : 0;
+  MUSE.closeBack();
+  drawEx(showI, 280, e.closeY || 462, e.closeS || 1.6, a);
+  rr(566, 56, 380, 432, 20, '#fffdf7'); rr(576, 66, 360, 62, 14, MUSE.accent);
+  fit(e.icon + ' ' + e.name, 756, 108, 30, 340, '#fff'); fit('🏷️ ' + e.tag, 756, 154, 16, 350, '#5d4037', 'center', false);
+  let y = 188; for (const f of e.facts) { for (const ln of wrap('• ' + f, 17, 344)) { if (y < 404) text(ln, 584, y, 17, '#263238', 'left', false); y += 22; } y += 5; }
+  button(BTN_ACT, '✨ ' + (typeof e.act === 'function' ? e.act() : e.act), '#43a047', 24);
+  button(BTN_BACK, '⬅ BACK', '#455a64', 18);
+  if (e.hint) fit(e.hint, 280, 530, 17, 540, '#fff');
+  if (msgT > 0) { rr(140, 8, 410, 40, 12, 'rgba(0,0,0,.65)'); fit(msg, 345, 35, 18, 390, '#fff59d'); }
+}
+function drawPass() {
+  ctx.fillStyle = MUSE.dark; ctx.fillRect(0, 0, W, H); rr(40, 60, W - 80, 420, 20, '#fffdf7');
+  text('📘 MY MUSEUM PASSPORT', W / 2, 46, 30, '#fff');
+  const n = EX.length, cols = Math.min(5, Math.ceil(n / 2)), cw = (W - 120) / cols;
+  EX.forEach((e, i) => { const x = 60 + cw * (i % cols + 0.5), y = 150 + Math.floor(i / cols) * 190, seen = save.seen[e.id];
+    ctx.strokeStyle = seen ? '#c62828' : '#bdbdbd'; ctx.lineWidth = 4; ctx.setLineDash(seen ? [] : [8, 6]); ctx.beginPath(); ctx.arc(x, y, 62, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+    if (seen) { ctx.save(); ctx.beginPath(); ctx.arc(x, y, 60, 0, 7); ctx.clip(); drawEx(i, x, y + 44, 0.36 * (e.stampS || 1), 0); ctx.restore(); } else text('?', x, y + 12, 34, '#bdbdbd', 'center', false);
+    const ln = wrap(e.name, 15, cw - 10).slice(0, 2); ln.forEach((l, j) => fit(l, x, y + 86 + j * 17, 15, cw - 8, '#263238', 'center', false)); });
+  if (save.allDone) fit('🏆 ' + MUSE.master + ' You saw them all!', W / 2, 474, 18, 800, '#c62828', 'center', false);
+  button(BTN_BACK, '⬅ BACK', '#455a64', 18);
+}
+function draw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
+  if (state === 'title') MUSE.drawTitle();
+  else if (state === 'close') drawClose();
+  else if (state === 'pass') drawPass();
+  else { drawHall(); drawBar(); if (msgT > 0) { rr(W / 2 - 300, 84, 600, 40, 12, 'rgba(0,0,0,.65)'); fit(msg, W / 2, 111, 19, 580, '#fff59d'); } }
+  for (const p of parts) { ctx.globalAlpha = Math.min(1, p.life / 20); ctx.fillStyle = p.c; ctx.fillRect(p.x - 4, p.y - 4, 8, 8); }
+  ctx.globalAlpha = 1;
+}
+let last = performance.now(), acc = 0;
+function loop(now) { acc += Math.min(100, now - last); last = now; while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; } draw(); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+</script>

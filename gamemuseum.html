@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>The Video Game Museum</title>
+<script src="touchpad.js?v=10"></script>
+<style>
+  html, body { height: 100%; }
+  body { margin: 0; background: #141b24; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  canvas { width: min(100vw, calc(100vh * 960 / 540)); height: auto; display: block; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
+  #printBox { position: fixed; inset: 0; overflow: auto; -webkit-overflow-scrolling: touch; background: #ede7f6; z-index: 99999; text-align: center; padding: 12px 12px 40px; box-sizing: border-box; font-family: "Trebuchet MS", Arial, sans-serif; }
+  #printBox .pbBar { position: sticky; top: 0; display: flex; gap: 14px; justify-content: center; padding: 8px; background: #ede7f6; z-index: 2; }
+  #printBox button { font: bold 26px "Trebuchet MS", Arial, sans-serif; border: 0; border-radius: 16px; padding: 14px 30px; color: #fff; cursor: pointer; box-shadow: 0 5px 0 rgba(0,0,0,.25); }
+  #printBox .pbPrint { background: #43a047; } #printBox .pbBack { background: #455a64; }
+  #printBox .pbTip { font-size: 20px; color: #4527a0; margin: 6px 0 4px; }
+  #printBox .pbPage { display: block; width: min(94vw, 720px); margin: 16px auto; background: #fff; box-shadow: 0 6px 20px rgba(0,0,0,.25); border-radius: 6px; }
+  @media print {
+    @page { size: letter portrait; margin: 0.3in; }
+    html, body { display: block !important; height: auto !important; overflow: visible !important; background: #fff !important; }
+    body > *:not(#printBox) { display: none !important; }
+    #printBox { position: static; overflow: visible; background: #fff; padding: 0; }
+    #printBox .pbBar, #printBox .pbTip { display: none !important; }
+    #printBox .pbPage { width: 100%; margin: 0; box-shadow: none; border-radius: 0; break-after: page; page-break-after: always; }
+    #printBox .pbPage:last-child { break-after: auto; page-break-after: auto; }
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+<canvas id="game" width="960" height="540"></canvas>
+<script>
+// 🎮 THE VIDEO GAME MUSEUM — Ben's idea! The REAL history of video games, from Tennis for Two (1958) to VR,
+// with a playable mini paddle game, and a grand wing for Ben's own Game Factory.
+// Tap an exhibit to see it up close (and make it do its thing), collect a 📘 passport stamp for each one,
+// then visit the 🎁 Gift Shop to print souvenirs. Consoles are drawn as simple made-up shapes (no real logos or characters).
+// Engine copied from macmuseum.html. Guide Robo is drawn with the REAL movie code (robomovie.html drawRobo).
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }
+const C = document.getElementById('game');
+let ctx = C.getContext('2d');
+const W = 960, H = 540;
+let save = { seen: {} };
+try { const s = JSON.parse(localStorage.getItem('gameMuseum') || 'null'); if (s && s.seen) save = s; } catch (_) {}
+function writeSave() { try { localStorage.setItem('gameMuseum', JSON.stringify(save)); } catch (_) {} }
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+let frame = 0;
+const GAME_COUNT = 383;   // games in the Game Factory book (the "{ file:" lines in arcade.html's GAMES list)
+
+// ---------- drawing helpers (copied from macmuseum.html) ----------
+function rr(x, y, w, h, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(x, y, Math.max(0, w), Math.max(0, h), r); else ctx.rect(x, y, w, h); ctx.fill(); }
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, 7); ctx.fill(); }
+function tri(a, b, c, d, e, f, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.lineTo(e, f); ctx.closePath(); ctx.fill(); }
+function text(str, x, y, size, color = '#fff', align = 'center', outline = true) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; ctx.textAlign = align; ctx.lineJoin = 'round';
+  if (outline) { ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = Math.max(3, size / 6); ctx.strokeText(str, x, y); }
+  ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function fit(str, x, y, size, maxW, color, align, outline) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; const w = ctx.measureText(str).width || 0;
+  text(str, x, y, w > maxW ? Math.max(9, Math.floor(size * maxW / w)) : size, color, align, outline);
+}
+function emoji(e, x, y, size) { ctx.font = `${size}px Arial`; ctx.textAlign = 'center'; ctx.fillStyle = '#000'; ctx.fillText(e, x, y); }
+function star(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, q = i % 2 ? r * 0.45 : r; ctx.lineTo(x + Math.cos(a) * q, y + Math.sin(a) * q); } ctx.closePath(); ctx.fill(); }
+function wrap(str, size, maxW) {
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`; const out = []; let line = '';
+  for (const wd of String(str).split(' ')) { const t = line ? line + ' ' + wd : wd; if (line && ctx.measureText(t).width > maxW) { out.push(line); line = wd; } else line = t; }
+  if (line) out.push(line); return out;
+}
+function button(b, label, fill, size = 22) {
+  rr(b.x, b.y + 4, b.w, b.h, 14, 'rgba(0,0,0,.35)'); rr(b.x, b.y, b.w, b.h, 14, fill);
+  fit(label, b.x + b.w / 2, b.y + b.h / 2 + size * 0.36, size, b.w - 12);
+}
+const inBox = (t, b) => t && t.x >= b.x && t.x <= b.x + b.w && t.y >= b.y && t.y <= b.y + b.h;
+const OR = '#7c4dff', OR2 = '#b388ff', OR3 = '#4527a0', CREAM = '#ede7f6', DARK = '#263238', GOLD = '#ffc94d';
+let PRINTING = false;
+function line(pts, col, w) { ctx.strokeStyle = col; ctx.lineWidth = w; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.stroke(); }
+function glowDot(x, y, r, col) { const g = ctx.createRadialGradient(x, y, 0, x, y, r); g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = g; ctx.fillRect(x - r, y - r, r * 2, r * 2); }
+function sparkle(cx, cy, r, col, rot = 0) { ctx.save(); ctx.translate(cx, cy); ctx.rotate(rot); ctx.fillStyle = col; ctx.beginPath(); for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4, q = i % 2 ? r * 0.3 : r; ctx.lineTo(Math.cos(a) * q, Math.sin(a) * q); } ctx.closePath(); ctx.fill(); ctx.restore(); }
+function gfBook(cx, cy, s, flip = 0) {           // the Game Factory book (copied from macmuseum.html)
+  rr(cx - 46 * s, cy - 28 * s, 92 * s, 60 * s, 5 * s, '#8e24aa');
+  rr(cx - 42 * s, cy - 26 * s, 41 * s, 54 * s, 3 * s, '#fffde7'); rr(cx + 1 * s, cy - 26 * s, 41 * s, 54 * s, 3 * s, '#fffde7');
+  ctx.fillStyle = 'rgba(0,0,0,.15)'; ctx.fillRect(cx - 1 * s, cy - 26 * s, 2 * s, 54 * s);
+  const ic = [['#ff7043', '#43a047', '#29b6f6'], ['#ab47bc', '#ffca28', '#ef5350']][Math.floor(flip) % 2];
+  text('GAME', cx - 21 * s, cy - 13 * s, 8 * s, '#6a1b9a', 'center', false); text('FACTORY', cx - 21 * s, cy - 4 * s, 7 * s, '#6a1b9a', 'center', false);
+  star(cx - 21 * s, cy + 13 * s, 9 * s, GOLD);
+  ic.forEach((c, k) => rr(cx + 6 * s + (k % 2) * 17 * s, cy - 20 * s + Math.floor(k / 2) * 22 * s, 14 * s, 14 * s, 3 * s, c));
+  rr(cx + 6 * s + 17 * s, cy + 2 * s, 14 * s, 14 * s, 3 * s, '#26a69a');
+}
+</script>
+<script>
+// 🤖 GUIDE ROBO: the REAL movie Robo. Copied from robomovie.html (via roboruler.html): drawRobo, ROBO, ellipse, star, rrect, circle, roundRect, glow, clamp
+// ===== copied from robomovie.html: drawRobo, ROBO, ellipse, star, rrect, circle, roundRect, glow, clamp =====
+const MOVIE = (function () {
+let frame = 100, goldDraw = false; const gc = (c, g) => goldDraw ? g : c, isGold = () => false;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+function rrect(x, y, w, h, r) {
+  ctx.beginPath();
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function roundRect(x, y, w, h, r, fill) { ctx.fillStyle = fill; rrect(x, y, Math.max(0, w), Math.max(0, h), r); ctx.fill(); }
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, 7); ctx.fill(); }
+function ellipse(x, y, rx, ry, fill, rot = 0) { ctx.fillStyle = fill; ctx.beginPath(); ctx.ellipse(x, y, Math.max(0, rx), Math.max(0, ry), rot, 0, 7); ctx.fill(); }
+function glow(x, y, r, col, a = 1) {                  // soft round light (radial gradient, no ctx.filter)
+  r = Math.max(1, r);
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.save(); ctx.globalAlpha = clamp(a, 0, 1); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); ctx.restore();
+}
+function star(x, y, r, fill, rot = 0, pts = 5, inner = 0.48) {
+  ctx.fillStyle = fill; ctx.beginPath();
+  for (let i = 0; i < pts * 2; i++) { const a = -Math.PI / 2 + rot + i * Math.PI / pts, rr = i % 2 ? r * inner : r; ctx.lineTo(x + Math.cos(a) * Math.max(0, rr), y + Math.sin(a) * Math.max(0, rr)); }
+  ctx.closePath(); ctx.fill();
+}
+const ROBO = { head: '#ffffff', body: '#f5f7ff', visor: '#111827', eye: '#40c4ff', legs: '#3d5afe', pod: '#2979ff', edge: '#9fa8da' };
+function drawRobo(x, y, o = {}) {
+  const s = o.s || 2.6, f = o.face || 1, t = o.t || frame, pose = o.pose || 'idle', parts = o.parts === undefined ? 15 : o.parts;
+  const eyes = o.eyes === undefined ? 1 : o.eyes;
+  let tilt = o.tilt || 0, bob = 0, lA = 0, lB = 0, sq = 1;
+  if (pose === 'walk' || pose === 'run') { const k = t * (pose === 'run' ? 0.5 : 0.3); lA = Math.max(0, Math.sin(k)) * 4; lB = Math.max(0, -Math.sin(k)) * 4; bob = -Math.abs(Math.sin(k)) * 1.5; }
+  else if (pose === 'wobble') { const k = t * 0.16; tilt += Math.sin(k) * 0.22; lA = Math.max(0, Math.sin(k)) * 5; lB = Math.max(0, -Math.sin(k)) * 5; }
+  else if (pose === 'jump') { lA = lB = 4; sq = 1.06; }
+  else if (pose === 'happy') { bob = -Math.abs(Math.sin(t * 0.25)) * 4; tilt += Math.sin(t * 0.25) * 0.08; }
+  else if (pose === 'fall') { tilt += -0.5; bob = 3; }
+  else if (pose === 'sit') { lA = lB = 3; bob = 3; }
+  else if (pose !== 'off') bob = Math.sin(t * 0.06) * 0.6;
+  ctx.save(); ctx.translate(x, y); ctx.rotate(tilt * f); ctx.scale(s * f, s * sq); ctx.translate(0, bob);
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  if (parts & 1) {
+    ctx.fillStyle = ROBO.legs; ctx.fillRect(-11, -7 - lA, 8, 7); ctx.fillRect(3, -7 - lB, 8, 7);
+    roundRect(-13, -21, 26, 17, 6, ROBO.body);
+    ctx.strokeStyle = ROBO.edge; ctx.lineWidth = 0.8; rrect(-13, -21, 26, 17, 6); ctx.stroke();
+    circle(0, -12, 3, ROBO.pod); circle(-0.8, -12.8, 1, 'rgba(255,255,255,.7)');
+  }
+  if (parts & 8) {                                     // 📡 the little antenna (wiggles when he moves)
+    const tip = Math.sin(t * 0.12) * (pose === 'idle' || pose === 'off' ? 0.6 : 2);
+    ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 1.4; ctx.beginPath(); ctx.moveTo(0, -40); ctx.quadraticCurveTo(tip * 0.4, -45, tip, -49); ctx.stroke();
+    const lit = pose === 'off' ? 0.25 : 0.6 + (o.mouth ? 0.4 * Math.abs(Math.sin(t * 0.4)) : 0);
+    if (pose !== 'off') glow(tip, -50, 7, 'rgba(64,196,255,.8)', lit);
+    circle(tip, -50, 2.6, ROBO.pod); circle(tip - 0.8, -50.8, 0.8, 'rgba(255,255,255,.8)');
+  }
+  if (parts & 4) { roundRect(-20, -31, 6, 9, 3, ROBO.pod); roundRect(14, -31, 6, 9, 3, ROBO.pod); }
+  if (parts & 2) {
+    roundRect(-17, -40, 34, 22, 12, ROBO.head);
+    ctx.strokeStyle = ROBO.edge; ctx.lineWidth = 0.8; rrect(-17, -40, 34, 22, 12); ctx.stroke();
+    roundRect(-13, -36, 26, 13, 9, ROBO.visor);
+    ellipse(-7, -34, 4, 1.2, 'rgba(255,255,255,.18)', -0.2);
+    if (eyes > 0.01) {
+      ctx.save(); ctx.globalAlpha *= clamp(eyes, 0, 1);
+      glow(3, -29.5, 16, 'rgba(64,196,255,.45)', eyes);
+      const ey = -29.5;
+      if (o.dizzy) {                                   // 💫 swirly dizzy eyes
+        ctx.strokeStyle = ROBO.eye; ctx.lineWidth = 1.1;
+        for (const ex of [-3, 9]) { ctx.beginPath(); for (let a = 0; a < 12; a += 0.4) ctx.lineTo(ex + Math.cos(a + t * 0.2) * a * 0.3, ey + Math.sin(a + t * 0.2) * a * 0.3); ctx.stroke(); }
+      } else if (pose === 'happy' || o.happy) {        // ^ ^ happy eyes
+        ctx.strokeStyle = ROBO.eye; ctx.lineWidth = 1.8;
+        for (const ex of [-3, 9]) { ctx.beginPath(); ctx.arc(ex, ey + 2, 3.2, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); }
+      } else {
+        const blink = (t % 200) < 6 ? 0.6 : 5, talk = o.mouth ? 0.85 + 0.15 * Math.sin(t * 0.6) : 1;
+        ctx.fillStyle = ROBO.eye; ctx.beginPath();
+        ctx.ellipse(-3, ey, 3.5, Math.max(0.5, blink * talk), 0, 0, 7); ctx.ellipse(9, ey, 3.5, Math.max(0.5, blink * talk), 0, 0, 7); ctx.fill();
+        if (blink > 1) { circle(-2, ey - 2, 1, 'rgba(255,255,255,.85)'); circle(10, ey - 2, 1, 'rgba(255,255,255,.85)'); }
+      }
+      if (o.mouth) { ctx.strokeStyle = ROBO.eye; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(1, -25); ctx.lineTo(1 + 2 + Math.abs(Math.sin(t * 0.5)) * 3, -25); ctx.stroke(); }
+      ctx.restore();
+    }
+  }
+  if (o.wave) {                                        // 👋 a little waving hand
+    const a = Math.sin(t * 0.3) * 0.5;
+    ctx.save(); ctx.translate(13, -16); ctx.rotate(-1.2 + a); roundRect(-2, -14, 4, 14, 2, ROBO.pod); circle(0, -15, 3.4, ROBO.head); ctx.restore();
+  }
+  ctx.restore();
+  if (o.dizzy) for (let i = 0; i < 3; i++) { const a = t * 0.08 + i * 2.1; star(x + Math.cos(a) * 22 * s / 2.6, y - 118 * s / 2.6 + Math.sin(a) * 6, 7, '#ffd54f', a); }
+}
+return { robo(x, y, o) { drawRobo(x, y, o || {}); }, setFrame(f) { frame = f; } };
+})();
+</script>
+<script>
+// ---------- 🖼️ the exhibits: each drawn around (0,0), about 180 wide x 200 tall. a = 0..1 while it does its thing ----------
+const X = fn => (cx, cy, s, a) => { ctx.save(); ctx.translate(cx, cy); ctx.scale(s, s); try { fn(a || 0, frame); } finally { ctx.restore(); } };
+const SCR = '#0b1020';
+function cabinet(col, side, mq) {                 // a made-up arcade cabinet shape (no real brand)
+  ctx.fillStyle = side; ctx.beginPath(); ctx.moveTo(-66, -100); ctx.lineTo(66, -100); ctx.lineTo(70, -40); ctx.lineTo(56, 0); ctx.lineTo(70, 20); ctx.lineTo(70, 100); ctx.lineTo(-70, 100); ctx.lineTo(-70, 20); ctx.lineTo(-56, 0); ctx.lineTo(-70, -40); ctx.closePath(); ctx.fill();
+  rr(-58, -96, 116, 22, 6, mq); rr(-54, -70, 108, 70, 6, '#111'); rr(-62, 4, 124, 18, 4, col);
+  rr(-48, 34, 96, 50, 6, 'rgba(0,0,0,.25)'); rr(-14, 48, 28, 22, 4, '#212121'); rr(-8, 54, 16, 4, 2, '#ffd54f');
+}
+function joystick(x, y, tilt, ball = '#e53935') { ctx.save(); ctx.translate(x, y); ctx.rotate(tilt); rr(-2.5, -16, 5, 16, 2, '#424242'); circle(0, -17, 6, ball); circle(-2, -19, 2, 'rgba(255,255,255,.6)'); ctx.restore(); }
+function dpad(x, y, k, col = '#222') { rr(x - 3 * k, y - 9 * k, 6 * k, 18 * k, 1.5 * k, col); rr(x - 9 * k, y - 3 * k, 18 * k, 6 * k, 1.5 * k, col); }
+function crt(x, y, w, h, col = SCR) { rr(x - 6, y - 6, w + 12, h + 12, 10, '#37474f'); rr(x, y, w, h, 8, col); }
+function blob(x, y, r, col, t) {                  // a made-up little alien (NOT a real game's art)
+  circle(x, y, r, col); circle(x - r * 0.35, y - r * 0.1, r * 0.28, '#fff'); circle(x + r * 0.35, y - r * 0.1, r * 0.28, '#fff');
+  circle(x - r * 0.35, y - r * 0.05, r * 0.13, '#000'); circle(x + r * 0.35, y - r * 0.05, r * 0.13, '#000');
+  const k = Math.sin(t * 0.3) > 0 ? 1 : -1; rr(x - r * 0.9, y + r * 0.6, r * 0.35, r * 0.5 + k, 2, col); rr(x + r * 0.55, y + r * 0.6, r * 0.35, r * 0.5 - k, 2, col);
+}
+function wire(cube, ang, sc, ox, oy, fill) {      // a spinning 3D shape made of triangles (polygons)
+  const ca = Math.cos(ang), sa = Math.sin(ang), cb = Math.cos(ang * 0.7), sb = Math.sin(ang * 0.7);
+  const P = cube.v.map(([x, y, z]) => { let X1 = x * ca - z * sa, Z1 = x * sa + z * ca; let Y1 = y * cb - Z1 * sb, Z2 = y * sb + Z1 * cb; const f = 3 / (3 + Z2); return [ox + X1 * sc * f, oy + Y1 * sc * f, Z2]; });
+  const faces = cube.f.map((f, i) => ({ f, i, z: f.reduce((s, k) => s + P[k][2], 0) / f.length })).sort((p, q) => q.z - p.z);
+  for (const F of faces) { ctx.beginPath(); F.f.forEach((k, j) => j ? ctx.lineTo(P[k][0], P[k][1]) : ctx.moveTo(P[k][0], P[k][1])); ctx.closePath();
+    if (fill) { ctx.fillStyle = fill[F.i % fill.length]; ctx.fill(); } ctx.strokeStyle = fill ? 'rgba(0,0,0,.5)' : '#69f0ae'; ctx.lineWidth = 2; ctx.stroke(); }
+}
+const CUBE = { v: [[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1], [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]],
+  f: [[0, 1, 2], [0, 2, 3], [4, 6, 5], [4, 7, 6], [0, 4, 5], [0, 5, 1], [3, 2, 6], [3, 6, 7], [0, 3, 7], [0, 7, 4], [1, 5, 6], [1, 6, 2]] };
+const PYR = { v: [[0, -1.3, 0], [-1, 0.8, -1], [1, 0.8, -1], [1, 0.8, 1], [-1, 0.8, 1]], f: [[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1], [1, 2, 3], [1, 3, 4]] };
+
+const DRAW = {
+  tennis: X((a, t) => {                           // 🎾 an oscilloscope (a round science screen) + 2 knob controllers
+    rr(-84, -92, 168, 128, 12, '#8d9aa5'); rr(-78, -86, 156, 116, 8, '#b0bec5');
+    circle(0, -28, 52, '#263238'); circle(0, -28, 46, '#0a2416');
+    for (let k = 0; k < 3; k++) circle(56 + k * 0, -70 + k * 22, 5, '#455a64');
+    ctx.save(); ctx.beginPath(); ctx.arc(0, -28, 46, 0, 7); ctx.clip();
+    line([[-40, -6], [40, -6]], '#69f0ae', 2.5); line([[0, -6], [0, -22]], '#69f0ae', 2.5);
+    const sp = a > 0 ? 0.09 : 0.03, ph = (t * sp) % 2, dir = ph < 1 ? 1 : -1, u = ph < 1 ? ph : ph - 1;
+    const bx = dir * (-36 + u * 72), by = -8 - Math.abs(Math.sin(u * Math.PI * 2)) * 34;
+    for (let k = 1; k < 7; k++) { const uu = Math.max(0, u - k * 0.03), x2 = dir * (-36 + uu * 72), y2 = -8 - Math.abs(Math.sin(uu * Math.PI * 2)) * 34; circle(x2, y2, 2.4 - k * 0.25, `rgba(105,240,174,${0.6 - k * 0.08})`); }
+    glowDot(bx, by, 10, 'rgba(105,240,174,.7)'); circle(bx, by, 3, '#b9f6ca');
+    ctx.restore();
+    for (const d of [-1, 1]) { line([[d * 40, 34], [d * 52, 58]], '#424242', 3); rr(d * 60 - 22, 56, 44, 34, 6, '#5d4037'); circle(d * 60 - 6, 73, 8, '#212121'); circle(d * 60 + 12, 73, 5, a > 0 && (t >> 3) % 2 ? '#ff5252' : '#c62828'); }
+  }),
+  spacewar: X((a, t) => {                         // 🚀 a giant old computer with a round screen
+    rr(-80, -100, 160, 200, 8, '#cfd8dc'); rr(-74, -94, 148, 30, 4, '#90a4ae');
+    for (let k = 0; k < 12; k++) circle(-62 + k * 11, -79, 3.4, ((k * 7 + (t >> 4)) % 5 < 2) ? '#ffca28' : '#78909c');
+    circle(0, -6, 52, '#455a64'); circle(0, -6, 46, '#020409');
+    ctx.save(); ctx.beginPath(); ctx.arc(0, -6, 46, 0, 7); ctx.clip();
+    for (let k = 0; k < 18; k++) circle(((k * 53) % 90) - 45, ((k * 37) % 90) - 51, 0.9, '#cfd8dc');
+    glowDot(0, -6, 16, 'rgba(255,255,255,.7)'); sparkle(0, -6, 7, '#fff', t * 0.05);
+    const sp = a > 0 ? 0.05 : 0.015;
+    [[0, 30, '#80deea', 0.9], [Math.PI, 22, '#ffab91', 1.2]].forEach(([o, r, col, k]) => { const an = t * sp * k + o, x = Math.cos(an) * r, y = -6 + Math.sin(an) * r * 0.8;
+      ctx.save(); ctx.translate(x, y); ctx.rotate(an + Math.PI); tri(-5, -6, -5, 6, 9, 0, col); ctx.restore();
+      if (a > 0) for (let q = 1; q < 4; q++) circle(x + Math.cos(an + Math.PI / 2) * q * 7, y + Math.sin(an + Math.PI / 2) * q * 7, 1.5, '#fff'); });
+    ctx.restore();
+    rr(-74, 56, 148, 36, 4, '#b0bec5'); for (let k = 0; k < 8; k++) rr(-66 + k * 17, 64, 12, 20, 2, '#eceff1');
+  }),
+  pong: X((a, t) => {                             // 🏓 a paddle game cabinet
+    cabinet('#ffb300', '#c49000', '#fff3e0'); fit('PADDLE TENNIS', 0, -80, 13, 104, '#e65100', 'center', false);
+    ctx.save(); ctx.beginPath(); ctx.rect(-54, -70, 108, 70); ctx.clip();
+    for (let y = -66; y < 0; y += 9) ctx.fillRect(-1, y, 2, 5);
+    ctx.fillStyle = '#fff'; const sp = a > 0 ? 2.2 : 1, bx = Math.abs(((t * sp) % 160) - 80) - 40, by = -35 + Math.sin(t * 0.05 * sp) * 26;
+    ctx.fillRect(-48, by - 9 + Math.sin(t * 0.07) * 3, 4, 18); ctx.fillRect(44, by - 9 - Math.sin(t * 0.06) * 3, 4, 18); ctx.fillRect(bx - 2.5, by - 2.5, 5, 5);
+    text('3', -22, -54, 12, '#fff', 'center', false); text('2', 22, -54, 12, '#fff', 'center', false); ctx.restore();
+    rr(-40, 6, 14, 12, 3, '#fff'); rr(26, 6, 14, 12, 3, '#fff'); circle(-33, 12, 4, '#424242'); circle(33, 12, 4, '#424242');
+  }),
+  atari: X((a, t) => {                            // 🕹️ a made-up wood-front home console + joystick
+    const up = a > 0 ? Math.min(1, a * 4) : 0;
+    rr(-88, -40, 176, 50, 8, '#1b1b1b'); rr(-90, -4, 180, 26, 6, '#6d4c41');
+    for (let k = 0; k < 9; k++) line([[-86, 0 + k * 2.6], [86, 2 + k * 2.4]], 'rgba(62,39,35,.35)', 1);
+    for (let k = 0; k < 4; k++) rr(-80 + k * 14, -30, 8, 18, 2, '#9e9e9e'); for (let k = 0; k < 2; k++) rr(48 + k * 14, -30, 8, 18, 2, '#9e9e9e');
+    rr(-40, -38, 52, 10, 2, '#000');
+    ctx.save(); ctx.beginPath(); ctx.rect(-100, -200, 200, 166); ctx.clip();
+    rr(-38, -84 + up * 40, 50, 46, 4, '#212121'); rr(-32, -78 + up * 40, 38, 20, 3, '#ff7043'); fit('GAME', -13, -64 + up * 40, 10, 34, '#fff', 'center', false); ctx.restore();
+    rr(-26, 40, 52, 44, 6, '#212121'); joystick(0, 62, a > 0 ? Math.sin(t * 0.3) * 0.5 : 0, '#212121'); circle(-15, 50, 5, '#e53935');
+    line([[0, 40], [10, 22]], '#424242', 3);
+    circle(78, 6, 3.5, up >= 1 ? '#ff1744' : '#4e342e');
+  }),
+  arcade: X((a, t) => {                           // 🏟️ a made-up arcade cabinet with a coin door
+    cabinet('#1e88e5', '#283593', a > 0 && (t >> 3) % 2 ? '#fff59d' : '#ffe082'); fit('★ ARCADE ★', 0, -80, 15, 104, '#d81b60', 'center', false);
+    for (let k = 0; k < 16; k++) { const x = -50 + ((k * 29 + t * (a > 0 ? 2 : 0.5)) % 100), y = -66 + (k * 17) % 62; ctx.fillStyle = ['#ff4081', '#40c4ff', '#ffd740', '#69f0ae'][k % 4]; ctx.fillRect(x, y, 3, 3); }
+    text(a > 0 ? 'PLAYER 1!' : 'INSERT COIN', 0, -26, 12, a > 0 ? '#69f0ae' : '#fff', 'center', false);
+    joystick(-30, 13, a > 0 ? Math.sin(t * 0.4) * 0.5 : 0); circle(14, 12, 5, '#ffd740'); circle(30, 12, 5, '#40c4ff');
+    if (a > 0 && a < 0.4) { const y = 20 + a * 80; circle(0, y, 6, '#ffd54f'); text('25¢', 0, y + 3, 6, '#8d6e63', 'center', false); }
+    text('25¢', 0, 96, 12, '#ffe082', 'center', false);
+  }),
+  invaders: X((a, t) => {                         // 👾 a march-down shooting game (made-up blob aliens, NOT the real game's art)
+    crt(-80, -96, 160, 150, '#05060f');
+    ctx.save(); ctx.beginPath(); ctx.rect(-80, -96, 160, 150); ctx.clip();
+    const n = a > 0 ? Math.max(3, 15 - Math.floor(a * 14)) : 15, sp = a > 0 ? 0.03 + (15 - n) * 0.02 : 0.02, dx = Math.sin(t * sp) * 16, dy = a > 0 ? a * 30 : 0;
+    for (let k = 0; k < n; k++) blob(-52 + (k % 5) * 26 + dx, -78 + Math.floor(k / 5) * 22 + dy, 8, ['#ff80ab', '#80deea', '#b9f6ca'][Math.floor(k / 5)], t * sp * 4);
+    for (let k = 0; k < 3; k++) { const x = -52 + k * 52; ctx.fillStyle = '#69f0ae'; ctx.beginPath(); ctx.ellipse(x, 22, 14, 10, 0, Math.PI, 0); ctx.fill(); }
+    const px = Math.sin(t * 0.05) * 50; rr(px - 10, 38, 20, 7, 2, '#69f0ae'); rr(px - 2, 32, 4, 7, 1, '#69f0ae');
+    if (a > 0) { const sy = 30 - ((t * 6) % 100); rr(px - 1, sy, 2, 8, 1, '#fff'); }
+    ctx.restore();
+    rr(-60, 64, 120, 30, 6, '#424242'); circle(-30, 79, 6, '#ff5252'); circle(30, 79, 6, '#ff5252'); rr(-8, 72, 16, 14, 3, '#9e9e9e');
+  }),
+  pacman: X((a, t) => {                           // 🍕 a maze of dots + the pizza that gave the idea (no real game characters)
+    crt(-80, -96, 160, 120, '#000');
+    ctx.save(); ctx.beginPath(); ctx.rect(-80, -96, 160, 120); ctx.clip(); ctx.strokeStyle = '#2962ff'; ctx.lineWidth = 3;
+    [[-72, -88, 144, 104], [-50, -66, 34, 22], [16, -66, 34, 22], [-50, -24, 100, 14], [-12, -66, 24, 30]].forEach(([x, y, w, h]) => { ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, 5) : ctx.rect(x, y, w, h); ctx.stroke(); });
+    for (let k = 0; k < 30; k++) { const x = -62 + (k % 10) * 13.7, y = -77 + Math.floor(k / 10) * 42 + (Math.floor(k / 10) === 2 ? -6 : 0);
+      const lit = a > 0 && ((k + Math.floor(t / 4)) % 6 === 0); circle(x, y, lit ? 3.4 : 2, lit ? '#fff59d' : '#ffe0b2'); }
+    if (a > 0) text('+10', -40 + ((t * 2) % 80), -40, 11, '#fff59d', 'center', false);
+    ctx.restore();
+    circle(0, 64, 40, '#eceff1'); circle(0, 64, 34, '#ffca28'); circle(0, 64, 29, '#ef6c00');
+    for (const [x, y] of [[-12, 52], [10, 50], [-16, 72], [6, 76], [-2, 62]]) circle(x, y, 4, '#b71c1c');
+    const m = 0.55;
+    ctx.fillStyle = '#eceff1'; ctx.beginPath(); ctx.moveTo(0, 64); ctx.arc(0, 64, 35, -1.3 - m, -1.3 + m); ctx.closePath(); ctx.fill();
+  }),
+  play: X((a, t) => {                             // 🏓 PLAY ME! a little paddle game table
+    rr(-86, -60, 172, 110, 12, '#6d4c41'); rr(-78, -52, 156, 94, 8, '#000');
+    ctx.fillStyle = '#fff'; for (let y = -48; y < 40; y += 10) ctx.fillRect(-1, y, 2, 5);
+    const bx = Math.abs(((t * 1.5) % 140) - 70) - 35, by = -5 + Math.sin(t * 0.06) * 30;
+    ctx.fillRect(-70, by - 12, 5, 24); ctx.fillRect(65, -5 + Math.sin(t * 0.05) * 25 - 12, 5, 24); ctx.fillRect(bx - 3, by - 3, 6, 6);
+    rr(-76, 56, 152, 30, 8, '#8d6e63'); circle(-50, 71, 9, '#fafafa'); circle(50, 71, 9, '#fafafa');
+    text('PLAY ME!', 0, -72 + Math.sin(t * 0.1) * 3, 22, '#ffd740');
+    star(-70, -84, 8, GOLD); star(70, -84, 8, GOLD);
+  }),
+  nes: X((a, t) => {                              // 📺 a made-up gray box console with a front lid + square controller
+    const slide = a > 0 ? Math.min(1, a * 3) : 0;
+    rr(-86, -60, 172, 70, 8, '#d7d7d7'); rr(-86, -10, 172, 22, 4, '#555'); rr(-60, -50, 120, 34, 4, '#bdbdbd');
+    rr(-34, -86 + slide * 34, 68, 50 - slide * 30, 4, '#616161'); rr(-28, -80 + slide * 34, 56, 16, 2, '#ef5350');
+    rr(-78, -4, 22, 9, 3, '#212121'); rr(-50, -4, 22, 9, 3, '#212121'); circle(70, 0, 3, slide >= 1 ? '#ff1744' : '#5d4037');
+    rr(-62, 32, 124, 52, 8, '#cfcfcf'); rr(-58, 40, 116, 38, 4, '#212121');
+    dpad(-38, 59, 1.2, '#e0e0e0'); rr(-10, 60, 10, 4, 2, '#9e9e9e'); rr(4, 60, 10, 4, 2, '#9e9e9e');
+    circle(28, 62, 7, a > 0 && (t >> 3) % 2 ? '#ff8a80' : '#d32f2f'); circle(46, 56, 7, '#d32f2f');
+    if (slide >= 1) text('PRESS START', 0, -96, 13, '#fff59d');
+  }),
+  gameboy: X((a, t) => {                          // 🟩 a made-up pocket game player with a green screen
+    rr(-56, -100, 112, 196, 12, '#c9c9c4'); rr(-56, 60, 112, 36, 12, '#c9c9c4'); rr(-46, -88, 92, 82, 6, '#5b5e6b');
+    rr(-34, -78, 68, 60, 2, '#9bbc0f');
+    const g = ['#0f380f', '#306230', '#8bac0f'];
+    ctx.save(); ctx.beginPath(); ctx.rect(-34, -78, 68, 60); ctx.clip();
+    const stack = [[0, 4, 0], [1, 4, 1], [2, 4, 0], [3, 4, 2], [4, 4, 1], [5, 4, 0], [0, 3, 1], [1, 3, 2], [4, 3, 2], [5, 3, 1]];
+    for (const [cx, cy, c] of stack) { ctx.fillStyle = g[c]; ctx.fillRect(-30 + cx * 10, -70 + cy * 10, 9, 9); }
+    const fy = a > 0 ? ((t * 0.6) % 50) : 8;
+    ctx.fillStyle = g[0]; for (const [cx, cy] of [[2, 0], [3, 0], [2, 1], [3, 1]]) ctx.fillRect(-30 + cx * 10, -80 + fy + cy * 10, 9, 9);
+    ctx.restore(); circle(-38, -60, 2.5, a > 0 ? '#ff1744' : '#7f0000');
+    dpad(-26, 22, 1.3, '#212121'); circle(22, 26, 8, '#9c1e5b'); circle(40, 16, 8, '#9c1e5b');
+    rr(-22, 50, 16, 5, 2, '#888'); rr(2, 50, 16, 5, 2, '#888');
+    for (let k = 0; k < 5; k++) line([[24 + k * 6, 82], [34 + k * 6, 66]], '#9e9e9e', 2.5);
+  }),
+  d3: X((a, t) => {                               // 🧊 3D shapes made of triangles (polygons)
+    ctx.fillStyle = 'rgba(105,240,174,.12)'; ctx.beginPath(); ctx.moveTo(-30, 70); ctx.lineTo(30, 70); ctx.lineTo(90, -96); ctx.lineTo(-90, -96); ctx.closePath(); ctx.fill();
+    rr(-60, 70, 120, 24, 8, '#37474f'); rr(-36, 64, 72, 10, 4, '#69f0ae');
+    glowDot(0, -10, 90, 'rgba(105,240,174,.25)');
+    const sp = a > 0 ? 0.06 : 0.015, fill = a > 0 ? ['#ff5252', '#ffd740', '#40c4ff', '#69f0ae', '#e040fb', '#ff9100'] : null;
+    wire(CUBE, t * sp, 28, -42, -34, fill); wire(PYR, -t * sp * 1.2, 26, 48, -26, fill);
+    for (let k = 0; k < 3; k++) sparkle(-60 + k * 60, -90 + Math.sin(t * 0.05 + k) * 4, 5, '#b9f6ca', t * 0.03);
+    text(a > 0 ? 'COLORED IN!' : 'TRIANGLES!', 0, 40, 15, '#b9f6ca');
+  }),
+  ps1: X((a, t) => {                              // 💿 a made-up flat gray disc console + controller + a shiny disc
+    const open = a > 0 ? Math.min(1, a * 4) : 0;
+    rr(-88, -50, 176, 54, 8, '#c4c4c8'); rr(-88, -6, 176, 10, 3, '#a8a8ae');
+    circle(-20, -24, 34, '#b8b8be'); circle(-20, -24, 30, '#c9c9cf');
+    if (open > 0) { ctx.save(); ctx.translate(-20, -24 - open * 30); ctx.scale(1, 0.35 + open * 0.4); circle(0, 0, 30, '#d4d4da'); ctx.restore(); }
+    ctx.save(); ctx.translate(-20, -24 - open * 6); ctx.rotate(a > 0 ? t * 0.3 : 0);
+    if (open > 0.5) { circle(0, 0, 25, '#e0e0e0'); const g = ctx.createLinearGradient(-25, -25, 25, 25); ['#ff8a80', '#ffd180', '#ccff90', '#80d8ff', '#ea80fc'].forEach((c, i) => g.addColorStop(i / 4, c)); ctx.globalAlpha = 0.55; circle(0, 0, 25, g); ctx.globalAlpha = 1; circle(0, 0, 5, '#9e9e9e'); }
+    ctx.restore();
+    circle(38, -32, 6, '#9e9e9e'); circle(60, -32, 6, '#9e9e9e'); circle(66, -12, 2.5, '#69f0ae');
+    ctx.fillStyle = '#9e9ea6'; ctx.beginPath(); ctx.moveTo(-62, 40); ctx.quadraticCurveTo(0, 26, 62, 40); ctx.quadraticCurveTo(80, 90, 58, 92); ctx.quadraticCurveTo(40, 80, 22, 70); ctx.lineTo(-22, 70); ctx.quadraticCurveTo(-40, 80, -58, 92); ctx.quadraticCurveTo(-80, 90, -62, 40); ctx.fill();
+    dpad(-38, 52, 1, '#555');
+    const bx = 38, by = 52; ctx.lineWidth = 2;
+    ctx.strokeStyle = '#26a69a'; ctx.beginPath(); ctx.moveTo(bx, by - 13); ctx.lineTo(bx - 4, by - 7); ctx.lineTo(bx + 4, by - 7); ctx.closePath(); ctx.stroke();
+    ctx.strokeStyle = '#ef5350'; ctx.beginPath(); ctx.arc(bx + 10, by, 3.5, 0, 7); ctx.stroke();
+    line([[bx - 3, by + 7], [bx + 3, by + 13]], '#5c6bc0', 2); line([[bx + 3, by + 7], [bx - 3, by + 13]], '#5c6bc0', 2);
+    ctx.strokeStyle = '#ec407a'; ctx.strokeRect(bx - 13.5, by - 3.5, 7, 7);
+  }),
+  n64: X((a, t) => {                              // 🎮 a made-up dark console with 4 controller holes + a 3-handle controller
+    rr(-80, -70, 160, 60, 14, '#3a3a3a'); rr(-30, -92, 60, 30, 4, '#616161'); rr(-24, -86, 48, 12, 2, '#7cb342');
+    for (let k = 0; k < 4; k++) rr(-60 + k * 34, -26, 20, 10, 3, '#111');
+    circle(60, -56, 3, a > 0 ? '#ff1744' : '#555');
+    ctx.fillStyle = '#4a4a4a'; ctx.beginPath(); ctx.moveTo(-70, 10); ctx.quadraticCurveTo(0, -4, 70, 10);
+    ctx.lineTo(74, 70); ctx.quadraticCurveTo(66, 86, 54, 70); ctx.lineTo(40, 34); ctx.lineTo(12, 34); ctx.lineTo(10, 88); ctx.quadraticCurveTo(0, 98, -10, 88); ctx.lineTo(-12, 34); ctx.lineTo(-40, 34); ctx.lineTo(-54, 70); ctx.quadraticCurveTo(-66, 86, -74, 70); ctx.closePath(); ctx.fill();
+    dpad(-46, 22, 0.9, '#222');
+    const sx = a > 0 ? Math.sin(t * 0.3) * 4 : 0, sy = a > 0 ? Math.cos(t * 0.23) * 4 : 0; circle(0, 46, 9, '#222'); circle(sx, 46 + sy, 6, '#9e9e9e');
+    circle(36, 14, 5, '#1e88e5'); circle(48, 26, 5, '#43a047'); for (const [x, y] of [[54, 8], [62, 16], [54, 24], [46, 16]]) circle(x + 6, y - 6, 3, '#fdd835');
+    if (a > 0) { rr(-46, -150, 92, 56, 6, '#000'); wire(CUBE, t * 0.06, 14, 0, -122, ['#ef5350', '#ffd740', '#42a5f5', '#66bb6a', '#ab47bc', '#ff7043']); }
+  }),
+  phones: X((a, t) => {                           // 📱 a made-up two-screen folding game player + a smartphone
+    ctx.save(); ctx.translate(-36, 0);
+    rr(-44, -74, 88, 62, 8, '#b0bec5'); rr(-36, -68, 72, 50, 3, '#1a237e');
+    rr(-44, -8, 88, 70, 8, '#cfd8dc'); rr(-28, -2, 56, 42, 3, '#e8eaf6');
+    for (let k = 0; k < 6; k++) star(-26 + k * 10, -44 + Math.sin(t * 0.08 + k) * 10, 3, '#ffd740');
+    dpad(-36, 52, 0.6, '#455a64'); circle(34, 50, 3, '#455a64'); circle(38, 56, 3, '#455a64');
+    const px = a > 0 ? Math.sin(t * 0.15) * 18 : 6, py = a > 0 ? 18 + Math.cos(t * 0.11) * 10 : 16;
+    line([[px + 30, py + 30], [px, py]], '#78909c', 3); if (a > 0) { ctx.strokeStyle = 'rgba(63,81,181,.5)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(px, py, (t % 20) * 0.8, 0, 7); ctx.stroke(); }
+    ctx.restore();
+    ctx.save(); ctx.translate(52, -6);
+    rr(-28, -60, 56, 112, 10, '#212121'); rr(-24, -52, 48, 94, 4, '#29b6f6');
+    for (let k = 0; k < 8; k++) { const y = 30 - ((t * (a > 0 ? 1.4 : 0.4) + k * 14) % 90); circle(-12 + (k * 13) % 26, y, 4 + (k % 3), 'rgba(255,255,255,.7)'); }
+    circle(0, 47, 3, '#424242'); ctx.restore();
+  }),
+  tablet: X((a, t) => {                           // 📲 a tablet showing the Game Factory book!
+    rr(-92, -66, 184, 128, 14, '#263238'); rr(-82, -58, 164, 112, 4, '#e1f5fe');
+    gfBook(0, -2, 1.45, a > 0 ? t / 20 : 0);
+    if (a > 0) { const k = Math.floor(t / 25) % 4, fx = [-30, 30, -20, 25][k], fy = [-15, 10, 20, -20][k]; ctx.strokeStyle = 'rgba(41,121,255,.6)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(fx, fy, (t % 25) * 0.9, 0, 7); ctx.stroke(); emoji('👆', fx + 6, fy + 26, 24); }
+    circle(86, -2, 3, '#455a64');
+  }),
+  vr: X((a, t) => {                               // 🥽 a made-up VR headset: one picture for each eye
+    const m = a > 0 ? Math.max(0, 1 - a * 1.5) : 1;
+    for (const d of [-1, 1]) { const cx = d * 40 * (0.3 + 0.7 * m); circle(cx, -60, 32, 'rgba(13,27,62,.9)');
+      ctx.save(); ctx.beginPath(); ctx.arc(cx, -60, 30, 0, 7); ctx.clip(); ctx.fillStyle = '#1a237e'; ctx.fillRect(cx - 30, -90, 60, 60); ctx.fillStyle = '#43a047'; ctx.fillRect(cx - 30, -50, 60, 30);
+      star(cx + d * 6 * m - 4, -66, 10, '#ffd740'); circle(cx + 12 - d * 4 * m, -44, 5, '#ff7043'); ctx.restore();
+      ctx.strokeStyle = '#90caf9'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(cx, -60, 31, 0, 7); ctx.stroke(); }
+    text(m > 0.05 ? 'LEFT EYE      RIGHT EYE' : '✨ 3D! ✨', 0, -16, 12, '#fff');
+    ctx.strokeStyle = '#37474f'; ctx.lineWidth = 10; ctx.beginPath(); ctx.ellipse(0, 32, 92, 30, 0, Math.PI * 1.05, Math.PI * 1.95, true); ctx.stroke();
+    const tilt = a > 0 ? Math.sin(t * 0.08) * 0.15 : 0; ctx.save(); ctx.translate(0, 34); ctx.rotate(tilt);
+    rr(-74, -24, 148, 50, 18, '#eceff1'); rr(-68, -18, 136, 38, 14, '#cfd8dc'); rr(-14, 14, 28, 14, 7, '#90a4ae');
+    for (const d of [-1, 1]) circle(d * 34, 0, 13, '#263238'); ctx.restore();
+  }),
+  factory: X((a, t) => {                          // 🏭 Ben's Game Factory book + the number of games
+    glowDot(0, -20, 140, 'rgba(255,215,64,.35)');
+    gfBook(0, -30, 2.6, a > 0 ? t / 15 : 0);
+    const n = a > 0 ? Math.min(GAME_COUNT, Math.floor(a * 3 * GAME_COUNT)) : GAME_COUNT;
+    rr(-90, 58, 180, 44, 12, '#4a148c'); fit(n + ' GAMES!', 0, 90, 32, 170, GOLD);
+    if (a > 0) ['🤖', '🏎️', '🐶', '🧟', '🎶', '🐱', '🚀'].forEach((e, i) => { const u = (a * 2 + i * 0.14) % 1; emoji(e, (i - 3) * 30 * (0.6 + u), -100 - u * 60, 22); });
+  }),
+};
+</script>
+<script>
+// each: [id, name, icon, action button, when/where, TRUE facts (double-checked!), what Guide Robo says]
+const EX = [
+  ['tennis', 'Tennis for Two', '🎾', 'HIT THE BALL!', '1958, a science lab in New York', ['In 1958, a scientist named William Higinbotham made it for visitors at Brookhaven National Laboratory.', 'Its screen was an oscilloscope: a little round science screen with glowing lines.', 'You saw the tennis court from the SIDE, with a net. Each player had a knob and a button.', 'Visitors lined up to play it!'], 'This is one of the very FIRST video games ever!'],
+  ['spacewar', 'Spacewar!', '🚀', 'BLAST OFF!', '1962, a college called MIT', ['Made in 1962 by Steve Russell and his friends at MIT.', 'Two spaceships, the needle and the wedge, fly around a star. Its gravity pulls them in!', 'It ran on a giant computer called the PDP-1.', 'Friends at MIT built special control boxes for it, some of the first game controllers!'], 'Two players, one star, and a giant computer!'],
+  ['pong', 'Pong', '🏓', 'BOUNCE!', '1972, the first arcade hit', ['Pong came out in 1972, made by a company called Atari.', 'An engineer named Allan Alcorn built it as a practice project!', 'It is like table tennis: two paddles hit a square ball back and forth.', 'The very first Pong machine stopped working because its coin box was TOO full of coins!'], 'Beep... boop... beep! Want to play one? Find the PLAY ME table!'],
+  ['atari', 'Atari 2600', '🕹️', 'PLUG IN A GAME!', '1977, living rooms everywhere', ['It came out in 1977. At first it was called the Atari VCS.', 'Games came on CARTRIDGES you plugged in, so one machine could play lots of games.', 'Its joystick had just ONE red button.', 'The front was made to look like wood!'], 'Games came HOME! Plug in a cartridge!'],
+  ['arcade', 'Arcades', '🏟️', 'INSERT A COIN!', 'Late 1970s and the 1980s', ['An arcade is a room full of big game machines called cabinets.', 'In America, one game often cost a quarter (25 cents).', 'The early 1980s are called the "golden age" of arcade games.', 'If you got a high score, you could put your initials (3 letters) on the high score list!'], 'Lights! Beeps! A whole room of games!'],
+  ['invaders', 'Space Invaders', '👾', 'MARCH!', '1978, Japan', ['Made in Japan in 1978 by Tomohiro Nishikado at a company called Taito.', 'Rows of aliens march down toward you, and you shoot them from below.', 'The aliens speed up as you zap them. That was an accident: with fewer aliens to draw, the computer ran faster!', 'You can hide behind shields that slowly crumble.'], 'Our museum aliens are made-up blobs. Hi, blobs!'],
+  ['pacman', 'Pac-Man', '🍕', 'SHINE THE DOTS!', '1980, Japan', ['Made in Japan in 1980 by Toru Iwatani at a company called Namco.', 'Its creator said the idea came partly from a pizza with one slice taken out!', 'You gobble up dots in a maze while four ghosts chase you.', 'It was made so that EVERYBODY would want to play, not just fans of shooting games.'], 'A maze, some dots... and a pizza!'],
+  ['play', 'Paddle Game (Play Me!)', '🏓', 'PLAY!', 'Right here in the museum!', ['Drag your finger up and down (or press ↑ ↓) to move YOUR paddle on the left.', 'Hit the ball past the computer\'s paddle to score.', 'First to 5 points wins!', 'Games like this were the very first video game hits.'], 'Let\'s play! I\'ll cheer for you!'],
+  ['nes', 'The NES', '📺', 'PRESS START!', '1985, America', ['NES stands for Nintendo Entertainment System. It came to America in 1985. In Japan it was called the Famicom and came out in 1983.', 'You slid the cartridge in the front, then pushed it down.', 'Its square controller had a plus-shaped D-pad and two buttons, A and B.', 'It helped bring video games back after a big slump in 1983.'], 'Press START! (The D-pad is the plus sign!)'],
+  ['gameboy', 'Game Boy', '🟩', 'PLAY BLOCKS!', '1989, in your pocket', ['Made by Nintendo in 1989: a game player you could carry anywhere!', 'Its screen had no colors, just shades of green-gray.', 'It ran on 4 AA batteries.', 'In America it came with a falling-blocks puzzle game called Tetris.'], 'Green screen, falling blocks, pocket size!'],
+  ['d3', '3D Games', '🧊', 'COLOR IT IN!', 'The 1990s', ['In the 1990s, lots of games became 3D, so you could look all around!', '3D shapes in games are built from tiny flat triangles called polygons.', 'More triangles = smoother shapes. Old 3D games looked blocky!', 'Special chips called graphics chips draw those triangles super fast.'], 'Everything in 3D is made of triangles. Even me in Robo City!'],
+  ['ps1', 'PlayStation', '💿', 'SPIN THE DISC!', '1994, Japan', ['Made by Sony. It came out in Japan in 1994 and in America in 1995.', 'Its games came on shiny CDs instead of cartridges.', 'Its controller buttons have shapes: a triangle, a circle, an X and a square.', 'It was the first game console to sell more than 100 million!'], 'A game on a shiny disc! Spin, spin!'],
+  ['n64', 'Nintendo 64', '🎮', 'WIGGLE THE STICK!', '1996, Japan and America', ['It came out in 1996 in Japan and in America.', 'Its controller has THREE handles, with a thumb stick in the middle for moving in 3D.', 'It had 4 controller ports, so 4 friends could play at once!', 'Its games still came on cartridges.'], 'Three handles! Which one do YOU hold?'],
+  ['phones', 'Handhelds + Phones', '📱', 'TAP THE SCREEN!', 'The 2000s', ['The Nintendo DS (2004) had TWO screens, and the bottom one was a touchscreen.', 'You could tap it with a little pen called a stylus.', 'In 2008, phones got app stores, so people could download games right onto a phone.', 'Today, LOTS of people play games on phones.'], 'Two screens, then phones. Games went everywhere!'],
+  ['tablet', 'Tablets', '📲', 'TAP TO PLAY!', '2010 and today', ['The iPad came out in 2010. A tablet is like a giant phone with a big touchscreen.', 'You play by tapping, swiping and dragging with your fingers.', 'Ben plays his Game Factory games on his iPad!'], 'Hey, that\'s the Game Factory book!'],
+  ['vr', 'Virtual Reality (VR)', '🥽', 'PUT IT ON!', 'Today', ['A VR headset shows a slightly different picture to each eye, so the world looks 3D!', 'When you turn your head, the game world turns too.', 'Way back in 1995, a red-and-black 3D game player called the Virtual Boy came out.'], 'Two pictures, one for each eye... = 3D!'],
+  ['factory', 'The Game Factory', '🏭', 'COUNT THE GAMES!', 'Ben\'s laptop and iPad (💡 Ben\'s own games!)', ['Ben has made ' + GAME_COUNT + ' games in the Game Factory!', 'Every game gets its very own page in the Game Factory book.', 'Ben invents the ideas and builds them with Claude.', 'You can play them on a laptop OR on an iPad.'], 'The BEST wing of the whole museum!'],
+];
+const CI = {}; EX.forEach((c, i) => CI[c[0]] = i);
+function drawEx(i, cx, cy, s, a = 0) { ctx.save(); try { DRAW[EX[i][0]](cx, cy, s, a); } finally { ctx.restore(); } }
+function guide(x, feetY, s, o = {}) { try { MOVIE.setFrame(frame); MOVIE.robo(x, feetY, Object.assign({ s, pose: 'idle' }, o)); } catch (_) {} }
+function bubble(x, y, w, str, size = 17) {       // a speech bubble; (x, y) = top left, tail at the bottom-left
+  const ln = wrap(str, size, w - 20), h = ln.length * (size + 4) + 14;
+  rr(x, y, w, h, 12, '#fff'); tri(x + 14, y + h - 2, x + 30, y + h - 2, x + 4, y + h + 14, '#fff');
+  ln.forEach((l, j) => text(l, x + 10, y + 8 + size + j * (size + 4) - 3, size, OR3, 'left', false));
+}
+</script>
+<script>
+// ---------- sounds (soft! everything goes through a quiet master volume) ----------
+let AC = null, MASTER = null;
+function beep(f, t = 0, d = 0.12, type = 'triangle', v = 0.4) {
+  try { if (!AC) { AC = new (window.AudioContext || window.webkitAudioContext)(); MASTER = AC.createGain(); MASTER.gain.value = 0.15; MASTER.connect(AC.destination); }
+    const o = AC.createOscillator(), g = AC.createGain(), n = AC.currentTime + t;
+    o.type = type; o.frequency.value = f; g.gain.setValueAtTime(0.0001, n); g.gain.linearRampToValueAtTime(v, n + 0.01); g.gain.exponentialRampToValueAtTime(0.001, n + d); o.connect(g); g.connect(MASTER); o.start(n); o.stop(n + d + 0.02); } catch (_) {}
+}
+const tune = (notes, gap = 0.1, d = 0.12, type = 'triangle', v = 0.35) => notes.forEach((f, i) => beep(f, i * gap, d, type, v));
+const sfx = { click: () => beep(660, 0, 0.06), stamp: () => tune([784, 988, 1175], 0.07, 0.15), whoosh: () => beep(300, 0, 0.25, 'sine', 0.3),
+  hit: () => beep(440, 0, 0.07, 'sine', 0.35), wall: () => beep(330, 0, 0.05, 'sine', 0.25), point: () => tune([523, 392], 0.09, 0.12, 'sine', 0.3),
+  act: k => ({ tennis: () => tune([440, 660, 440, 660], 0.25, 0.06, 'sine'), spacewar: () => { for (let i = 0; i < 6; i++) beep(900 - i * 90, i * 0.08, 0.08, 'sine', 0.3); },
+    pong: () => tune([440, 440, 220, 440], 0.3, 0.06, 'sine'), atari: () => tune([196, 262, 330, 392], 0.1, 0.15, 'square', 0.15),
+    arcade: () => { beep(1200, 0, 0.08, 'sine', 0.3); tune([523, 659, 784, 1047], 0.08, 0.1, 'square', 0.15); }, invaders: () => tune([110, 98, 87, 82, 110, 98, 87, 82], 0.25, 0.12, 'square', 0.2),
+    pacman: () => tune([494, 988, 740, 622, 988, 740, 622], 0.1, 0.1, 'triangle', 0.25), play: () => {},
+    nes: () => tune([523, 659, 784, 659, 784, 1047], 0.1, 0.12, 'square', 0.15), gameboy: () => tune([659, 494, 523, 587, 523, 494, 440], 0.14, 0.13, 'square', 0.15),
+    d3: () => tune([262, 330, 392, 523, 659], 0.12, 0.3, 'sine'), ps1: () => { beep(110, 0, 1.2, 'sine', 0.3); tune([523, 784, 1047], 0.4, 0.6, 'sine', 0.25); },
+    n64: () => tune([392, 523, 659, 784, 659, 784], 0.1, 0.12, 'triangle'), phones: () => tune([880, 1175, 880, 1319], 0.18, 0.08, 'sine'),
+    tablet: () => tune([660, 880, 1100], 0.3, 0.1, 'sine'), vr: () => { for (let i = 0; i < 8; i++) beep(300 + i * 80, i * 0.08, 0.2, 'sine', 0.25); },
+    factory: () => tune([523, 659, 784, 1047, 784, 1047, 1319], 0.12, 0.2, 'triangle') }[k] || (() => {}))() };
+</script>
+<script>
+// ---------- the museum (engine copied from macmuseum.html) ----------
+const HALLS = [
+  { name: '🕹️ HALL 1: THE VERY FIRST GAMES', ids: ['tennis', 'spacewar', 'pong', 'atari'], wall: '#e8eaf6', trim: '#3949ab' },
+  { name: '👾 HALL 2: THE ARCADE AGE', ids: ['arcade', 'invaders', 'pacman', 'play'], wall: '#1d1238', trim: '#e91e63', dark: true },
+  { name: '📺 HALL 3: GAMES COME HOME', ids: ['nes', 'gameboy', 'd3', 'ps1', 'n64'], wall: '#e0f2f1', trim: '#00897b' },
+  { name: '📱 HALL 4: GAMES EVERYWHERE', ids: ['phones', 'tablet', 'vr'], wall: '#fff8e1', trim: '#ef6c00' },
+  { name: '🏭 THE GAME FACTORY WING', ids: ['factory'], wall: '#2a0f45', trim: GOLD, grand: true },
+  { name: '🎁 THE GIFT SHOP', ids: [], wall: '#ede7f6', trim: OR, shop: true },
+];
+const YEAR = { tennis: '1958', spacewar: '1962', pong: '1972', atari: '1977', arcade: '1980s', invaders: '1978', pacman: '1980', play: 'PLAY!', nes: '1985', gameboy: '1989', d3: '1990s', ps1: '1994', n64: '1996', phones: '2004', tablet: '2010', vr: 'TODAY', factory: 'BEN!' };
+let state = 'title', hall = 0, tap = null, sel = 0, showI = 0, actT = 0, msg = '', msgT = 0, parts = [];
+const seenCount = () => EX.filter(c => save.seen[c[0]]).length;
+const START = { x: 360, y: 418, w: 240, h: 66 };
+const BTN_PREV = { x: 14, y: 488, w: 130, h: 44 }, BTN_NEXT = { x: 816, y: 488, w: 130, h: 44 }, BTN_PASS = { x: 160, y: 488, w: 300, h: 44 }, BTN_SHOP = { x: 476, y: 488, w: 324, h: 44 };
+const BTN_BACK = { x: 14, y: 12, w: 110, h: 42 }, BTN_ACT = { x: 580, y: 414, w: 350, h: 58 };
+function exhibitPos(h, k) { const n = HALLS[h].ids.length; return HALLS[h].grand ? { x: W / 2, y: 230, s: 1.15 } : { x: (k + 0.5) * W / n, y: n > 4 ? 204 : 212, s: n > 4 ? 0.72 : n > 3 ? 0.85 : 0.95 }; }
+function exhibitRect(h, k) { const p = exhibitPos(h, k), w = HALLS[h].grand ? 380 : W / HALLS[h].ids.length - 14; return { x: p.x - w / 2, y: 80, w, h: 394 }; }
+function say(s) { msg = s; msgT = 150; }
+function confetti(x, y, n = 40) { for (let i = 0; i < n; i++) parts.push({ x, y, vx: (Math.random() - 0.5) * 9, vy: -Math.random() * 8 - 2, c: [OR, GOLD, CREAM, OR2, '#69f0ae'][i % 5], life: 70 + Math.random() * 40 }); }
+function openExhibit(id) {
+  showI = CI[id]; state = 'close'; actT = 0; pong.on = false; sfx.whoosh();
+  if (!save.seen[id]) { save.seen[id] = 1; writeSave(); sfx.stamp(); say('📘 NEW STAMP in your Museum Passport!'); confetti(W / 2, 120, 30);
+    if (seenCount() === EX.length && !save.allDone) { save.allDone = 1; writeSave(); trophy('gameMuseum'); setTimeout(() => { say('🏆 You saw EVERY exhibit! Game Historian!'); confetti(W / 2, 200, 120); }, 600); } }
+}
+function goHall(h) { hall = (h + HALLS.length) % HALLS.length; sel = 0; sfx.whoosh(); }
+
+// ---------- 🏓 the PLAY ME paddle game (soft beeps, finger drag or ↑ ↓) ----------
+const CT = { x: 30, y: 74, w: 500, h: 352 };
+const pong = { on: false, py: 250, cy: 250, bx: 280, by: 250, vx: 0, vy: 0, me: 0, cpu: 0, over: 0, wait: 0 };
+function pongServe(dir) { Object.assign(pong, { bx: CT.x + CT.w / 2, by: CT.y + CT.h / 2, vx: 3.2 * dir, vy: (Math.random() * 2 - 1) * 2, wait: 50 }); }
+function pongStart() { Object.assign(pong, { on: true, me: 0, cpu: 0, over: 0, py: 250, cy: 250 }); pongServe(Math.random() < 0.5 ? 1 : -1); sfx.click(); }
+function pongUpdate() {
+  const P = pong, top = CT.y + 40, bot = CT.y + CT.h - 40;
+  if (drag.on && drag.y != null) P.py += clamp(drag.y - P.py, -8, 8);
+  if (held.ArrowUp || held.w) P.py -= 6; if (held.ArrowDown || held.s) P.py += 6;
+  P.py = clamp(P.py, top, bot);
+  if (P.over) return;
+  const goal = P.vx > 0 ? P.by : CT.y + CT.h / 2; P.cy = clamp(P.cy + clamp(goal - P.cy, -2.6, 2.6), top, bot);
+  if (P.wait > 0) { P.wait--; return; }
+  P.bx += P.vx; P.by += P.vy;
+  if (P.by < CT.y + 8) { P.by = CT.y + 8; P.vy = Math.abs(P.vy); sfx.wall(); }
+  if (P.by > CT.y + CT.h - 8) { P.by = CT.y + CT.h - 8; P.vy = -Math.abs(P.vy); sfx.wall(); }
+  const px = CT.x + 26, cx = CT.x + CT.w - 26;
+  if (P.vx < 0 && P.bx - 7 < px + 6 && P.bx > px - 8 && Math.abs(P.by - P.py) < 48) { P.vx = Math.min(7, -P.vx * 1.06); P.vy = clamp(P.vy + (P.by - P.py) * 0.07, -5, 5); sfx.hit(); }
+  if (P.vx > 0 && P.bx + 7 > cx - 6 && P.bx < cx + 8 && Math.abs(P.by - P.cy) < 48) { P.vx = -Math.min(7, P.vx * 1.04); P.vy = clamp(P.vy + (P.by - P.cy) * 0.07, -5, 5); sfx.hit(); }
+  if (P.bx < CT.x - 10 || P.bx > CT.x + CT.w + 10) {
+    const mine = P.bx > CT.x + CT.w; if (mine) P.me++; else P.cpu++; sfx.point();
+    if (P.me >= 5 || P.cpu >= 5) { P.over = P.me >= 5 ? 1 : 2; if (P.over === 1) { tune([523, 659, 784, 1047], 0.12, 0.2); confetti(280, 200, 80); say('🏆 You beat the computer!'); } else say('Good try! Tap PLAY AGAIN!'); }
+    else pongServe(mine ? -1 : 1);
+  }
+}
+function drawPong() {
+  const P = pong; rr(CT.x - 8, CT.y - 8, CT.w + 16, CT.h + 16, 14, '#5d4037'); rr(CT.x, CT.y, CT.w, CT.h, 6, '#000');
+  ctx.fillStyle = 'rgba(255,255,255,.6)'; for (let y = CT.y + 6; y < CT.y + CT.h; y += 22) ctx.fillRect(CT.x + CT.w / 2 - 2, y, 4, 12);
+  text(String(P.me), CT.x + CT.w / 2 - 60, CT.y + 56, 44, '#fff', 'center', false); text(String(P.cpu), CT.x + CT.w / 2 + 60, CT.y + 56, 44, '#fff', 'center', false);
+  text('YOU', CT.x + 60, CT.y + 26, 16, '#69f0ae', 'center', false); text('COMPUTER', CT.x + CT.w - 70, CT.y + 26, 16, '#ff80ab', 'center', false);
+  rr(CT.x + 20, P.py - 40, 12, 80, 4, '#69f0ae'); rr(CT.x + CT.w - 32, P.cy - 40, 12, 80, 4, '#ff80ab');
+  if (!P.over) { glowDot(P.bx, P.by, 18, 'rgba(255,255,255,.4)'); rr(P.bx - 7, P.by - 7, 14, 14, 3, '#fff'); }
+  else { rr(CT.x + 70, CT.y + 130, CT.w - 140, 90, 16, 'rgba(255,255,255,.95)'); text(P.over === 1 ? '🏆 YOU WIN!' : 'COMPUTER WINS!', CT.x + CT.w / 2, CT.y + 175, 34, P.over === 1 ? '#2e7d32' : '#c2185b', 'center', false); text('Tap PLAY AGAIN to go again', CT.x + CT.w / 2, CT.y + 205, 16, '#455a64', 'center', false); }
+}
+</script>
+<script>
+// ---------- 🎁 souvenirs ----------
+const SOUV = [
+  { k: 'all', icon: '🏛️', name: 'Timeline Poster', tip: 'Every exhibit!' },
+  { k: 'cards', icon: '💌', name: 'Postcards', tip: 'Mail them to family!' },
+  { k: 'pass', icon: '📘', name: 'Museum Passport', tip: 'With your stamps!' },
+  { k: 'cert', icon: '🏭', name: 'Game Maker Award', tip: GAME_COUNT + ' games!' },
+];
+const souvRect = i => ({ x: W / 2 - SOUV.length * 85 + i * 170 + 8, y: 150, w: 154, h: 200 });
+// ---------- input ----------
+const drag = { on: false, y: null };
+function canvasPos(e) { const r = C.getBoundingClientRect(); return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height }; }
+C.addEventListener('mousedown', e => { tap = canvasPos(e); drag.on = true; drag.y = inBox(tap, CT) ? tap.y : null; });
+addEventListener('mousemove', e => { if (drag.on) { const p = canvasPos(e); drag.y = p.y; } });
+addEventListener('mouseup', () => { drag.on = false; drag.y = null; });
+const press = {}, held = {};
+addEventListener('keydown', e => { press[e.key] = true; held[e.key] = true; if (e.key.startsWith('Arrow') || e.key === ' ') e.preventDefault(); });
+addEventListener('keyup', e => { held[e.key] = false; });
+function update() {
+  frame++; if (msgT > 0) msgT--; if (actT > 0) { actT++; if (actT > 150) actT = 0; }
+  for (const p of parts) { p.x += p.vx; p.y += p.vy; p.vy += 0.2; p.life--; } parts = parts.filter(p => p.life > 0);
+  const t = tap, k = Object.assign({}, press); tap = null; for (const key in press) delete press[key];
+  if (printBox) return;
+  const ok = k.Enter || k[' '], esc = k.Escape;
+  if (state === 'title') { if (ok || inBox(t, START)) { state = 'hall'; sfx.click(); } return; }
+  if (state === 'close') {
+    if (pong.on) pongUpdate();
+    if (esc || inBox(t, BTN_BACK)) { state = 'hall'; pong.on = false; sfx.click(); }
+    else if (ok || inBox(t, BTN_ACT)) { if (EX[showI][0] === 'play') { if (!pong.on || pong.over) pongStart(); } else { actT = 1; sfx.act(EX[showI][0]); } }
+    return;
+  }
+  if (state === 'pass') { if (esc || ok || inBox(t, BTN_BACK)) { state = 'hall'; sfx.click(); } return; }
+  const H0 = HALLS[hall];
+  if (k.ArrowRight) { if (!H0.shop && sel < H0.ids.length - 1) sel++; else goHall(hall + 1); }
+  if (k.ArrowLeft) { if (!H0.shop && sel > 0) sel--; else { goHall(hall - 1); sel = Math.max(0, HALLS[hall].ids.length - 1); } }
+  if (ok && !H0.shop && H0.ids[sel]) { openExhibit(H0.ids[sel]); return; }
+  if (!t) return;
+  if (inBox(t, BTN_PREV)) { goHall(hall - 1); return; }
+  if (inBox(t, BTN_NEXT)) { goHall(hall + 1); return; }
+  if (inBox(t, BTN_PASS)) { state = 'pass'; sfx.click(); return; }
+  if (inBox(t, BTN_SHOP)) { goHall(HALLS.length - 1); return; }
+  if (H0.shop) { SOUV.forEach((sv, i) => { if (inBox(t, souvRect(i))) { sfx.click(); openPrint(sv.k); } }); return; }
+  H0.ids.forEach((id, i) => { if (inBox(t, exhibitRect(hall, i))) { sel = i; openExhibit(id); } });
+}
+// ---------- drawing ----------
+function drawHall() {
+  const H0 = HALLS[hall], dk = H0.dark || H0.grand;
+  ctx.fillStyle = H0.wall; ctx.fillRect(0, 0, W, 420);
+  if (H0.dark) for (let k = 0; k < 40; k++) circle((k * 97) % W, 80 + (k * 53) % 330, 1.5, ['#ff4081', '#40c4ff', '#ffd740', '#69f0ae'][k % 4]);
+  ctx.fillStyle = H0.trim; ctx.fillRect(0, 70, W, 6); ctx.fillRect(0, 410, W, 10);
+  ctx.fillStyle = dk ? '#120a24' : '#90a4ae'; ctx.fillRect(0, 420, W, 62); ctx.fillStyle = 'rgba(0,0,0,.08)'; for (let x = 0; x < W; x += 60) ctx.fillRect(x, 420, 2, 62);
+  fit(H0.name, W / 2 + 30, 50, 32, 720, H0.grand ? GOLD : '#fff');
+  if (H0.shop) return drawShop();
+  guide(52, 66, 0.95);
+  if (H0.grand) {
+    const g = ctx.createRadialGradient(W / 2, 230, 20, W / 2, 230, 280); g.addColorStop(0, 'rgba(255,215,64,.35)'); g.addColorStop(1, 'rgba(255,215,64,0)'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, 420);
+    ctx.fillStyle = '#b71c1c'; ctx.beginPath(); ctx.moveTo(W / 2 - 90, 420); ctx.lineTo(W / 2 + 90, 420); ctx.lineTo(W / 2 + 160, 482); ctx.lineTo(W / 2 - 160, 482); ctx.fill();
+    ctx.strokeStyle = GOLD; ctx.lineWidth = 10; ctx.strokeRect(W / 2 - 200, 86, 400, 316);
+    drawEx(CI.factory, W / 2, 230 + Math.sin(frame * 0.04) * 2, 1.15);
+    for (const x of [140, W - 140]) { rr(x - 6, 300, 12, 120, 4, GOLD); circle(x, 296, 12, GOLD); }
+    ctx.strokeStyle = '#c62828'; ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(140, 320); ctx.quadraticCurveTo(W / 2 - 210, 370, W / 2 - 210, 330); ctx.moveTo(W - 140, 320); ctx.quadraticCurveTo(W / 2 + 210, 370, W / 2 + 210, 330); ctx.stroke();
+    rr(W / 2 - 170, 424, 340, 52, 10, GOLD); text('THE GAME FACTORY', W / 2, 447, 22, '#2a0f45', 'center', false); text('💡 Ben\'s own games!  ' + (save.seen.factory ? '✅' : 'Tap to visit!'), W / 2, 468, 15, '#2a0f45', 'center', false);
+    return;
+  }
+  H0.ids.forEach((id, k) => {
+    const p = exhibitPos(hall, k), seen = save.seen[id], selk = k === sel, cw = W / H0.ids.length;
+    rr(p.x - cw / 2 + 10, 84, cw - 20, 324, 14, dk ? 'rgba(255,255,255,.06)' : 'rgba(0,0,0,.06)');
+    rr(p.x - 34, 88, 68, 22, 11, H0.trim); text(YEAR[id], p.x, 105, 15, '#fff', 'center', false);
+    if (selk) { const g = ctx.createRadialGradient(p.x, p.y, 10, p.x, p.y, 120); g.addColorStop(0, dk ? 'rgba(255,64,129,.35)' : 'rgba(179,136,255,.55)'); g.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = g; ctx.fillRect(p.x - 120, p.y - 120, 240, 240); }
+    rr(p.x - 60, 322, 120, 88, 6, '#f5f5f5'); rr(p.x - 70, 310, 140, 16, 4, '#e0e0e0'); ctx.fillStyle = '#eeeeee'; ctx.fillRect(p.x - 40, 332, 6, 72); ctx.fillRect(p.x + 34, 332, 6, 72);
+    drawEx(CI[id], p.x, p.y + Math.sin(frame * 0.04 + k) * 2, p.s);
+    const pw = Math.min(176, cw - 14); rr(p.x - pw / 2, 424, pw, 46, 8, H0.trim); fit(EX[CI[id]][1], p.x, 446, 17, pw - 10, '#fff', 'center', false); text(seen ? '✅ visited' : '👆 tap me!', p.x, 464, 13, '#fff', 'center', false);
+  });
+}
+function drawShop() {
+  text('Every gift is FREE! Tap one to print it. (Tip: turn on color printing!)', W / 2, 120, 18, OR3, 'center', false);
+  SOUV.forEach((sv, i) => { const b = souvRect(i); rr(b.x, b.y + 5, b.w, b.h, 16, 'rgba(0,0,0,.2)'); rr(b.x, b.y, b.w, b.h, 16, '#fff');
+    emoji(sv.icon, b.x + b.w / 2, b.y + 76, 56); fit(sv.name, b.x + b.w / 2, b.y + 120, 18, b.w - 12, OR3, 'center', false);
+    fit(sv.tip, b.x + b.w / 2, b.y + 148, 14, b.w - 10, '#455a64', 'center', false); text('🖨️ PRINT', b.x + b.w / 2, b.y + 182, 16, '#43a047', 'center', false); });
+  guide(50, 474, 1.25); bubble(90, 380, 420, 'Thanks for visiting the Video Game Museum, Ben! Come back any time!', 15);
+}
+function drawBar() {
+  rr(0, 482, W, 58, 0, 'rgba(20,12,40,.94)');
+  button(BTN_PREV, '◀ BACK', '#607d8b', 20); button(BTN_NEXT, 'NEXT ▶', '#607d8b', 20);
+  button(BTN_PASS, `📘 PASSPORT  ${seenCount()}/${EX.length}`, '#5c6bc0', 20); button(BTN_SHOP, '🎁 GIFT SHOP', '#00897b', 22);
+}
+function drawClose() {
+  const c = EX[showI], a = actT > 0 ? actT / 150 : 0, isPlay = c[0] === 'play';
+  ctx.fillStyle = '#120a24'; ctx.fillRect(0, 0, W, H);
+  const g = ctx.createRadialGradient(280, 250, 20, 280, 250, 290); g.addColorStop(0, 'rgba(179,136,255,.4)'); g.addColorStop(1, 'rgba(179,136,255,0)'); ctx.fillStyle = g; ctx.fillRect(0, 0, 560, H);
+  if (isPlay && pong.on) drawPong(); else drawEx(showI, 280, 250, c[0] === 'factory' ? 1.3 : 1.6, a);
+  rr(560, 60, 380, 420, 20, '#f7f3ff'); rr(570, 70, 360, 66, 14, OR);
+  fit(c[2] + ' ' + c[1], 750, 113, 28, 340, '#fff'); fit('📍 ' + c[4], 750, 160, 16, 350, '#455a64', 'center', false);
+  let size = 15, lh = 19, lines = 0; for (const f of c[5]) lines += wrap('• ' + f, size, 344).length;
+  if (lines > 11) { size = 14; lh = 17; }
+  let y = 190; for (const f of c[5]) { for (const ln of wrap('• ' + f, size, 344)) { text(ln, 580, y, size, '#263238', 'left', false); y += lh; } y += 5; }
+  button(BTN_ACT, isPlay ? (pong.on && !pong.over ? '🏓 PLAYING!' : pong.over ? '🔁 PLAY AGAIN' : '▶ PLAY!') : '✨ ' + c[3], isPlay && pong.on && !pong.over ? '#7e57c2' : '#43a047', 24);
+  button(BTN_BACK, '⬅ BACK', '#455a64', 18);
+  if (!(isPlay && pong.on)) { guide(46, 528, 1.25, { happy: a > 0 }); bubble(84, 446, 440, c[6], 16); }
+  else { guide(46, 528, 1.0, { happy: pong.me > pong.cpu }); fit(pong.over ? (pong.over === 1 ? 'Robo: YOU DID IT, Ben!' : 'Robo: So close! Try again!') : 'Robo: Drag up and down to move!', 300, 470, 18, 480, '#fff59d'); }
+  if (msgT > 0) { rr(140, 8, 400, 40, 12, 'rgba(0,0,0,.6)'); fit(msg, 340, 35, 18, 380, '#fff59d'); }
+}
+const passPos = i => ({ x: 130 + (i % 6) * 140, y: 140 + Math.floor(i / 6) * 118 });
+function drawPass() {
+  ctx.fillStyle = '#283593'; ctx.fillRect(0, 0, W, H); rr(40, 64, W - 80, 418, 20, '#f5f9ff');
+  text('📘 MY MUSEUM PASSPORT', W / 2, 46, 30, '#fff');
+  EX.forEach((c, i) => { const { x, y } = passPos(i), seen = save.seen[c[0]];
+    ctx.strokeStyle = seen ? '#c62828' : '#bdbdbd'; ctx.lineWidth = 4; ctx.setLineDash(seen ? [] : [8, 6]); ctx.beginPath(); ctx.arc(x, y, 44, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+    if (seen) drawEx(i, x, y, 0.36); else text('?', x, y + 12, 32, '#bdbdbd', 'center', false);
+    fit(c[1], x, y + 62, 14, 132, '#263238', 'center', false); });
+  if (save.allDone) text('🏆 GAME HISTORIAN!', W - 190, 470, 18, '#c62828', 'center', false);
+  button(BTN_BACK, '⬅ BACK', '#455a64', 18);
+}
+function drawTitle() {
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#ede7f6'); g.addColorStop(1, '#b39ddb'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  for (let i = 0; i < 6; i++) rr(70 + i * 150, 130, 24, 290, 6, '#f7f3ff');
+  tri(30, 130, W - 30, 130, W / 2, 30, '#5e35b1'); rr(30, 124, W - 60, 16, 4, '#4527a0'); rr(30, 420, W - 60, 20, 4, '#4527a0');
+  sparkle(W / 2, 86, 26, GOLD, frame * 0.02);
+  text('THE VIDEO GAME MUSEUM', W / 2, 196, 54, '#7c4dff');
+  text('💡 Ben\'s idea!', W / 2, 234, 24, OR3, 'center', false);
+  ['tennis', 'pong', 'gameboy', 'n64', 'vr'].forEach((id, i) => drawEx(CI[id], 210 + i * 135, 330 + Math.sin(frame * 0.05 + i) * 4, 0.42));
+  guide(70, 516, 1.4); bubble(108, 446, 230, 'Hi! I\'m Robo, your museum guide!', 15);
+  button(START, '▶ COME IN!', '#43a047', 30);
+  text('From 1958 to TODAY • play a real paddle game!', W / 2 + 160, 512, 17, OR3, 'center', false);
+}
+function draw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
+  if (state === 'title') drawTitle();
+  else if (state === 'close') drawClose();
+  else if (state === 'pass') drawPass();
+  else { drawHall(); drawBar(); if (msgT > 0) { rr(W / 2 - 300, 84, 600, 40, 12, 'rgba(0,0,0,.6)'); fit(msg, W / 2, 111, 19, 580, '#fff59d'); } }
+  for (const p of parts) { ctx.globalAlpha = Math.min(1, p.life / 20); ctx.fillStyle = p.c; ctx.fillRect(p.x - 4, p.y - 4, 8, 8); }
+  ctx.globalAlpha = 1;
+}
+let last = performance.now(), acc = 0;
+function loop(now) { acc += Math.min(100, now - last); last = now; while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; } draw(); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+</script>
+<script>
+// ---------- 🖨️ printing the souvenirs (copied from macmuseum.html) ----------
+const PW = 850, PH = 1100, PAST = ['#e3f2fd', '#fce4ec', '#e8eaf6', '#e0f2f1', '#fff8e1', '#f3e5f5', '#e1f5fe', '#fbe9e7', '#ede7f6', '#fffde7'];
+function makePage(fn) {
+  const cv = document.createElement('canvas'); cv.width = PW; cv.height = PH;
+  const old = ctx; ctx = cv.getContext('2d'); PRINTING = true;
+  try { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, PW, PH); fn(); } finally { ctx = old; PRINTING = false; }
+  return cv;
+}
+const ptext = (s, x, y, size, color = '#222', align = 'center') => text(s, x, y, size, color, align, false);
+function cutBox(x, y, w, h, r = 18) { ctx.save(); ctx.setLineDash([10, 7]); ctx.strokeStyle = '#9e9e9e'; ctx.lineWidth = 2; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); ctx.stroke(); ctx.restore(); }
+function bigTitle(str, x, y, size, fill, edge, maxW = PW - 80) {
+  ctx.save(); ctx.font = `bold ${size}px "Trebuchet MS", Arial`; const mw = ctx.measureText(str).width; if (mw > maxW) { size = Math.floor(size * maxW / mw); ctx.font = `bold ${size}px "Trebuchet MS", Arial`; }
+  ctx.textAlign = 'center'; ctx.lineJoin = 'round'; ctx.strokeStyle = edge; ctx.lineWidth = size / 6; ctx.strokeText(str, x, y); ctx.fillStyle = fill; ctx.fillText(str, x, y); ctx.restore();
+}
+const ORDER = ['tennis', 'spacewar', 'pong', 'atari', 'invaders', 'pacman', 'arcade', 'nes', 'gameboy', 'ps1', 'd3', 'n64', 'phones', 'tablet', 'vr', 'factory'];   // in time order (no PLAY ME table)
+function pageAll() {
+  return makePage(() => {
+    ctx.strokeStyle = OR; ctx.lineWidth = 10; ctx.strokeRect(14, 14, PW - 28, PH - 28);
+    bigTitle('THE VIDEO GAME MUSEUM', PW / 2, 84, 56, '#fff', OR3); ptext('💡 A museum invented by Ben  •  From 1958 to today!', PW / 2, 124, 22, OR3);
+    ORDER.forEach((id, k) => { const i = CI[id], x = 36 + (k % 4) * 197, y = 150 + Math.floor(k / 4) * 232, w = 188, h = 222;
+      rr(x, y, w, h, 16, PAST[k % PAST.length]); drawEx(i, x + w / 2, y + 100, 0.68);
+      rr(x + w / 2 - 36, y + 8, 72, 24, 12, OR); ptext(YEAR[id], x + w / 2, y + 26, 17, '#fff');
+      fit(EX[i][1], x + w / 2, y + 206, 17, w - 14, OR3, 'center', false); });
+  });
+}
+function pagesCards() {
+  const pick = ['pong', 'gameboy', 'n64', 'factory'];
+  return [makePage(() => {
+    ptext('✂️ VIDEO GAME MUSEUM POSTCARDS  Cut on the dotted lines!', PW / 2, 30, 18, '#555');
+    pick.forEach((id, k) => { const i = CI[id], x = 25 + (k % 2) * 405, y = 48 + Math.floor(k / 2) * 525, w = 395, h = 510;
+      rr(x, y, w, h, 14, PAST[k % PAST.length]); rr(x + 12, y + 12, w - 24, 250, 10, '#fff'); drawEx(i, x + w / 2, y + 138, 1.05);
+      ptext('Greetings from', x + w / 2, y + 300, 20, '#455a64'); fit('THE VIDEO GAME MUSEUM!', x + w / 2, y + 334, 28, w - 30, OR3, 'center', false); fit('Starring: ' + EX[i][1], x + w / 2, y + 364, 18, w - 30, '#455a64', 'center', false);
+      ['To: ______________________', 'Hi! ______________________', '__________________________', 'From: ____________________'].forEach((ln, j) => ptext(ln, x + 24, y + 404 + j * 28, 18, '#555', 'left'));
+      cutBox(x - 4, y - 4, w + 8, h + 8, 16); });
+  })];
+}
+function pagePass() {
+  return makePage(() => {
+    ctx.fillStyle = '#283593'; ctx.fillRect(0, 0, PW, PH); rr(30, 30, PW - 60, PH - 60, 24, '#f5f9ff');
+    bigTitle('MUSEUM PASSPORT', PW / 2, 106, 58, GOLD, '#283593'); ptext('THE VIDEO GAME MUSEUM  •  Name: Ben', PW / 2, 150, 24, '#283593');
+    EX.forEach((c, i) => { const x = 140 + (i % 4) * 190, y = 240 + Math.floor(i / 4) * 175, seen = save.seen[c[0]];
+      ctx.strokeStyle = seen ? '#c62828' : '#bdbdbd'; ctx.lineWidth = 4; ctx.setLineDash(seen ? [] : [10, 7]); ctx.beginPath(); ctx.arc(x, y, 60, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+      if (seen) drawEx(i, x, y - 4, 0.48); else ptext('stamp here', x, y + 6, 16, '#bdbdbd');
+      fit(c[1], x, y + 84, 16, 180, '#283593', 'center', false); });
+  });
+}
+function pageCert() {
+  return makePage(() => {
+    ctx.fillStyle = '#fffdf3'; ctx.fillRect(0, 0, PW, PH); ctx.strokeStyle = GOLD; ctx.lineWidth = 18; ctx.strokeRect(30, 30, PW - 60, PH - 60); ctx.strokeStyle = OR3; ctx.lineWidth = 3; ctx.strokeRect(54, 54, PW - 108, PH - 108);
+    bigTitle('GAME MAKER AWARD', PW / 2, 170, 64, GOLD, OR3); ptext('THE VIDEO GAME MUSEUM proudly says...', PW / 2, 230, 26, '#455a64');
+    bigTitle('BEN', PW / 2, 340, 110, '#7c4dff', '#311b92');
+    ptext('made ' + GAME_COUNT + ' games in the Game Factory!', PW / 2, 410, 34, OR3);
+    gfBook(PW / 2, 600, 3.4);
+    ptext('From Tennis for Two (1958) to Ben\'s Game Factory:', PW / 2, 820, 24, '#455a64'); ptext('the newest wing of video game history!', PW / 2, 856, 24, '#455a64');
+    star(PW / 2 - 200, 960, 40, GOLD); star(PW / 2 + 200, 960, 40, GOLD); ptext('Signed: Guide Robo', PW / 2, 970, 24, OR3);
+  });
+}
+let printBox = null;
+function openPrint(k) {
+  const pages = k === 'all' ? [pageAll()] : k === 'cards' ? pagesCards() : k === 'cert' ? [pageCert()] : [pagePass()];
+  const name = SOUV.find(s => s.k === k).name;
+  printBox = document.createElement('div'); printBox.id = 'printBox';
+  const bar = document.createElement('div'); bar.className = 'pbBar';
+  const back = document.createElement('button'); back.className = 'pbBack'; back.textContent = '⬅ BACK';
+  const pr = document.createElement('button'); pr.className = 'pbPrint'; pr.textContent = '🖨️ PRINT';
+  back.onclick = () => { if (printBox) { printBox.remove(); printBox = null; } sfx.click(); };
+  pr.onclick = () => { try { window.print(); } catch (_) {} };
+  bar.append(back, pr); printBox.appendChild(bar);
+  const tip = document.createElement('div'); tip.className = 'pbTip'; tip.textContent = '🎁 ' + name + '  •  Tip: turn on color printing!'; printBox.appendChild(tip);
+  for (const cv of pages) { const img = new Image(); img.className = 'pbPage'; img.alt = name; img.src = cv.toDataURL('image/png'); printBox.appendChild(img); }
+  document.body.appendChild(printBox);
+}
+</script>
