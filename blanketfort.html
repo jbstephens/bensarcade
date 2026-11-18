@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>🏕️ The Cozy Blanket Fort</title>
+<script src="touchpad.js?v=10"></script>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body { background: #2a1d24; display: flex; align-items: center; justify-content: center; overflow: hidden;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; font-family: "Trebuchet MS", "Chalkboard SE", Arial, sans-serif; }
+  canvas { width: min(100vw, calc(100vh * 960 / 540)); height: auto; display: block; border-radius: 16px; touch-action: none; }
+</style>
+</head>
+<body>
+<canvas id="c" width="960" height="540"></canvas>
+<script>
+// 🏕️ THE COZY BLANKET FORT: a soft quilt fort on a rainy evening. Fairy lights, a rainy window, pillows, a little lamp.
+// Pet Sammy (purr + slow blink), hot cocoa with marshmallows, a star projector (Robo, Dusty, Sammy, Sparks constellations),
+// worry clouds that float out the window and turn into rainbows, Robo's bedtime story, a breathing lantern, a kind-notes jar.
+// All sound is VERY soft (master volume 0.1, slow fades). Trophy 'blanketFort' after trying 4 cozy things. Save: localStorage.blanketFort
+// Music for the book's Jukebox: blanketfort.html?song=lullaby  (or window.JUKEBOX.song)
+const C = document.getElementById('c'), ctx = C.getContext('2d'), W = 960, H = 540;
+let frame = 0;
+function trophy(id) { try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); t[id] = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } catch (_) {} }
+// ---------- drawing helpers ----------
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, k) => a + (b - a) * k;
+function circle(x, y, r, fill) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, 7); ctx.fill(); }
+function ellipse(x, y, rx, ry, fill, rot = 0) { ctx.fillStyle = fill; ctx.beginPath(); ctx.ellipse(x, y, Math.max(0, rx), Math.max(0, ry), rot, 0, 7); ctx.fill(); }
+function heart(x, y, s, fill = '#ff8fab') {
+  ctx.fillStyle = fill; ctx.beginPath(); ctx.moveTo(x, y + s * 0.35);
+  ctx.bezierCurveTo(x - s * 1.1, y - s * 0.4, x - s * 0.45, y - s * 1.05, x, y - s * 0.45);
+  ctx.bezierCurveTo(x + s * 0.45, y - s * 1.05, x + s * 1.1, y - s * 0.4, x, y + s * 0.35); ctx.fill();
+}
+function rrect(x, y, w, h, r) {
+  ctx.beginPath(); r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function roundRect(x, y, w, h, r, fill) { ctx.fillStyle = fill; rrect(x, y, Math.max(0, w), Math.max(0, h), r); ctx.fill(); }
+function glow(x, y, r, col, a = 1) {
+  r = Math.max(1, r); const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.save(); ctx.globalAlpha = clamp(a, 0, 1); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); ctx.restore();
+}
+function star(x, y, r, fill, rot = 0, pts = 5, inner = 0.48) {
+  ctx.fillStyle = fill; ctx.beginPath();
+  for (let i = 0; i < pts * 2; i++) { const a = -Math.PI / 2 + rot + i * Math.PI / pts, rr = i % 2 ? r * inner : r; ctx.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); }
+  ctx.closePath(); ctx.fill();
+}
+function line(x1, y1, x2, y2, col, w) { ctx.strokeStyle = col; ctx.lineWidth = w; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+function text(s, x, y, size, col, align = 'center', bold = true) {
+  ctx.font = (bold ? 'bold ' : '') + size + 'px "Trebuchet MS", "Chalkboard SE", Arial, sans-serif';
+  ctx.textAlign = align; ctx.textBaseline = 'middle'; ctx.fillStyle = col; ctx.fillText(s, x, y);
+}
+function wrap(s, maxW, size) {
+  ctx.font = 'bold ' + size + 'px "Trebuchet MS", "Chalkboard SE", Arial, sans-serif';
+  const out = []; let cur = '';
+  for (const w of s.split(' ')) { const t = cur ? cur + ' ' + w : w; if (ctx.measureText(t).width > maxW && cur) { out.push(cur); cur = w; } else cur = t; }
+  if (cur) out.push(cur); return out;
+}
+// ---------- VERY soft sounds: one master knob (0.1), everything fades in and out slowly ----------
+const MASTER = 0.1;
+let actx = null, master = null, musBus = null, sfx = null, soundOn = true, musicOn = true;
+function audio() {
+  try {
+    if (!actx) {
+      actx = new (window.AudioContext || window.webkitAudioContext)();
+      master = actx.createGain(); master.gain.value = 0; master.connect(actx.destination);
+      musBus = actx.createGain(); musBus.gain.value = 0; musBus.connect(master);
+      sfx = actx.createGain(); sfx.gain.value = 1; sfx.connect(master);
+    }
+    if (actx.state !== 'running') actx.resume();
+  } catch (_) {}
+  return actx;
+}
+function running() { return actx && actx.state === 'running'; }
+function fadeAll() {   // slow fades for the master knob + the music
+  if (!actx) return; const t = actx.currentTime;
+  try {
+    master.gain.cancelScheduledValues(t); master.gain.setTargetAtTime(soundOn ? MASTER : 0, t, 0.8);
+    const speaking = window.speechSynthesis && speechSynthesis.speaking;
+    musBus.gain.cancelScheduledValues(t); musBus.gain.setTargetAtTime(musicOn ? (speaking ? 0.3 : 0.6) : 0, t, 1.2);
+  } catch (_) {}
+}
+function softNote(f, d = 1, v = 0.12, when = 0, bus = sfx) {   // a round, gentle bell
+  if (!running()) return;
+  const t = actx.currentTime + when, o = actx.createOscillator(), g = actx.createGain();
+  o.type = 'sine'; o.frequency.value = f;
+  g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(v, t + 0.05); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+  o.connect(g); g.connect(bus); o.start(t); o.stop(t + d + 0.05);
+}
+const PENT = [523, 587, 659, 784, 880, 1047];
+function plip() { softNote(PENT[Math.floor(Math.random() * PENT.length)], 0.9, 0.1); }
+function chime() { softNote(784, 1.6, 0.09); softNote(1175, 1.8, 0.05, 0.08); }
+function plop() { softNote(392, 0.35, 0.12); softNote(523, 0.4, 0.06, 0.06); }
+// 🌧️ soft rain: filtered noise, very quiet, fades in over a few seconds
+let noiseBuf = null, rain = null;
+function noise() {
+  if (!noiseBuf) { noiseBuf = actx.createBuffer(1, actx.sampleRate * 2, actx.sampleRate); const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; }
+  const s = actx.createBufferSource(); s.buffer = noiseBuf; s.loop = true; return s;
+}
+function startRain() {
+  if (rain || !running()) return;
+  try {
+    const src = noise(), hp = actx.createBiquadFilter(), lp = actx.createBiquadFilter(), g = actx.createGain();
+    hp.type = 'highpass'; hp.frequency.value = 700; lp.type = 'lowpass'; lp.frequency.value = 3200;
+    g.gain.value = 0; src.connect(hp); hp.connect(lp); lp.connect(g); g.connect(master); src.start();
+    g.gain.setTargetAtTime(0.22, actx.currentTime, 2.5); rain = { src, g };
+  } catch (_) {}
+}
+// 🐱 a soft, low purr: low noise that gently pulses ~24 times a second
+let purrN = null;
+function purr(on) {
+  if (!running()) return;
+  try {
+    if (!purrN) {
+      const src = noise(), f = actx.createBiquadFilter(), am = actx.createGain(), lfo = actx.createOscillator(), depth = actx.createGain(), env = actx.createGain();
+      f.type = 'lowpass'; f.frequency.value = 200; f.Q.value = 0.8;
+      am.gain.value = 0.5; lfo.frequency.value = 23; depth.gain.value = 0.5; lfo.connect(depth); depth.connect(am.gain);
+      env.gain.value = 0; src.connect(f); f.connect(am); am.connect(env); env.connect(sfx); src.start(); lfo.start();
+      purrN = { env };
+    }
+    purrN.env.gain.setTargetAtTime(on ? 1.1 : 0, actx.currentTime, on ? 0.35 : 0.6);
+  } catch (_) {}
+}
+// 🗣️ the gentle voice (slow and soft). The music gets quieter while someone talks.
+function speak(line, rate = 0.82, pitch = 1.05) {
+  try {
+    if (!soundOn || !window.speechSynthesis) return; speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(line.replace(/[^\w\s!?.,'’:-]/g, '').replace(/\s+/g, ' ').trim());
+    u.rate = rate; u.pitch = pitch; u.volume = 0.7; u.onend = fadeAll; speechSynthesis.speak(u); setTimeout(fadeAll, 150);
+  } catch (_) {}
+}
+function hush() { try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch (_) {} setTimeout(fadeAll, 100); }
+// 🎶 "Blanket Fort Lullaby": an original music-box waltz (3/4). Plays VERY quietly. Loops every ~26 seconds.
+const LULL = [[76, 2], [72, 1], [67, 2], [72, 1], [74, 1], [76, 1], [74, 1], [72, 3],
+  [76, 2], [79, 1], [81, 2], [79, 1], [76, 2], [74, 1], [76, 3],
+  [77, 2], [76, 1], [74, 2], [72, 1], [69, 2], [72, 1], [74, 3],
+  [76, 2], [72, 1], [67, 2], [69, 1], [71, 2], [74, 1], [72, 3]];
+const LULL_BASS = [48, 43, 43, 48, 48, 41, 48, 48, 41, 43, 45, 43, 48, 45, 43, 48];
+const BEAT = 0.55, LULL_BEATS = 48;
+const LULL_EV = (() => { const ev = []; let b = 0;
+  LULL.forEach(([m, d]) => { ev.push({ b, m, d: 2.4, v: 0.22, box: 1 }); b += d; });
+  LULL_BASS.forEach((m, bar) => { ev.push({ b: bar * 3, m, d: 2.2, v: 0.14 }); ev.push({ b: bar * 3 + 1.5, m: m + 19, d: 1.2, v: 0.035 }); });
+  return ev.sort((a, c) => a.b - c.b); })();
+const mus = { timer: null, t0: null, k: 0, loop: 0, last: 0 };
+function boxNote(e, t) {   // a music-box "ting": a sine with a small, quick-fading sparkle above it
+  try {
+    const f = 440 * Math.pow(2, (e.m - 69) / 12), o = actx.createOscillator(), g = actx.createGain();
+    o.type = 'sine'; o.frequency.value = f;
+    g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(e.v, t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + e.d);
+    o.connect(g); g.connect(musBus); o.start(t); o.stop(t + e.d + 0.05);
+    if (e.box) {
+      const o2 = actx.createOscillator(), g2 = actx.createGain(); o2.type = 'sine'; o2.frequency.value = f * 3.01;
+      g2.gain.setValueAtTime(0.0001, t); g2.gain.linearRampToValueAtTime(e.v * 0.12, t + 0.015); g2.gain.exponentialRampToValueAtTime(0.0001, t + 0.5);
+      o2.connect(g2); g2.connect(musBus); o2.start(t); o2.stop(t + 0.6);
+    }
+  } catch (_) {}
+}
+function musicTick() {
+  if (!running() || !musBus) { mus.t0 = null; return; }
+  const now = actx.currentTime;
+  if (mus.t0 === null || now - mus.last > 1) { mus.t0 = now + 0.2; mus.k = 0; mus.loop = 0; }   // (re)start cleanly: never a pile-up
+  mus.last = now;
+  for (let guard = 0; guard < 200; guard++) {
+    const e = LULL_EV[mus.k], t = mus.t0 + (mus.loop * LULL_BEATS + e.b) * BEAT;
+    if (t > now + 0.5) break;
+    if (t >= now - 0.02) boxNote(e, t);
+    if (++mus.k >= LULL_EV.length) { mus.k = 0; mus.loop++; }
+  }
+}
+function startMusic() { if (!mus.timer) mus.timer = setInterval(musicTick, 100); fadeAll(); }
+const JB_WANT = (window.JUKEBOX && window.JUKEBOX.song) || (/[?&]song=([^&#]*)/.exec(location.search) || [])[1] || '';
+// ---------- save + trophy ----------
+let save = { tried: {}, pets: 0, mallows: 0, clouds: 0, notes: 0, stories: 0, breaths: 0, trophy: false };
+try { Object.assign(save, JSON.parse(localStorage.getItem('blanketFort') || '{}')); } catch (_) {}
+function store() { try { localStorage.setItem('blanketFort', JSON.stringify(save)); } catch (_) {} }
+let toast = '', toastT = 0;
+function tried(id) {
+  save.tried[id] = 1;
+  if (!save.trophy && Object.keys(save.tried).length >= 4) {
+    save.trophy = true; trophy('blanketFort'); toast = '🏆 You earned the Blanket Fort trophy! 💛'; toastT = 360;
+    softNote(523, 1.4, 0.1, 0.3); softNote(659, 1.4, 0.1, 0.6); softNote(784, 2, 0.1, 0.9);
+  }
+  store();
+}
+// ---------- the fort: quilt walls (drawn once), a draped ceiling, fairy lights ----------
+const PATCH = ['#c97a63', '#e3b76c', '#93ad8c', '#efdcbc', '#b58aa3', '#7f9cba', '#d99b8a', '#a9b98a'];
+const quilt = document.createElement('canvas'); quilt.width = W; quilt.height = H;
+(function makeQuilt() {
+  const q = quilt.getContext('2d'), S = 64;
+  for (let r = 0; r < 9; r++) for (let c = 0; c < 16; c++) {
+    const x = c * S, y = r * S, col = PATCH[(r * 5 + c * 3 + (r * c) % 3) % PATCH.length], k = (r * 7 + c * 11) % 4;
+    q.fillStyle = col; q.fillRect(x, y, S, S);
+    q.fillStyle = 'rgba(255,255,255,.18)';
+    if (k === 0) { for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) { q.beginPath(); q.arc(x + 8 + i * 16, y + 8 + j * 16, 2.6, 0, 7); q.fill(); } }
+    else if (k === 1) { for (let i = 0; i < 4; i++) q.fillRect(x, y + 4 + i * 16, S, 7); }
+    else if (k === 2) { q.beginPath(); q.moveTo(x + S / 2, y + 10); q.lineTo(x + S - 10, y + S / 2); q.lineTo(x + S / 2, y + S - 10); q.lineTo(x + 10, y + S / 2); q.fill(); }
+    else { q.fillStyle = 'rgba(255,240,220,.22)'; q.beginPath(); q.arc(x + 32, y + 30, 9, 0, 7); q.arc(x + 22, y + 38, 7, 0, 7); q.arc(x + 42, y + 38, 7, 0, 7); q.fill(); }
+    q.strokeStyle = 'rgba(255,248,230,.5)'; q.lineWidth = 1.5; q.setLineDash([5, 4]); q.strokeRect(x + 4, y + 4, S - 8, S - 8); q.setLineDash([]);
+    q.strokeStyle = 'rgba(70,40,40,.25)'; q.lineWidth = 2; q.strokeRect(x, y, S, S);
+  }
+  const v = q.createRadialGradient(W / 2, H * 0.55, 120, W / 2, H * 0.55, 620);   // evening shade at the edges
+  v.addColorStop(0, 'rgba(60,30,40,0)'); v.addColorStop(1, 'rgba(40,20,35,.55)'); q.fillStyle = v; q.fillRect(0, 0, W, H);
+})();
+const CEIL = (x) => 70 + 46 * Math.sin(Math.PI * ((x % 480) / 480));   // the blanket ceiling sags between 3 tie-up points
+function drawCeiling() {
+  ctx.fillStyle = '#7d4a63'; ctx.beginPath(); ctx.moveTo(0, 0);
+  for (let x = 0; x <= W; x += 8) ctx.lineTo(x, CEIL(x)); ctx.lineTo(W, 0); ctx.fill();
+  ctx.save(); ctx.clip(); ctx.strokeStyle = 'rgba(255,214,170,.18)'; ctx.lineWidth = 8;   // a soft plaid
+  for (let x = -40; x < W + 40; x += 48) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x + 20, 130); ctx.stroke(); }
+  ctx.strokeStyle = 'rgba(40,20,40,.18)'; ctx.lineWidth = 6; for (let y = 14; y < 130; y += 34) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  ctx.restore();
+  ctx.strokeStyle = '#f2d8b8'; ctx.lineWidth = 4; ctx.beginPath(); for (let x = 0; x <= W; x += 8) ctx.lineTo(x, CEIL(x)); ctx.stroke();
+  for (const x of [0, 480, 960]) { circle(x, 66, 12, '#f2d8b8'); circle(x, 66, 6, '#d9b48f'); }   // little ribbon knots
+}
+const BULBS = [];
+for (let i = 0; i < 34; i++) { const x = 12 + i * 28.3; BULBS.push({ x, y: CEIL(x) + 14 + 9 * Math.sin(i * 1.3), c: ['#ffd27a', '#ffb38a', '#ffe9a8', '#ffa8b8', '#c8e6a0'][i % 5], p: i * 1.7 }); }
+function drawLights(dim) {
+  ctx.strokeStyle = '#3d2b2b'; ctx.lineWidth = 1.5; ctx.beginPath();
+  BULBS.forEach((b, i) => (i ? ctx.lineTo(b.x, b.y - 4) : ctx.moveTo(b.x, b.y - 4))); ctx.stroke();
+  for (const b of BULBS) {
+    const tw = 0.62 + 0.38 * Math.sin(frame * 0.018 + b.p);   // a slow, soft twinkle (never a flash)
+    glow(b.x, b.y + 3, 26, b.c, tw * 0.55 * dim); ctx.fillStyle = '#3d2b2b'; ctx.fillRect(b.x - 2.5, b.y - 6, 5, 4);
+    ellipse(b.x, b.y + 3, 4.5, 6.5, b.c); circle(b.x - 1.4, b.y + 1, 1.4, 'rgba(255,255,255,.8)');
+  }
+}
+// ---------- 🌧️ the rainy window ----------
+const WIN = { x: 60, y: 150, w: 220, h: 175 };
+const DROPS = Array.from({ length: 70 }, (_, i) => ({ x: (i * 37) % 230, y: (i * 61) % 190, sp: 2.2 + (i % 5) * 0.5, l: 7 + (i % 4) * 3 }));
+const TRICKLES = Array.from({ length: 7 }, (_, i) => ({ x: 18 + i * 30, y: (i * 47) % 160, sp: 0.15 + (i % 3) * 0.08 }));
+let rainbowA = 0, rainbowT = 0;
+function inWin(x, y) { return x > WIN.x && x < WIN.x + WIN.w && y > WIN.y && y < WIN.y + WIN.h; }
+function drawWindow(hot) {
+  const { x, y, w, h } = WIN;
+  roundRect(x - 14, y - 14, w + 28, h + 28, 10, '#6b4a3a');
+  ctx.save(); rrect(x, y, w, h, 4); ctx.clip();
+  const sky = ctx.createLinearGradient(0, y, 0, y + h); sky.addColorStop(0, '#2c3566'); sky.addColorStop(0.7, '#4f4f86'); sky.addColorStop(1, '#6d5a8a');
+  ctx.fillStyle = sky; ctx.fillRect(x, y, w, h);
+  glow(x + 170, y + 40, 50, 'rgba(255,240,200,.35)');                 // a misty moon behind the rain
+  ctx.fillStyle = '#232a4d'; ctx.beginPath(); ctx.moveTo(x, y + h);       // far-away hills + a little house with a lit window
+  ctx.quadraticCurveTo(x + 60, y + h - 60, x + 120, y + h - 30); ctx.quadraticCurveTo(x + 180, y + h - 55, x + w, y + h - 35); ctx.lineTo(x + w, y + h); ctx.fill();
+  ctx.fillStyle = '#1c2140'; ctx.fillRect(x + 140, y + h - 70, 34, 26); ctx.beginPath(); ctx.moveTo(x + 136, y + h - 70); ctx.lineTo(x + 157, y + h - 88); ctx.lineTo(x + 178, y + h - 70); ctx.fill();
+  ctx.fillStyle = '#ffd98a'; ctx.fillRect(x + 150, y + h - 62, 10, 9); glow(x + 155, y + h - 58, 16, 'rgba(255,217,138,.5)');
+  if (rainbowA > 0.01) drawRainbow(x + w / 2, y + h + 20, rainbowA);
+  if (cloud.state === 'float') drawCloud(cloud.x, cloud.y, cloud.s, cloud.mood, 1 - cloud.k);
+  ctx.strokeStyle = 'rgba(200,215,255,.45)'; ctx.lineWidth = 1.2; ctx.beginPath();
+  for (const d of DROPS) { d.y += d.sp; if (d.y > h + 10) d.y = -10; ctx.moveTo(x + d.x, y + d.y); ctx.lineTo(x + d.x - 1.5, y + d.y + d.l); } ctx.stroke();
+  for (const t of TRICKLES) { t.y += t.sp; if (t.y > h) t.y = -6; circle(x + t.x, y + t.y, 2.4, 'rgba(210,225,255,.5)'); line(x + t.x, y + t.y - 2, x + t.x, y + t.y - 14, 'rgba(210,225,255,.2)', 1.5); }
+  ctx.restore();
+  ctx.strokeStyle = '#6b4a3a'; ctx.lineWidth = 8; ctx.beginPath(); ctx.moveTo(x + w / 2, y); ctx.lineTo(x + w / 2, y + h); ctx.moveTo(x, y + h / 2); ctx.lineTo(x + w, y + h / 2); ctx.stroke();
+  if (hot) { ctx.strokeStyle = 'rgba(255,240,170,' + (0.5 + 0.3 * Math.sin(frame * 0.08)) + ')'; ctx.lineWidth = 6; rrect(x - 8, y - 8, w + 16, h + 16, 10); ctx.stroke(); }
+  roundRect(x - 22, y + h + 8, w + 44, 14, 5, '#7d5642');                      // the sill
+  for (const [cx, f] of [[x - 6, 1], [x + w + 6, -1]]) {                   // curtains tied back with ribbons
+    ctx.fillStyle = '#e9c7c0'; ctx.beginPath(); ctx.moveTo(cx - 16 * f, y - 20); ctx.lineTo(cx + 30 * f, y - 20);
+    ctx.quadraticCurveTo(cx + 4 * f, y + 80, cx + 10 * f, y + h + 12); ctx.lineTo(cx - 16 * f, y + h + 12); ctx.fill();
+    ctx.strokeStyle = 'rgba(160,100,110,.35)'; ctx.lineWidth = 2; for (let k = 0; k < 3; k++) { ctx.beginPath(); ctx.moveTo(cx - (10 - k * 7) * f, y - 18); ctx.quadraticCurveTo(cx + (k * 4 - 6) * f, y + 80, cx - (6 - k * 5) * f, y + h + 10); ctx.stroke(); }
+    circle(cx + 2 * f, y + 92, 7, '#d77a8c');
+  }
+}
+function drawRainbow(cx, cy, a) {
+  ctx.save(); ctx.globalAlpha = a * 0.85; ctx.lineWidth = 9;
+  ['#ff9aa2', '#ffc98b', '#fff1a6', '#b5ead7', '#a0c4ff', '#c7a6ff'].forEach((c, i) => { ctx.strokeStyle = c; ctx.beginPath(); ctx.arc(cx, cy, 120 - i * 9, Math.PI, 0); ctx.stroke(); });
+  ctx.restore();
+  for (let i = 0; i < 5; i++) star(cx - 100 + i * 50, cy - 130 + 10 * Math.sin(frame * 0.03 + i), 4, 'rgba(255,250,210,' + a + ')', frame * 0.01);
+}
+// ---------- ☁️ the worry cloud (drag it out the window!) ----------
+const CLOUD_HOME = { x: 395, y: 222 };
+const cloud = { x: CLOUD_HOME.x, y: CLOUD_HOME.y, s: 1, state: 'home', k: 0, a: 1, mood: 0 };
+const CLOUD_LINES = ["It's okay to feel sad. Feelings float by like clouds.", "Bye bye, worry cloud! Look, a little rainbow.",
+  "Sad feelings are allowed. And they always drift away in the end.", "You let that cloud go. That was brave, Ben.",
+  "Even rainy days have rainbows hiding in them.", "Whatever you feel is okay. You are loved, Ben."];
+function drawCloud(x, y, s, mood, a = 1) {   // mood 0 = a little sad, 1 = happy and bright
+  ctx.save(); ctx.globalAlpha *= clamp(a, 0, 1); ctx.translate(x, y); ctx.scale(s, s);
+  const col = mood > 0.5 ? '#ffffff' : '#c3c9da', sh = mood > 0.5 ? '#e7ecf7' : '#a3abc2';
+  ellipse(0, 22, 48, 7, 'rgba(0,0,0,.12)');
+  for (const [dx, dy, r] of [[-30, 4, 20], [-10, -10, 26], [16, -6, 23], [34, 6, 17], [0, 8, 24]]) circle(dx, dy + 2, r, sh);
+  for (const [dx, dy, r] of [[-30, 2, 19], [-10, -12, 25], [16, -8, 22], [34, 4, 16], [0, 6, 23]]) circle(dx, dy, r, col);
+  circle(-9, -2, 2.6, '#4a4f66'); circle(9, -2, 2.6, '#4a4f66');
+  ctx.strokeStyle = '#4a4f66'; ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.beginPath();
+  if (mood > 0.5) ctx.arc(0, 4, 6, 0.2, Math.PI - 0.2); else ctx.arc(0, 13, 6, Math.PI + 0.4, -0.4); ctx.stroke();
+  circle(-16, 6, 3.5, 'rgba(255,160,180,.45)'); circle(16, 6, 3.5, 'rgba(255,160,180,.45)');
+  ctx.restore();
+}
+function updateCloud() {
+  if (cloud.state === 'home') { cloud.y = CLOUD_HOME.y + Math.sin(frame * 0.03) * 5; cloud.a = Math.min(1, cloud.a + 0.02); }
+  else if (cloud.state === 'back') { cloud.x = lerp(cloud.x, CLOUD_HOME.x, 0.08); cloud.y = lerp(cloud.y, CLOUD_HOME.y, 0.08); if (Math.hypot(cloud.x - CLOUD_HOME.x, cloud.y - CLOUD_HOME.y) < 3) cloud.state = 'home'; }
+  else if (cloud.state === 'float') {   // out it goes: smaller, whiter, up and away
+    cloud.k = Math.min(1, cloud.k + 0.006); cloud.x -= 0.25; cloud.y -= 0.4; cloud.s = lerp(0.8, 0.25, cloud.k); cloud.mood = 1;
+    if (cloud.k >= 1) { cloud.state = 'gone'; cloud.k = 0; rainbowT = 1; }
+  } else if (cloud.state === 'gone') { if (++cloud.k > 420) Object.assign(cloud, { state: 'home', x: CLOUD_HOME.x, y: CLOUD_HOME.y, s: 1, a: 0, k: 0, mood: 0 }); }
+  if (rainbowT) { rainbowT++; rainbowA = rainbowT < 90 ? rainbowT / 90 : rainbowT < 420 ? 1 : Math.max(0, 1 - (rainbowT - 420) / 120); if (rainbowT > 540) { rainbowT = 0; rainbowA = 0; } }
+}
+// ---------- 🐱 SAMMY (Ben's real cat): brown tabby, bold black stripes, green-gold eyes, cream chin + paws, pink nose ----------
+const SAM = { x: 520, y: 446, s: 1.25 };
+const sam = { lid: 0.2, blinkT: 0, petT: 0, hearts: [], say: 0 };
+const FUR = '#c08a52', FUR2 = '#a87240', STRIPE = '#2a1a10', CREAM = '#f3e4c8';
+function samStripe(pts, w = 5) { ctx.strokeStyle = STRIPE; ctx.lineWidth = w; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(pts[0], pts[1]); ctx.quadraticCurveTo(pts[2], pts[3], pts[4], pts[5]); ctx.stroke(); }
+function drawSammy() {
+  const breathe = 1 + Math.sin(frame * 0.035) * 0.018;
+  ctx.save(); ctx.translate(SAM.x, SAM.y); ctx.scale(SAM.s, SAM.s);
+  // body (a curled-up loaf) + stripes
+  ctx.save(); ctx.scale(1, breathe);
+  ellipse(14, 2, 66, 31, FUR); ellipse(18, -8, 58, 19, FUR2);
+  ctx.save(); ctx.beginPath(); ctx.ellipse(14, 2, 66, 31, 0, 0, 7); ctx.clip();
+  for (let i = 0; i < 6; i++) { const sx = -20 + i * 15; samStripe([sx, -30, sx + 9, -6, sx + 3, 22], 4.5 - (i % 2)); }
+  ctx.lineWidth = 4.5; ctx.strokeStyle = STRIPE; ctx.beginPath(); ctx.ellipse(58, 2, 17, 15, 0, 0, 7); ctx.stroke();   // the swirly hip "bullseye"
+  ctx.beginPath(); ctx.ellipse(58, 2, 7, 6, 0, 0, 7); ctx.stroke();
+  line(-10, -27, 80, -24, STRIPE, 6);                                                       // the dark stripe down the back
+  ctx.restore(); ctx.restore();
+  // tail wraps around the front, with dark rings and a black tip
+  ctx.lineCap = 'butt'; ctx.strokeStyle = FUR; ctx.lineWidth = 13; ctx.beginPath(); ctx.moveTo(76, 14); ctx.quadraticCurveTo(50, 40, -14, 32); ctx.stroke();
+  ctx.setLineDash([6, 8]); ctx.strokeStyle = STRIPE; ctx.beginPath(); ctx.moveTo(76, 14); ctx.quadraticCurveTo(50, 40, -14, 32); ctx.stroke(); ctx.setLineDash([]);
+  circle(-15, 32, 6.5, STRIPE);
+  // front paws (creamy with little dark spots)
+  for (const px of [-52, -30]) { ellipse(px, 26, 13.5, 8.5, '#9c7048'); ellipse(px, 26, 12, 7, CREAM); circle(px - 4, 26, 1.4, '#6d5040'); circle(px + 3, 27, 1.4, '#6d5040'); line(px - 2, 21, px - 2, 31, 'rgba(120,90,60,.3)', 1); line(px + 4, 21, px + 4, 31, 'rgba(120,90,60,.3)', 1); }
+  // head
+  const hx = -41, hy = -10;
+  for (const [ex, f] of [[-18, -1], [18, 1]]) {   // big ears, pink inside
+    ctx.fillStyle = FUR2; ctx.beginPath(); ctx.moveTo(hx + ex - 12 * f, hy - 16); ctx.lineTo(hx + ex + 6 * f, hy - 44); ctx.lineTo(hx + ex + 14 * f, hy - 12); ctx.fill();
+    ctx.fillStyle = '#f2a7b0'; ctx.beginPath(); ctx.moveTo(hx + ex - 6 * f, hy - 18); ctx.lineTo(hx + ex + 5 * f, hy - 37); ctx.lineTo(hx + ex + 9 * f, hy - 16); ctx.fill();
+  }
+  ellipse(hx, hy, 31, 26, FUR);
+  ctx.save(); ctx.beginPath(); ctx.ellipse(hx, hy, 31, 26, 0, 0, 7); ctx.clip();
+  ctx.strokeStyle = STRIPE; ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.beginPath();   // the forehead "M"
+  ctx.moveTo(hx - 9, hy - 12); ctx.lineTo(hx - 6, hy - 22); ctx.lineTo(hx, hy - 15); ctx.lineTo(hx + 6, hy - 22); ctx.lineTo(hx + 9, hy - 12); ctx.stroke();
+  line(hx, hy - 26, hx, hy - 17, STRIPE, 2.5);
+  for (const f of [-1, 1]) { samStripe([hx + 15 * f, hy - 6, hx + 24 * f, hy - 5, hx + 31 * f, hy - 9], 2.6); samStripe([hx + 14 * f, hy + 1, hx + 24 * f, hy + 2, hx + 32 * f, hy - 1], 2.6); }
+  ctx.restore();
+  ellipse(hx - 8, hy + 10, 10, 8, CREAM); ellipse(hx + 8, hy + 10, 10, 8, CREAM); ellipse(hx, hy + 16, 9, 6.5, CREAM);   // cream muzzle + chin
+  ctx.fillStyle = '#e88a9a'; ctx.beginPath(); ctx.moveTo(hx - 4.5, hy + 4); ctx.lineTo(hx + 4.5, hy + 4); ctx.lineTo(hx, hy + 9); ctx.fill();   // pink nose
+  ctx.strokeStyle = '#a85a68'; ctx.lineWidth = 1; ctx.stroke();
+  ctx.strokeStyle = '#5a3a2a'; ctx.lineWidth = 1.3; ctx.beginPath(); ctx.moveTo(hx, hy + 9); ctx.lineTo(hx, hy + 12);
+  ctx.arc(hx - 3, hy + 12, 3, 0, Math.PI * 0.9); ctx.moveTo(hx, hy + 12); ctx.arc(hx + 3, hy + 12, 3, Math.PI, Math.PI * 0.1, true); ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 0.9; ctx.beginPath();   // long white whiskers
+  for (const f of [-1, 1]) for (let k = 0; k < 3; k++) { ctx.moveTo(hx + 10 * f, hy + 10 + k * 2); ctx.quadraticCurveTo(hx + 30 * f, hy + 6 + k * 4, hx + 46 * f, hy + 6 + k * 6); }
+  ctx.stroke();
+  // eyes: green-gold, with a slow blink when you pet him
+  const lid = clamp(sam.lid, 0, 1);
+  for (const ex of [hx - 12, hx + 12]) {
+    if (lid > 0.9) { ctx.strokeStyle = STRIPE; ctx.lineWidth = 2.2; ctx.beginPath(); ctx.arc(ex, hy - 4, 6, 0.3, Math.PI - 0.3); ctx.stroke(); continue; }
+    const ry = 6.5 * (1 - lid);
+    ctx.save(); ctx.beginPath(); ctx.ellipse(ex, hy - 3, 8, 7, 0, 0, 7); ctx.clip();
+    ellipse(ex, hy - 3, 8, 7, STRIPE);
+    const g = ctx.createRadialGradient(ex, hy - 2, 1, ex, hy - 3, 7); g.addColorStop(0, '#d9c24a'); g.addColorStop(1, '#8fae3a');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(ex, hy - 3 + (7 - ry) * 0.6, 7, ry, 0, 0, 7); ctx.fill();
+    ellipse(ex, hy - 3 + (7 - ry) * 0.6, 1.8, ry * 0.85, '#1a120a'); circle(ex - 2.5, hy - 5 + (7 - ry) * 0.6, 1.5, 'rgba(255,255,255,.85)');
+    ctx.fillStyle = FUR; ctx.fillRect(ex - 9, hy - 11, 18, 8 * lid + 1);   // the eyelid comes down
+    ctx.restore();
+    ctx.strokeStyle = STRIPE; ctx.lineWidth = 1.6; ctx.beginPath(); ctx.ellipse(ex, hy - 3, 8, 7, 0, Math.PI + 0.2 + lid * 0.2, -0.2 - lid * 0.2); ctx.stroke();
+  }
+  ctx.restore();
+  for (const h of sam.hearts) { ctx.save(); ctx.globalAlpha = clamp(h.life / 40, 0, 1); heart(h.x, h.y, h.s, h.c); ctx.restore(); }
+  if (sam.say > 0) { ctx.save(); ctx.globalAlpha = clamp(sam.say / 30, 0, 1); roundRect(SAM.x - 120, SAM.y - 112, 108, 34, 17, 'rgba(255,248,235,.95)'); text('prrrr... 💛', SAM.x - 66, SAM.y - 95, 17, '#7a4a3a'); ctx.restore(); }
+}
+function updateSammy() {
+  if (sam.petT > 0 && --sam.petT === 0) purr(false);
+  if (sam.hc > 0) sam.hc--;
+  if (sam.blinkT > 0) { sam.blinkT--; const k = sam.blinkT; sam.lid = k > 80 ? lerp(sam.lid, 1, 0.06) : k > 45 ? 1 : lerp(sam.lid, 0.2, 0.05); }   // a slow, loving blink
+  else { sam.lid = (frame % 330) < 12 ? 0.85 : lerp(sam.lid, 0.2, 0.1); }
+  for (const h of sam.hearts) { h.y -= 0.6; h.x += Math.sin(h.life * 0.1) * 0.4; h.life--; }
+  sam.hearts = sam.hearts.filter(h => h.life > 0); if (sam.say > 0) sam.say--;
+}
+function petSammy(x, y) {
+  if (sam.blinkT === 0) sam.blinkT = 125;
+  if (!(sam.hc > 0)) sam.hc = 14, sam.hearts.push({ x: x + (Math.random() - 0.5) * 20, y: y - 10, s: 7 + Math.random() * 4, c: ['#ff8fab', '#ffb3c6', '#ffc8a2'][Math.floor(Math.random() * 3)], life: 70 });
+  sam.petT = 70; sam.say = 110; purr(true);
+  save.pets++; if (save.pets % 25 === 1) tried('pet');
+}
+function inSammy(x, y) { return Math.hypot((x - SAM.x - 4) / 100, (y - SAM.y + 10) / 58) < 1; }
+// ---------- 🤖 Robo (white round robot, dark visor, blue eyes, blue ear pods, blue legs, little antenna) sitting and reading ----------
+const ROBO = { head: '#ffffff', body: '#f5f7ff', visor: '#111827', eye: '#40c4ff', legs: '#3d5afe', pod: '#2979ff', edge: '#9fa8da' };
+function drawRobo(x, y, s = 1.7, o = {}) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s); ctx.translate(0, Math.sin(frame * 0.05) * 0.5);
+  ellipse(0, 0, 18, 3.5, 'rgba(0,0,0,.18)');
+  ctx.fillStyle = ROBO.legs; ctx.fillRect(-11, -5, 8, 5); ctx.fillRect(3, -5, 8, 5);
+  roundRect(-13, -19, 26, 17, 6, ROBO.body); ctx.strokeStyle = ROBO.edge; ctx.lineWidth = 0.8; rrect(-13, -19, 26, 17, 6); ctx.stroke();
+  circle(0, -10, 3, ROBO.pod);
+  const tip = Math.sin(frame * 0.05) * 0.8;
+  ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 1.4; ctx.beginPath(); ctx.moveTo(0, -38); ctx.quadraticCurveTo(tip * 0.4, -43, tip, -47); ctx.stroke();
+  glow(tip, -48, 7, 'rgba(255,214,120,.8)', 0.7); circle(tip, -48, 2.6, '#ffd78a');
+  roundRect(-20, -29, 6, 9, 3, ROBO.pod); roundRect(14, -29, 6, 9, 3, ROBO.pod);
+  roundRect(-17, -38, 34, 22, 12, ROBO.head); ctx.strokeStyle = ROBO.edge; rrect(-17, -38, 34, 22, 12); ctx.stroke();
+  roundRect(-13, -34, 26, 13, 9, ROBO.visor);
+  const ey = -27.5;
+  glow(3, ey, 14, 'rgba(64,196,255,.4)');
+  if (o.sleepy) { ctx.strokeStyle = ROBO.eye; ctx.lineWidth = 1.5; for (const ex of [-4, 4]) { ctx.beginPath(); ctx.arc(ex, ey - 1, 2.8, 0.3, Math.PI - 0.3); ctx.stroke(); } }
+  else { const b = (frame % 240) < 7 ? 0.6 : 4.2; ctx.fillStyle = ROBO.eye; ctx.beginPath(); ctx.ellipse(-4, ey, 3, b, 0, 0, 7); ctx.ellipse(4, ey, 3, b, 0, 0, 7); ctx.fill(); }
+  if (o.book) {   // a little open book in his hands
+    ctx.fillStyle = '#fff6e0'; ctx.beginPath(); ctx.moveTo(0, -12); ctx.lineTo(-14, -15); ctx.lineTo(-14, -4); ctx.lineTo(0, -1); ctx.lineTo(14, -4); ctx.lineTo(14, -15); ctx.fill();
+    ctx.strokeStyle = '#c75b7a'; ctx.lineWidth = 1.2; ctx.stroke(); line(0, -12, 0, -1, '#c75b7a', 1);
+  }
+  ctx.restore();
+}
+// ---------- pillows, the rug, a little lamp, the storybook, the cocoa, the kind-notes jar, the star projector, the lantern ----------
+function pillow(x, y, w, h, col, dot) {
+  ellipse(x, y + h * 0.45, w * 0.5, 8, 'rgba(0,0,0,.15)');
+  ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(x - w / 2, y - h / 2 + 6);
+  ctx.quadraticCurveTo(x, y - h / 2 + 16, x + w / 2, y - h / 2 + 6); ctx.quadraticCurveTo(x + w / 2 - 12, y, x + w / 2, y + h / 2 - 6);
+  ctx.quadraticCurveTo(x, y + h / 2 - 14, x - w / 2, y + h / 2 - 6); ctx.quadraticCurveTo(x - w / 2 + 12, y, x - w / 2, y - h / 2 + 6); ctx.fill();
+  for (let i = 0; i < 6; i++) circle(x - w * 0.3 + (i % 3) * w * 0.3, y - h * 0.15 + Math.floor(i / 3) * h * 0.3, 3, dot);
+}
+function drawFloor() {
+  const g = ctx.createLinearGradient(0, 392, 0, H); g.addColorStop(0, '#d8b9a6'); g.addColorStop(1, '#b8927f');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(0, 405); ctx.quadraticCurveTo(W / 2, 385, W, 405); ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.25)'; ctx.lineWidth = 2; ctx.setLineDash([6, 6]);
+  for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.moveTo(0, 430 + i * 38); ctx.quadraticCurveTo(W / 2, 412 + i * 40, W, 430 + i * 38); ctx.stroke(); } ctx.setLineDash([]);
+  pillow(180, 385, 170, 90, '#c9849c', '#f3c9d5'); pillow(830, 380, 190, 96, '#7f9cba', '#c8d8ea'); pillow(640, 392, 150, 80, '#a9b98a', '#e2ebcf');
+  pillow(520, 462, 300, 92, '#f3e1c4', '#e6c99c');   // Sammy's big cream pillow
+}
+let lampOn = 1, lampA = 1;
+const LAMP = { x: 905, y: 330 };
+function drawLamp() {
+  const { x, y } = LAMP;
+  glow(x, y - 30, 190, 'rgba(255,200,120,.35)', lampA);
+  roundRect(x - 34, y + 30, 68, 70, 6, '#8a5f45'); line(x - 30, y + 64, x + 30, y + 64, '#6d4a36', 3);   // the little crate table
+  ellipse(x, y + 28, 18, 5, '#5a4030'); roundRect(x - 4, y - 16, 8, 44, 3, '#8f6a4f');
+  ctx.fillStyle = lampA > 0.5 ? '#ffe2a8' : '#e4c79a'; ctx.beginPath(); ctx.moveTo(x - 20, y - 50); ctx.lineTo(x + 20, y - 50); ctx.lineTo(x + 34, y - 12); ctx.lineTo(x - 34, y - 12); ctx.fill();
+  ctx.strokeStyle = '#d99b8a'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x - 34, y - 12); ctx.lineTo(x + 34, y - 12); ctx.stroke();
+  glow(x, y - 8, 40, 'rgba(255,230,160,.7)', lampA);
+}
+const BOOK = { x: 112, y: 478 };
+function drawBook() {
+  const { x, y } = BOOK, b = Math.sin(frame * 0.04) * 1.5;
+  ellipse(x, y + 24, 52, 8, 'rgba(0,0,0,.15)');
+  roundRect(x - 50, y - 22 + b, 100, 46, 6, '#3f6fa8'); roundRect(x - 46, y - 18 + b, 92, 38, 4, '#fff3dc');
+  line(x, y - 18 + b, x, y + 20 + b, '#c2a77e', 2);
+  star(x - 23, y + b, 9, '#ffd54f', 0); ctx.fillStyle = '#4a3a2a'; circle(x - 26, y - 1 + b, 1.2, '#4a3a2a'); circle(x - 20, y - 1 + b, 1.2, '#4a3a2a');
+  for (let i = 0; i < 4; i++) line(x + 8, y - 10 + i * 8 + b, x + 38, y - 10 + i * 8 + b, 'rgba(90,70,50,.35)', 2);
+}
+const MUG = { x: 238, y: 470 };
+let mallows = [], sipT = 0;
+function drawCocoa() {
+  const { x, y } = MUG;
+  ellipse(x, y + 32, 52, 9, 'rgba(0,0,0,.15)'); ellipse(x, y + 30, 46, 9, '#e9d2b4');   // a little saucer
+  for (let i = 0; i < 3; i++) {   // curly steam (slow)
+    ctx.save(); ctx.globalAlpha = 0.35; ctx.strokeStyle = '#fff8ee'; ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.beginPath();
+    for (let k = 0; k < 20; k++) { const yy = y - 32 - k * 3.2, xx = x - 14 + i * 14 + Math.sin(k * 0.45 - frame * 0.04 + i * 2) * 6; k ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy); }
+    ctx.stroke(); ctx.restore();
+  }
+  ctx.strokeStyle = '#d96f6f'; ctx.lineWidth = 8; ctx.beginPath(); ctx.arc(x + 32, y + 2, 13, -1.2, 1.2); ctx.stroke();
+  roundRect(x - 32, y - 30, 64, 60, 12, '#e57e7e'); roundRect(x - 32, y + 2, 64, 6, 3, '#f7c6a3');
+  heart(x, y + 18, 8, '#fff0f0');
+  ellipse(x, y - 28, 30, 7, '#c98f6e'); ellipse(x, y - 28, 26, 5.5, '#6b3f2a');   // the cocoa
+  for (const m of mallows) { m.y = Math.min(y - 30 + m.dy, m.y + 2.5); roundRect(x + m.dx - 8, m.y - 6, 16, 12, 4, '#fffaf2'); roundRect(x + m.dx - 8, m.y + 3, 16, 3, 1, '#f3d9e3'); }
+}
+const JAR = { x: 772, y: 470 };
+function drawJar() {
+  const { x, y } = JAR;
+  ellipse(x, y + 34, 38, 7, 'rgba(0,0,0,.15)');
+  ctx.save(); ctx.globalAlpha = 0.55; roundRect(x - 32, y - 30, 64, 64, 14, '#d9f0ff'); ctx.restore();
+  const notes = ['#ffd1dc', '#fff3b0', '#c9f2d0', '#d7ccff', '#ffd8b0', '#bfe3ff'];
+  for (let i = 0; i < 9; i++) { ctx.save(); ctx.translate(x - 18 + (i % 3) * 18, y + 18 - Math.floor(i / 3) * 14); ctx.rotate((i * 0.7) % 1 - 0.5); roundRect(-8, -6, 16, 12, 3, notes[i % 6]); ctx.restore(); }
+  heart(x, y - 2, 6, '#ff8fab');
+  roundRect(x - 32, y - 30, 64, 64, 14, 'rgba(255,255,255,.12)'); ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 2; rrect(x - 32, y - 30, 64, 64, 14); ctx.stroke();
+  line(x - 20, y - 18, x - 20, y + 16, 'rgba(255,255,255,.5)', 3);
+  roundRect(x - 26, y - 42, 52, 14, 5, '#c98b5e'); ctx.fillStyle = '#e9a3b3'; ctx.fillRect(x - 28, y - 34, 56, 5);
+  glow(x, y, 50, 'rgba(255,230,180,.35)', 0.5 + 0.2 * Math.sin(frame * 0.03));
+}
+const PROJ = { x: 672, y: 486 };
+let projMode = 0, starA = 0, starRot = 0;
+function drawProjector() {
+  const { x, y } = PROJ;
+  ellipse(x, y + 24, 34, 6, 'rgba(0,0,0,.18)');
+  roundRect(x - 28, y + 6, 56, 18, 8, '#5c6bc0');
+  ctx.fillStyle = projMode ? '#fff4c2' : '#c5cae9'; ctx.beginPath(); ctx.arc(x, y + 8, 24, Math.PI, 0); ctx.fill();
+  for (let i = 0; i < 5; i++) star(x - 14 + i * 7, y - 2 - Math.sin(i / 4 * Math.PI) * 10, 3, projMode ? '#ffb300' : '#7986cb');
+  if (projMode) glow(x, y - 4, 50, 'rgba(255,240,170,.55)', 0.8);
+  circle(x + 18, y + 15, 3, projMode ? '#9ccc65' : '#9e9e9e');
+}
+const LANT = { x: 610, y: 182 };
+function drawLantern(sc = 1, bright = 0.6) {
+  const { x, y } = LANT;
+  line(x, CEIL(x) - 4, x, y - 30 * sc, '#5d4037', 2);
+  glow(x, y, 80 * sc, 'rgba(255,190,110,.55)', bright);
+  ctx.save(); ctx.translate(x, y); ctx.scale(sc, sc);
+  roundRect(-10, -32, 20, 6, 2, '#6d4c41'); roundRect(-10, 26, 20, 6, 2, '#6d4c41');
+  ellipse(0, 0, 26, 28, '#ffb26b'); ellipse(0, 0, 26, 28, 'rgba(255,240,190,' + (0.25 + bright * 0.5) + ')');
+  ctx.strokeStyle = 'rgba(180,90,40,.45)'; ctx.lineWidth = 1.5;
+  for (const k of [-0.6, 0, 0.6]) { ctx.beginPath(); ctx.ellipse(0, 0, 26 * Math.abs(k) + 2, 28, 0, 0, 7); ctx.stroke(); }
+  ctx.restore();
+}
+// ---------- ✨ the star projector: slow turning stars + constellations of Game Factory friends ----------
+const STARS = Array.from({ length: 110 }, (_, i) => ({ a: i * 2.399, r: 40 + ((i * 97) % 480), s: 0.8 + (i % 4) * 0.5, p: i * 0.9 }));
+const CONST = [   // [name, points (−1..1), lines]
+  ['Robo', '🤖', [[-0.5, -0.4], [0.5, -0.4], [0.5, 0.2], [-0.5, 0.2], [0, -0.4], [0, -0.85], [-0.2, -0.1], [0.2, -0.1], [-0.35, 0.2], [-0.35, 0.6], [0.35, 0.2], [0.35, 0.6]],
+    [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [6, 7], [8, 9], [10, 11], [9, 11]]],
+  ['Dusty', '🧹', [[-0.45, 0.5], [-0.45, -0.1], [0, -0.35], [0.45, -0.1], [0.45, 0.5], [0, -0.75], [-0.18, -0.95], [0.18, -0.95], [-0.15, 0.1], [0.15, 0.1]],
+    [[0, 1], [1, 2], [2, 3], [3, 4], [4, 0], [2, 5], [5, 6], [5, 7], [8, 9]]],
+  ['Sammy', '🐱', [[-0.5, -0.1], [-0.4, -0.75], [-0.1, -0.35], [0.1, -0.35], [0.4, -0.75], [0.5, -0.1], [0.3, 0.35], [-0.3, 0.35], [-0.2, -0.05], [0.2, -0.05], [0, 0.12]],
+    [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7], [7, 0], [8, 10], [9, 10]]],
+  ['Sparks', '🐶', [[-0.8, -0.2], [-0.5, -0.2], [-0.6, -0.55], [0.5, -0.2], [0.5, 0.15], [-0.5, 0.15], [-0.4, 0.15], [-0.4, 0.5], [0.4, 0.15], [0.4, 0.5], [0.85, -0.5], [-0.8, 0.05]],
+    [[0, 1], [1, 2], [1, 3], [3, 4], [4, 5], [5, 1], [6, 7], [8, 9], [3, 10], [0, 11], [11, 5]]],
+];
+function drawStars() {
+  if (starA < 0.01) return;
+  ctx.save(); ctx.globalAlpha = starA * 0.7; ctx.fillStyle = '#141633'; ctx.fillRect(0, 0, W, H); ctx.restore();
+  const cx = W / 2, cy = 250;
+  ctx.save(); ctx.globalAlpha = starA * 0.18; const beam = ctx.createLinearGradient(PROJ.x, PROJ.y, PROJ.x, 100);   // the soft beam
+  beam.addColorStop(0, '#fff4c2'); beam.addColorStop(1, 'rgba(255,244,194,0)'); ctx.fillStyle = beam;
+  ctx.beginPath(); ctx.moveTo(PROJ.x - 12, PROJ.y); ctx.lineTo(PROJ.x - 260, 60); ctx.lineTo(PROJ.x + 200, 60); ctx.fill(); ctx.restore();
+  for (const s of STARS) {
+    const a = s.a + starRot, x = cx + Math.cos(a) * s.r, y = cy + Math.sin(a) * s.r * 0.62;
+    if (x < -10 || x > W + 10 || y < -10 || y > H) continue;
+    const tw = 0.55 + 0.45 * Math.sin(frame * 0.02 + s.p);
+    glow(x, y, s.s * 5, 'rgba(255,248,210,.7)', starA * tw * 0.6); circle(x, y, s.s, 'rgba(255,250,225,' + (starA * (0.5 + tw * 0.5)) + ')');
+  }
+  if (projMode) {
+    const [name, icon, pts, lines] = CONST[projMode - 1], a = starRot * 2 - 1.9, ox = cx + Math.cos(a) * 150, oy = 222 + Math.sin(a) * 22, S = 96;
+    const P = pts.map(([px, py]) => [ox + px * S, oy + py * S]);
+    ctx.save(); ctx.globalAlpha = starA * 0.55; ctx.strokeStyle = '#ffe9a8'; ctx.lineWidth = 2;
+    ctx.beginPath(); for (const [i, j] of lines) { ctx.moveTo(P[i][0], P[i][1]); ctx.lineTo(P[j][0], P[j][1]); } ctx.stroke(); ctx.restore();
+    for (const [x, y] of P) { glow(x, y, 16, 'rgba(255,236,160,.8)', starA * 0.7); star(x, y, 5, 'rgba(255,248,200,' + starA + ')', frame * 0.004); }
+    ctx.save(); ctx.globalAlpha = starA; roundRect(W / 2 - 170, 318, 340, 44, 22, 'rgba(40,40,90,.75)');
+    text('✨ ' + icon + ' ' + name + "'s stars " + icon + ' ✨', W / 2, 341, 24, '#fff3c4'); ctx.restore();
+  }
+}
+// ---------- 📖 Robo's bedtime story: "Twinkle and the Shine-and-Seek Stars" (original) ----------
+function twinkle(x, y, r, o = {}) {   // Twinkle: a little yellow star with a sweet face
+  glow(x, y, r * 3, 'rgba(255,230,120,.6)', 0.8); star(x, y, r, '#ffe066', Math.sin(frame * 0.03) * 0.1, 5, 0.52);
+  circle(x - r * 0.22, y - r * 0.05, r * 0.08, '#4a3520'); circle(x + r * 0.22, y - r * 0.05, r * 0.08, '#4a3520');
+  ctx.strokeStyle = '#4a3520'; ctx.lineWidth = Math.max(1.5, r * 0.06); ctx.beginPath();
+  if (o.sad) ctx.arc(x, y + r * 0.32, r * 0.14, Math.PI + 0.5, -0.5); else ctx.arc(x, y + r * 0.1, r * 0.16, 0.3, Math.PI - 0.3); ctx.stroke();
+  circle(x - r * 0.38, y + r * 0.12, r * 0.09, 'rgba(255,140,160,.6)'); circle(x + r * 0.38, y + r * 0.12, r * 0.09, 'rgba(255,140,160,.6)');
+}
+function skyBox(x, y, w, h) { const g = ctx.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, '#1d2350'); g.addColorStop(1, '#3d3a78'); ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
+  for (let i = 0; i < 30; i++) circle(x + (i * 73) % w, y + (i * 41) % h, 1.2, 'rgba(255,255,230,' + (0.4 + 0.3 * Math.sin(frame * 0.02 + i)) + ')'); }
+function bigStars(x, y, n, spread, t) { for (let i = 0; i < n; i++) { const a = i / n * 6.28 + t; star(x + Math.cos(a) * spread, y + Math.sin(a) * spread * 0.6, 14, '#fff3b0', t); glow(x + Math.cos(a) * spread, y + Math.sin(a) * spread * 0.6, 30, 'rgba(255,240,180,.5)', 0.6); } }
+const STORY = [
+  ["Once upon a time, a little star named Twinkle lived at the very edge of the sky.", (x, y, w, h) => { twinkle(x + w - 70, y + h / 2, 30); }],
+  ["Every night, the big stars played a game called Shine and Seek. Twinkle watched from far away and felt a little bit lonely.", (x, y, w, h) => { bigStars(x + 150, y + h / 2, 5, 70, frame * 0.01); twinkle(x + w - 70, y + h / 2 + 30, 24, { sad: 1 }); }],
+  ["Then a soft little cloud floated by. Why so quiet, Twinkle? asked the cloud, very gently.", (x, y, w, h) => { twinkle(x + w / 2 + 70, y + h / 2, 26, { sad: 1 }); drawCloud(x + w / 2 - 70, y + h / 2 + 10 + Math.sin(frame * 0.04) * 4, 1.1, 1); }],
+  ["I wish I could play too, said Twinkle. The cloud smiled. Feelings are okay to share. Let's go and ask, together!", (x, y, w, h) => { const k = Math.sin(frame * 0.03) * 10; drawCloud(x + w / 2, y + h / 2 + 30 + k, 1.2, 1); twinkle(x + w / 2, y + h / 2 - 20 + k, 24); }],
+  ["Twinkle! cried the big stars. We were hoping you would come! There is always room for you. Come and shine with us!", (x, y, w, h) => { bigStars(x + w / 2, y + h / 2, 6, 90, frame * 0.01); twinkle(x + w / 2, y + h / 2, 28); }],
+  ["So they all held hands and made a brand new shape in the sky: a great big glowing heart.", (x, y, w, h) => {
+    const hp = t => [x + w / 2 + 16 * Math.pow(Math.sin(t), 3) * 6.2, y + h / 2 - 22 - (13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t)) * 6.2];
+    ctx.save(); ctx.globalAlpha = 0.5; ctx.strokeStyle = '#ffc2d4'; ctx.lineWidth = 3; ctx.beginPath(); for (let i = 0; i <= 80; i++) { const [a, b] = hp(i / 80 * 6.283); i ? ctx.lineTo(a, b) : ctx.moveTo(a, b); } ctx.stroke(); ctx.restore();
+    for (let i = 0; i < 18; i++) { const [px, py] = hp(i / 18 * 6.283 + 0.17); glow(px, py, 22, 'rgba(255,200,210,.6)', 0.6); star(px, py, 9, '#ffe0ea', frame * 0.01); }
+    twinkle(x + w / 2, y + h / 2 - 8, 20); }],
+  ["And Twinkle learned something lovely. Friends are always glad you're here. And you are never too little to shine.", (x, y, w, h) => { bigStars(x + w / 2, y + h / 2, 7, 110, frame * 0.006); twinkle(x + w / 2, y + h / 2, 34); }],
+  ["Goodnight, Twinkle. Goodnight, little cloud. Goodnight, Ben. The end.", (x, y, w, h) => { drawCloud(x + 120, y + h - 60, 0.8, 1); twinkle(x + w / 2, y + 70, 22); drawRobo(x + w - 110, y + h - 20, 1.8, { sleepy: 1 }); }],
+];
+const story = { on: false, page: 0, t: 0, spoke: false };
+function storyEst(p) { return 60 * (1.6 + STORY[p][0].split(' ').length * 0.5); }   // frames: a fallback if the voice is quiet
+function openStory() { story.on = true; story.page = 0; story.t = 0; story.spoke = false; tried('story'); save.stories++; store(); chime(); }
+function storyGo(d) { story.page = clamp(story.page + d, 0, STORY.length - 1); story.t = 0; story.spoke = false; hush(); plip(); }
+function updateStory() {
+  if (!story.on) return; story.t++;
+  if (!story.spoke && story.t > 30) { story.spoke = true; speak(STORY[story.page][0], 0.74, 1.0); }
+  const talking = window.speechSynthesis && speechSynthesis.speaking && soundOn;
+  if (story.spoke && !talking && story.t > Math.max(150, storyEst(story.page) * 0.6) && story.page < STORY.length - 1) {
+    if (++story.wait > 80) { story.wait = 0; storyGo(1); }
+  } else story.wait = 0;
+}
+function drawStory() {
+  if (!story.on) return;
+  ctx.save(); ctx.globalAlpha = clamp(story.t / 20, 0, 1) * 0.6 + 0.3; ctx.fillStyle = '#1a1328'; ctx.fillRect(0, 0, W, H); ctx.restore();
+  roundRect(110, 34, 740, 472, 24, '#fff4e0'); roundRect(124, 48, 712, 444, 18, '#fbe7c6');
+  const px = 150, py = 70, pw = 660, ph = 270;
+  ctx.save(); rrect(px, py, pw, ph, 14); ctx.clip(); skyBox(px, py, pw, ph); STORY[story.page][1](px, py, pw, ph); ctx.restore();
+  const lines = wrap(STORY[story.page][0], 560, 22);
+  lines.forEach((l, i) => text(l, 480 - 30, 372 + i * 30 - (lines.length - 1) * 4, 22, '#5a3a2a'));
+  drawRobo(790, 470, 1.4, { book: 1 });
+  text('📖 Page ' + (story.page + 1) + ' of ' + STORY.length, 480, 470, 16, '#9a7a5a', 'center', false);
+  button(140, 446, 70, 44, '◀', '#e7c49b', () => storyGo(-1), 24, story.page > 0);
+  button(220, 446, 70, 44, '▶', '#e7c49b', () => storyGo(1), 24, story.page < STORY.length - 1);
+  button(764, 50, 64, 40, '✖', '#e8b4b4', () => { story.on = false; hush(); }, 20);
+}
+// ---------- 🏮 breathing lantern: in for 4, out for 4 (3 slow breaths) ----------
+const breath = { on: false, t: 0 };
+const BREATH_LEN = 480;   // frames per breath (4 s in + 4 s out)
+function swell(f, d, v) { if (!running()) return; const t = actx.currentTime, o = actx.createOscillator(), g = actx.createGain();
+  o.type = 'sine'; o.frequency.value = f; g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(v, t + d * 0.5); g.gain.linearRampToValueAtTime(0.0001, t + d);
+  o.connect(g); g.connect(sfx); o.start(t); o.stop(t + d + 0.1); }
+function openBreath() { breath.on = true; breath.t = 0; tried('breathe'); save.breaths++; store(); }
+function updateBreath() {
+  if (!breath.on) return; const t = breath.t++, k = t % BREATH_LEN;
+  if (t >= BREATH_LEN * 3) { if (t === BREATH_LEN * 3) speak('Lovely breathing, Ben. You are calm and cozy.'); if (t > BREATH_LEN * 3 + 300) breath.on = false; return; }
+  if (k === 0) { speak('Breathe in', 0.7); swell(262, 4, 0.1); swell(392, 4, 0.05); }
+  if (k === 240) { speak('Breathe out', 0.7); swell(330, 4, 0.08); swell(196, 4, 0.06); }
+}
+function drawBreath() {
+  if (!breath.on) return; const t = breath.t, k = t % BREATH_LEN, done = t >= BREATH_LEN * 3;
+  const grow = done ? 0.5 : k < 240 ? (1 - Math.cos(k / 240 * Math.PI)) / 2 : (1 + Math.cos((k - 240) / 240 * Math.PI)) / 2;
+  ctx.save(); ctx.globalAlpha = clamp(t / 40, 0, 1) * 0.7; ctx.fillStyle = '#1a1226'; ctx.fillRect(0, 0, W, H); ctx.restore();
+  const r = 70 + grow * 80;
+  glow(W / 2, 250, r * 2.4, 'rgba(255,190,110,.6)', 0.5 + grow * 0.4);
+  ctx.save(); ctx.translate(W / 2, 250); ctx.scale(r / 50, r / 50);
+  roundRect(-10, -32, 20, 6, 2, '#6d4c41'); roundRect(-10, 26, 20, 6, 2, '#6d4c41');
+  ellipse(0, 0, 26, 28, '#ffb26b'); ellipse(0, 0, 26, 28, 'rgba(255,240,190,' + (0.3 + grow * 0.5) + ')');
+  ctx.strokeStyle = 'rgba(180,90,40,.45)'; ctx.lineWidth = 1.2; for (const q of [-0.6, 0, 0.6]) { ctx.beginPath(); ctx.ellipse(0, 0, 26 * Math.abs(q) + 2, 28, 0, 0, 7); ctx.stroke(); }
+  ctx.restore();
+  if (done) text('💛 Lovely breathing, Ben! 💛', W / 2, 470, 32, '#ffe9b8');
+  else {
+    const n = Math.floor((k % 240) / 60) + 1;
+    text(k < 240 ? '🌬️ Breathe in...  ' + n : '😌 Breathe out...  ' + n, W / 2, 455, 34, '#ffe9b8');
+    text('Breath ' + (Math.floor(t / BREATH_LEN) + 1) + ' of 3', W / 2, 497, 18, 'rgba(255,233,184,.7)', 'center', false);
+  }
+  button(W - 140, 470, 120, 46, '✖ Done', '#e8b4b4', () => { breath.on = false; hush(); }, 20);
+}
+// ---------- 💌 kind notes jar ----------
+const NOTES = [['🤖', 'Robo says: You make the best games!'], ['🧹', "Dusty says: I'm glad you're my friend!"], ['🐱', 'Sammy says: Prrr! You are my favorite person to cuddle.'],
+  ['🐶', 'Sparks says: Woof! You are the best friend ever!'], ['🤖', 'Robo says: Your ideas make the whole Game Factory shine.'], ['🧹', 'Dusty says: I saved you the coziest spot in the fort.'],
+  ['🐱', 'Charlie says: You are kind AND funny. What a great mix!'], ['🐾', "August says: Even fluffy cats have sad days. It's okay."], ['🤖', "Robo says: I'm proud of you, Ben. Just for being you."],
+  ['🧹', 'Dusty says: I swept away the grumpy dust. Only cozy is left!'], ['🐶', "Sparks says: Wag wag! I'm so happy when you're here."], ['🟣', 'Baby Gloop says: Bloop! A big squishy hug from me!'],
+  ['🐱', 'Sammy says: Slow blink. That means I love you!'], ['🤖', 'Robo says: Every day is better with Ben in it.']];
+let note = null, noteK = Math.floor(Math.random() * NOTES.length);
+function openNote() { noteK = (noteK + 1 + Math.floor(Math.random() * 3)) % NOTES.length; note = { k: noteK, t: 0 }; talk = ''; speak(NOTES[noteK][1]); chime(); tried('notes'); save.notes++; store(); }
+function drawNote() {
+  if (!note) return; note.t++; if (note.t > 600) { note = null; return; }
+  const a = clamp(Math.min(note.t / 25, (600 - note.t) / 40), 0, 1), [icon, msg] = NOTES[note.k];
+  ctx.save(); ctx.globalAlpha = a; ctx.translate(W / 2, 270 - (1 - a) * 20); ctx.rotate(-0.02);
+  roundRect(-230, -95, 460, 190, 16, 'rgba(0,0,0,.18)'); roundRect(-236, -102, 460, 190, 16, '#fff6d8');
+  ctx.strokeStyle = 'rgba(210,170,120,.4)'; ctx.lineWidth = 1.5; for (let i = 0; i < 4; i++) { ctx.beginPath(); ctx.moveTo(-200, -20 + i * 30); ctx.lineTo(190, -20 + i * 30); ctx.stroke(); }
+  text(icon, -6, -62, 40, '#000');
+  wrap(msg, 400, 24).forEach((l, i, L) => text(l, -6, 0 + i * 32 - (L.length - 1) * 10, 24, '#6b3f2a'));
+  heart(170, 60, 12, '#ff8fab'); heart(-180, 60, 9, '#ffb3c6');
+  ctx.restore();
+}
+// ---------- buttons, words on screen, the trophy toast ----------
+let BTN = [];
+function button(x, y, w, h, label, col, fn, size = 20, on = true) {
+  ctx.save(); ctx.globalAlpha *= on ? 1 : 0.35; roundRect(x, y + 3, w, h, h / 2, 'rgba(0,0,0,.2)'); roundRect(x, y, w, h, h / 2, col);
+  text(label, x + w / 2, y + h / 2 + 1, size, '#4a2f2a'); ctx.restore(); if (on) BTN.push({ x, y, w, h, fn });
+}
+let talk = '', talkT = 0, talkWho = '';
+function say(line, who = '🤖') { talk = line; talkWho = who; talkT = 0; speak(line); }
+function drawTalk() {
+  if (!talk) return; talkT++; if (talkT > 420) { talk = ''; return; }
+  const a = clamp(Math.min(talkT / 20, (420 - talkT) / 40), 0, 1), L = wrap(talkWho + ' ' + talk, 620, 22);
+  ctx.save(); ctx.globalAlpha = a; roundRect(W / 2 - 330, 62, 660, 22 + L.length * 30, 22, 'rgba(255,248,235,.95)');
+  L.forEach((l, i) => text(l, W / 2, 88 + i * 30, 22, '#6b3f2a')); ctx.restore();
+}
+function drawToast() {
+  if (toastT <= 0 || story.on || breath.on) return; toastT--; const a = clamp(Math.min(toastT / 30, (360 - toastT) / 30), 0, 1);
+  ctx.save(); ctx.globalAlpha = a; roundRect(W / 2 - 260, 470, 520, 54, 27, '#ffe9a8'); text(toast, W / 2, 498, 24, '#7a4a10'); ctx.restore();
+}
+function label(s, x, y) { ctx.font = 'bold 16px "Trebuchet MS", Arial, sans-serif'; const w = ctx.measureText(s).width + 22; roundRect(x - w / 2, y - 13, w, 26, 13, 'rgba(255,248,235,.82)'); text(s, x, y + 1, 16, '#6b3f2a'); }
+// ---------- the main picture ----------
+let started = !!JB_WANT, drag = null, down = false, cloudLine = 0;
+function draw() {
+  BTN = [];
+  ctx.drawImage(quilt, 0, 0); drawCeiling(); drawWindow(drag === cloud && inWin(cloud.x, cloud.y));
+  drawLights(1); if (!breath.on) drawLantern(1, 0.55 + 0.1 * Math.sin(frame * 0.02));
+  drawFloor(); drawLamp(); drawBook(); drawCocoa(); drawRobo(352, 452, 1.7, { book: 0 }); drawSammy(); drawJar();
+  if (cloud.state !== 'float' && cloud.state !== 'gone') drawCloud(cloud.x, cloud.y, cloud.s, cloud.mood, cloud.a);
+  if (started && !story.on && !breath.on) {
+    ctx.save(); ctx.globalAlpha = 1 - starA * 0.6;
+    label('📖 Story', BOOK.x, 518); label('☕ Cocoa', MUG.x, 518); label('🐱 Pet Sammy', SAM.x, 522); label('🌟 Stars', PROJ.x, 522); label('💌 Kind Notes', JAR.x, 522);
+    label('🏮 Breathe', LANT.x, 240); if (cloud.state === 'home') label('☁️ Drag me out the window!', CLOUD_HOME.x + 10, CLOUD_HOME.y + 52);
+    ctx.restore();
+  }
+  drawStars(); drawProjector();
+  text('🏕️ The Cozy Blanket Fort', 22, 30, 26, '#fff3dc', 'left');
+  if (started) {
+    button(W - 252, 12, 120, 42, musicOn ? '🎵 Music' : '🎵 Off', musicOn ? '#ffd9a8' : '#c9b8b0', () => { musicOn = !musicOn; fadeAll(); }, 18);
+    button(W - 124, 12, 112, 42, soundOn ? '🔈 Sound' : '🔇 Off', soundOn ? '#ffd9a8' : '#c9b8b0', () => { soundOn = !soundOn; if (!soundOn) { hush(); purr(false); } fadeAll(); }, 18);
+  }
+  drawNote(); drawToast(); drawBreath(); drawStory(); if (!story.on && !breath.on) drawTalk();
+  if (!started) {
+    ctx.save(); ctx.globalAlpha = 0.55; ctx.fillStyle = '#1a1226'; ctx.fillRect(0, 0, W, H); ctx.restore();
+    roundRect(W / 2 - 260, 170, 520, 200, 30, 'rgba(255,244,224,.96)');
+    text('🏕️ The Cozy Blanket Fort 🏕️', W / 2, 220, 34, '#7d4a63');
+    text('A warm, snuggly place on a rainy night 🌧️💛', W / 2, 266, 20, '#8a5a4a', 'center', false);
+    roundRect(W / 2 - 150, 296, 300, 56, 28, '#ffcf8a'); text('👉 Tap to crawl inside!', W / 2, 325, 24, '#6b3f2a');
+  }
+}
+function update() {
+  updateCloud(); updateSammy(); updateStory(); updateBreath();
+  starA = clamp(starA + (projMode ? 0.012 : -0.012), 0, 1); starRot += 0.0007;
+  lampA = lerp(lampA, lampOn ? 1 : 0.35, 0.03);
+}
+function loop() { frame++; update(); draw(); requestAnimationFrame(loop); }
+// ---------- tapping + dragging ----------
+function pos(e) { const r = C.getBoundingClientRect(); return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height]; }
+function begin() {
+  started = true; audio(); fadeAll(); startMusic(); startRain(); setTimeout(() => { startRain(); fadeAll(); }, 300);
+  say('Welcome to the cozy blanket fort, Ben. You can stay as long as you like.', '🤖');
+}
+function tap(x, y) {
+  if (!started) { begin(); return; }
+  audio(); if (!rain) startRain();
+  for (const b of BTN.slice().reverse()) if (x > b.x && x < b.x + b.w && y > b.y && y < b.y + b.h) { b.fn(); plip(); return; }
+  if (story.on || breath.on) return;
+  if (note && note.t > 20) { note.t = Math.max(note.t, 560); return; }
+  if (cloud.state === 'home' && Math.hypot(x - cloud.x, y - cloud.y) < 58) { drag = cloud; cloud.state = 'drag'; cloud.ox = cloud.x - x; cloud.oy = cloud.y - y; softNote(440, 0.6, 0.06); return; }
+  if (Math.hypot(x - PROJ.x, y - PROJ.y - 8) < 42) { projMode = (projMode + 1) % (CONST.length + 1); tried('stars'); chime();
+    if (projMode) say("That's " + CONST[projMode - 1][0] + ' in the stars!', CONST[projMode - 1][1]); else speak('Stars off. Cozy lights back on.'); return; }
+  if (Math.abs(x - JAR.x) < 40 && y > JAR.y - 46 && y < JAR.y + 40) { openNote(); return; }
+  if (Math.abs(x - MUG.x) < 48 && y > MUG.y - 60 && y < MUG.y + 40) { addMallow(); return; }
+  if (Math.hypot(x - LANT.x, y - LANT.y) < 40) { openBreath(); return; }
+  if ((Math.abs(x - BOOK.x) < 56 && Math.abs(y - BOOK.y) < 32) || (Math.abs(x - 352) < 36 && y > 370 && y < 460)) { openStory(); return; }
+  if (Math.abs(x - LAMP.x) < 40 && y > LAMP.y - 54 && y < LAMP.y + 30) { lampOn = !lampOn; softNote(lampOn ? 659 : 523, 0.8, 0.08); return; }
+  if (inSammy(x, y)) { petSammy(x, y); return; }
+  if (inWin(x, y)) { softNote(1047, 1.2, 0.04); return; }
+}
+function addMallow() {
+  tried('cocoa');
+  if (mallows.length < 6) {
+    mallows.push({ dx: -16 + ((mallows.length * 13) % 32) + Math.random() * 4, dy: -2 + (mallows.length % 2) * 3, y: MUG.y - 120 }); plop(); save.mallows++; store();
+    if (mallows.length === 1) say('A fluffy marshmallow! Tap for more.', '☕');
+    if (mallows.length === 6) say('Six fluffy marshmallows! Tap again to take a warm sip.', '☕');
+  } else { mallows = []; softNote(330, 1.2, 0.08); softNote(440, 1.4, 0.05, 0.2); say('Sip... ahhh. Warm and cozy all the way down.', '☕'); }
+}
+C.addEventListener('pointerdown', e => { const [x, y] = pos(e); down = true; tap(x, y); });
+C.addEventListener('pointermove', e => {
+  const [x, y] = pos(e);
+  if (drag) { cloud.x = clamp(x + cloud.ox, 30, W - 30); cloud.y = clamp(y + cloud.oy, 30, H - 30); return; }
+  if (down && started && !story.on && !breath.on && inSammy(x, y)) petSammy(x, y);
+});
+function release() {
+  down = false; if (!drag) return; drag = null;
+  if (inWin(cloud.x, cloud.y)) {
+    Object.assign(cloud, { state: 'float', k: 0, s: 0.8 }); save.clouds++; tried('cloud');
+    say(CLOUD_LINES[cloudLine++ % CLOUD_LINES.length], '🌈'); softNote(523, 1.6, 0.07); softNote(659, 1.6, 0.06, 0.3); softNote(784, 2, 0.05, 0.6);
+  } else cloud.state = 'back';
+}
+addEventListener('pointerup', release); addEventListener('pointercancel', release);
+addEventListener('keydown', e => { if (e.key === 'Escape') { story.on = false; breath.on = false; hush(); } });
+if (JB_WANT) { audio(); musicOn = true; soundOn = true; setTimeout(() => { audio(); fadeAll(); startMusic(); }, 50); }
+loop();
+</script>
+</body>
+</html>
