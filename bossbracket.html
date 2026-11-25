@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Boss Bracket Maker</title>
+<script src="touchpad.js?v=10"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'Comic Sans MS', 'Chalkboard SE', sans-serif; background: linear-gradient(160deg, #1a237e, #6a1b9a 60%, #ff4081); color: #fff; min-height: 100vh; user-select: none; -webkit-user-select: none; }
+  h1 { text-align: center; margin: 10px 0 2px; font-size: 32px; text-shadow: 3px 3px 0 #000; }
+  .help { text-align: center; font-size: 17px; margin: 0 8px 8px; }
+  .bar { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-bottom: 8px; }
+  .btn { font: inherit; font-size: 18px; border: 0; border-radius: 16px; padding: 10px 16px; background: #ffd740; color: #311b92; font-weight: bold; box-shadow: 0 4px 0 #000; cursor: pointer; }
+  .btn.pink { background: #ff80ab; } .btn.green { background: #69f0ae; }
+  .bracket { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; padding: 8px 12px 20px; align-items: center; max-width: 1100px; margin: 0 auto; }
+  .round { display: flex; flex-direction: column; justify-content: space-around; gap: 12px; height: 100%; }
+  .round h2 { text-align: center; font-size: 18px; margin: 0; color: #ffd740; }
+  .match { background: rgba(255,255,255,.12); border: 3px solid rgba(255,255,255,.5); border-radius: 14px; padding: 5px; display: flex; flex-direction: column; gap: 4px; }
+  .slot { background: #fff; color: #311b92; border-radius: 10px; padding: 8px 6px; font-size: 16px; text-align: center; min-height: 40px; cursor: pointer; border: 3px solid transparent; }
+  .slot.empty { background: rgba(255,255,255,.35); color: #fff; }
+  .slot.win { border-color: #ffd740; background: #fff59d; font-weight: bold; }
+  .slot.lose { opacity: .55; text-decoration: line-through; }
+  .champ { text-align: center; font-size: 22px; background: linear-gradient(#ffd740, #ff9800); color: #311b92; border-radius: 18px; padding: 14px 8px; border: 4px solid #fff; font-weight: bold; }
+  .champ .cup { font-size: 46px; display: block; }
+  .pick { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: none; align-items: center; justify-content: center; z-index: 50; }
+  .pick.on { display: flex; }
+  .pickBox { background: #fff; color: #311b92; border-radius: 20px; padding: 14px; max-width: 640px; width: 92%; max-height: 86vh; overflow: auto; }
+  .pickBox h3 { margin: 0 0 8px; text-align: center; font-size: 22px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+  .grid button { font: inherit; font-size: 16px; padding: 10px 6px; border-radius: 12px; border: 3px solid #b39ddb; background: #ede7f6; color: #311b92; cursor: pointer; }
+  .toast { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); background: #fff; color: #311b92; padding: 10px 18px; border-radius: 16px; font-size: 20px; font-weight: bold; box-shadow: 0 4px 0 #000; display: none; z-index: 60; }
+  @media (max-width: 760px) { .bracket { grid-template-columns: 1fr 1fr; } }
+  #print { display: none; }
+  @media print {
+    body { background: #fff; } #app, .pick, .toast { display: none !important; } #print { display: block; }
+    @page { size: letter landscape; margin: 0.4in; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <h1>🏆 Boss Bracket Maker 🏆</h1>
+  <div class="help">1️⃣ Tap a box to pick a boss. 2️⃣ Tap the boss you think will WIN each fight. 3️⃣ Print it, then check your guesses in the real Boss Tournament!</div>
+  <div class="bar">
+    <button class="btn" id="bRand">🎲 Random bosses</button>
+    <button class="btn pink" id="bClear">🧹 Start over</button>
+    <button class="btn green" id="bPrint">🖨️ Print my bracket</button>
+  </div>
+  <div class="bracket" id="bracket"></div>
+</div>
+<div class="pick" id="pick"><div class="pickBox"><h3>Who's fighting? 👊</h3><div class="grid" id="grid"></div></div></div>
+<div class="toast" id="toast"></div>
+<div id="print"></div>
+<script>
+const BOSSES = ['👑 King Gloop', '🦍 GOO-RILLA', '🌑 Nega-Robo', '💗 Laserheart', '👻 Phantom Core', '🛸 Mega Saucer', '👾 Glitch Robo', '🌀 Chaos Robo',
+  '🔥 King Element Robo', '🎵 Musical Robo', '🔒 Lock Robo', '⏰ Time Robo', '🪞 Mirror Robo', '🧲 Magnetron Robo', '🧱 Brick Robo', '💿 Record Robo',
+  '🔴 Omega Core', '🏭 Factory Heart', '🐙 Kraken King', '⚡ Storm King Robo'];
+const KEY = 'bossBracket';
+let S = { seeds: Array(8).fill(''), win: {} };   // win: { 'r1m0': 0|1, ... }
+try { const s = JSON.parse(localStorage.getItem(KEY) || 'null'); if (s && Array.isArray(s.seeds)) S = s; } catch (_) {}
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (_) {} };
+let actx = null;
+function beep(f, t = 0.1) { try { if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)(); const o = actx.createOscillator(), g = actx.createGain();
+  o.type = 'sine'; o.frequency.value = f; g.gain.setValueAtTime(0.06, actx.currentTime); g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + t); o.connect(g).connect(actx.destination); o.start(); o.stop(actx.currentTime + t); } catch (_) {} }
+function toast(t) { const el = document.getElementById('toast'); el.textContent = t; el.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => el.style.display = 'none', 2200); }
+// who is in each match of each round (round 1 = the 8 seeds)
+function players(r, m) {
+  if (r === 1) return [S.seeds[m * 2], S.seeds[m * 2 + 1]];
+  return [winner(r - 1, m * 2), winner(r - 1, m * 2 + 1)];
+}
+function winner(r, m) { const w = S.win['r' + r + 'm' + m], p = players(r, m); return (w === 0 || w === 1) && p[w] ? p[w] : ''; }
+function fix() {   // if an earlier pick changed, later picks that no longer make sense are cleared
+  for (const r of [2, 3]) for (let m = 0; m < (r === 2 ? 2 : 1); m++) { const w = S.win['r' + r + 'm' + m]; const p = players(r, m); if ((w === 0 || w === 1) && !p[w]) delete S.win['r' + r + 'm' + m]; }
+}
+let pickSlot = -1;
+function draw() {
+  fix(); const B = document.getElementById('bracket'); let h = '';
+  const names = ['Quarterfinals', 'Semifinals', 'FINAL'];
+  for (let r = 1; r <= 3; r++) {
+    const n = r === 1 ? 4 : r === 2 ? 2 : 1; h += `<div class="round"><h2>${names[r - 1]}</h2>`;
+    for (let m = 0; m < n; m++) {
+      const p = players(r, m), w = S.win['r' + r + 'm' + m]; h += '<div class="match">';
+      p.forEach((b, k) => { const cls = !b ? 'empty' : w === k ? 'win' : (w === 0 || w === 1) ? 'lose' : '';
+        h += `<div class="slot ${cls}" data-r="${r}" data-m="${m}" data-k="${k}">${b || (r === 1 ? '➕ pick a boss' : '?')}</div>`; });
+      h += '</div>';
+    }
+    h += '</div>';
+  }
+  const ch = winner(3, 0);
+  h += `<div class="round"><h2>Champion</h2><div class="champ"><span class="cup">🏆</span>${ch || 'Who will win?'}</div></div>`;
+  B.innerHTML = h;
+}
+document.getElementById('bracket').addEventListener('click', e => {
+  const s = e.target.closest('.slot'); if (!s) return;
+  const r = +s.dataset.r, m = +s.dataset.m, k = +s.dataset.k, p = players(r, m);
+  if (r === 1 && !p[k]) { pickSlot = m * 2 + k; openPick(); return; }
+  if (!p[0] || !p[1]) { if (r === 1) { pickSlot = m * 2 + k; openPick(); } else toast('Pick the winners before this fight first! 👆'); return; }
+  S.win['r' + r + 'm' + m] = k; save(); beep(660 + r * 120); draw();
+  if (r === 3) { beep(1046, 0.3); toast('🏆 Your champion: ' + p[k] + '!'); }
+});
+document.getElementById('bracket').addEventListener('dblclick', e => { const s = e.target.closest('.slot'); if (s && +s.dataset.r === 1) { pickSlot = +s.dataset.m * 2 + +s.dataset.k; openPick(); } });
+function openPick() {
+  const used = new Set(S.seeds.filter(Boolean));
+  document.getElementById('grid').innerHTML = BOSSES.map(b => `<button data-b="${b}" ${used.has(b) && S.seeds[pickSlot] !== b ? 'disabled style="opacity:.35"' : ''}>${b}</button>`).join('') + '<button data-b="">❌ Empty</button>';
+  document.getElementById('pick').classList.add('on');
+}
+document.getElementById('pick').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b && e.target.id !== 'pick') return;
+  if (b && !b.disabled) { S.seeds[pickSlot] = b.dataset.b; S.win = {}; save(); beep(520); }
+  document.getElementById('pick').classList.remove('on'); draw();
+});
+document.getElementById('bRand').onclick = () => { const a = BOSSES.slice().sort(() => Math.random() - 0.5); S = { seeds: a.slice(0, 8), win: {} }; save(); beep(700); draw(); toast('🎲 8 random bosses! Now pick the winners!'); };
+document.getElementById('bClear').onclick = () => { if (!confirm('Start a new bracket?')) return; S = { seeds: Array(8).fill(''), win: {} }; save(); draw(); };
+// 🖨️ print: a black & white bracket (names with no emoji, so it prints cleanly)
+const plain = b => (b || '').replace(/^[^A-Za-z]+/, '');
+document.getElementById('bPrint').onclick = () => {
+  const W = 960, H = 640, X = [20, 260, 500, 740], bw = 200, bh = 30; let s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="100%" style="font-family:Arial,sans-serif">`;
+  s += `<text x="${W / 2}" y="34" font-size="28" text-anchor="middle" font-weight="bold">BEN'S BOSS TOURNAMENT BRACKET</text>`;
+  const ys = [[90, 130, 200, 240, 310, 350, 420, 460], [110, 220, 330, 440], [165, 385]];   // each box sits halfway between the two boxes that feed it
+  const box = (x, y, t, bold) => `<rect x="${x}" y="${y}" width="${bw}" height="${bh}" rx="6" fill="#fff" stroke="#000" stroke-width="2"/><text x="${x + 8}" y="${y + 21}" font-size="16" ${bold ? 'font-weight="bold"' : ''}>${plain(t)}</text>`;
+  for (let i = 0; i < 8; i++) s += box(X[0], ys[0][i], S.seeds[i], S.win['r1m' + (i >> 1)] === (i & 1));
+  for (let m = 0; m < 4; m++) s += `<path d="M${X[0] + bw} ${ys[0][m * 2] + 15} H${X[0] + bw + 20} V${ys[0][m * 2 + 1] + 15} H${X[0] + bw} M${X[0] + bw + 20} ${(ys[0][m * 2] + ys[0][m * 2 + 1]) / 2 + 15} H${X[1]}" fill="none" stroke="#000" stroke-width="2"/>`;
+  for (let i = 0; i < 4; i++) s += box(X[1], ys[1][i], winner(1, i), S.win['r2m' + (i >> 1)] === (i & 1));
+  for (let m = 0; m < 2; m++) s += `<path d="M${X[1] + bw} ${ys[1][m * 2] + 15} H${X[1] + bw + 20} V${ys[1][m * 2 + 1] + 15} H${X[1] + bw} M${X[1] + bw + 20} ${(ys[1][m * 2] + ys[1][m * 2 + 1]) / 2 + 15} H${X[2]}" fill="none" stroke="#000" stroke-width="2"/>`;
+  for (let i = 0; i < 2; i++) s += box(X[2], ys[2][i], winner(2, i), S.win['r3m0'] === i);
+  s += `<path d="M${X[2] + bw} ${ys[2][0] + 15} H${X[2] + bw + 20} V${ys[2][1] + 15} H${X[2] + bw} M${X[2] + bw + 20} ${(ys[2][0] + ys[2][1]) / 2 + 15} H${X[3]}" fill="none" stroke="#000" stroke-width="2"/>`;
+  s += `<rect x="${X[3]}" y="240" width="${bw}" height="70" rx="10" fill="#fff" stroke="#000" stroke-width="4"/><text x="${X[3] + bw / 2}" y="266" font-size="15" text-anchor="middle">CHAMPION</text><text x="${X[3] + bw / 2}" y="294" font-size="18" font-weight="bold" text-anchor="middle">${plain(winner(3, 0))}</text>`;
+  s += `<text x="${W / 2}" y="${H - 50}" font-size="16" text-anchor="middle">My guesses were right: ____ out of 7 times!</text>`;
+  s += `<text x="${W / 2}" y="${H - 22}" font-size="13" text-anchor="middle">Made by Ben in the Game Factory</text></svg>`;
+  document.getElementById('print').innerHTML = s;
+  try { const t = JSON.parse(localStorage.getItem('gfTrophies') || '{}'); if (!t.bossBracket) { t.bossBracket = 1; localStorage.setItem('gfTrophies', JSON.stringify(t)); } } catch (_) {}
+  setTimeout(() => print(), 150);
+};
+draw();
+</script>
+</body>
+</html>
