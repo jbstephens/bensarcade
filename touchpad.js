@@ -18,6 +18,7 @@
 //   - Reads game controllers (like 8BitDo) on any device and sends the same key presses.
 //   - Wakes up game sounds on the iPad (Safari only allows sound after a real tap).
 //   - Add ?touch=1 to the address to see the touch controls on a laptop.
+//   - 📛 Player name: if the book's My Name button saved a name (localStorage.gfPlayerName), games say/show it instead of "Ben" (window.GF_NAME).
 //   - Jukebox mode (game.html?jukebox=1&song=NAME): the book's 🎶 Jukebox plays a game's REAL music in a hidden copy of the game.
 // ---------- 🎶 Jukebox mode ----------
 // The book makes a hidden <iframe src="game.html?jukebox=1"> and calls JUKEBOX.start(code) to turn on the game's own music.
@@ -78,6 +79,78 @@
     else { if (window.OscillatorNode) guard(OscillatorNode.prototype); if (window.AudioBufferSourceNode) guard(AudioBufferSourceNode.prototype); }
   } catch (_) {}
 })();
+// ---------- 📛 "What should we call you?" ----------
+// The book's 📛 My Name button saves a name in localStorage.gfPlayerName (only on this device). When it's set (and isn't "Ben"),
+// every game says that name instead of "Ben": in talking, on the canvas, in the page's words, input hints and the tab title.
+// "Ben's" becomes "Mia's" and "BEN" becomes "MIA". Games can read window.GF_NAME (always set; "Ben" when no name is saved).
+(function () {
+  let name = '';
+  try { name = String(localStorage.getItem('gfPlayerName') || '').replace(/\s+/g, ' ').trim().slice(0, 16); } catch (_) {}
+  window.GF_NAME = name || 'Ben';
+  const RE = /\b(Ben|BEN)\b/g, up = name.toUpperCase();
+  const isBook = window.GF_BOOK || window.GF_NOSWAP || /(arcade|index)\.html$|\/$/.test(location.pathname);   // GF_NOSWAP: Ben's own pages (his letter, his art museum) always say Ben   // the book does its own names (it keeps "Ben's idea!" credits)
+  if (!name || name === 'Ben' || window.JUKEBOX || isBook || /\b(Ben|BEN)\b/.test(name + ' ' + up)) return;
+  const has = s => typeof s === 'string' && (s.indexOf('Ben') >= 0 || s.indexOf('BEN') >= 0);
+  const fix = s => has(s) ? s.replace(RE, m => (m === 'BEN' ? up : name)) : s;
+  window.GF_NAMEIFY = fix;
+  // 🎨 words drawn on a canvas (fast: only strings that contain Ben/BEN are touched)
+  try {
+    const C = window.CanvasRenderingContext2D && CanvasRenderingContext2D.prototype;
+    if (C && !C.__gfName) {
+      C.__gfName = true;
+      ['fillText', 'strokeText'].forEach(k => {
+        const orig = C[k];
+        C[k] = function (t, x, y, w) {
+          if (has(t)) t = fix(t);
+          return arguments.length > 3 ? orig.call(this, t, x, y, w) : orig.call(this, t, x, y);
+        };
+      });
+      const mt = C.measureText;   // so centered / right-lined-up words still fit
+      C.measureText = function (t) { return mt.call(this, has(t) ? fix(t) : t); };
+    }
+  } catch (_) {}
+  // 📄 words in the page, input hints, the tab title
+  const SKIP = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1 };
+  const typing = el => { const a = document.activeElement; return a && el && (a === el || (a.isContentEditable && a.contains(el))); };
+  const doText = n => {
+    const p = n.parentNode; if (!p || SKIP[p.nodeName] || !has(n.data)) return;
+    if (typing(p)) return;
+    const v = fix(n.data); if (v !== n.data) n.data = v;
+  };
+  const doEl = el => {
+    if (el.nodeType !== 1 || SKIP[el.nodeName]) return;
+    for (const a of ['placeholder', 'title', 'alt', 'aria-label']) { const v = el.getAttribute(a); if (has(v)) el.setAttribute(a, fix(v)); }
+    if ((el.nodeName === 'INPUT' || el.nodeName === 'TEXTAREA') && !typing(el)) {
+      const v = el.getAttribute('value'); if (has(v)) el.setAttribute('value', fix(v));
+      if (has(el.value) && el.value !== fix(el.value)) el.value = fix(el.value);
+    }
+  };
+  const walk = root => {
+    if (!root) return;
+    if (root.nodeType === 3) { doText(root); return; }
+    if (root.nodeType !== 1 || SKIP[root.nodeName]) return;
+    doEl(root);
+    const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+      acceptNode: n => (n.nodeType === 1 && SKIP[n.nodeName] ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+    });
+    let n; while ((n = tw.nextNode())) { if (n.nodeType === 3) doText(n); else doEl(n); }
+  };
+  const fixTitle = () => { if (has(document.title)) document.title = fix(document.title); };
+  const start = () => {
+    walk(document.body); fixTitle();
+    try {
+      new MutationObserver(list => {
+        for (const m of list) {
+          if (m.type === 'characterData') doText(m.target);
+          else if (m.type === 'attributes') doEl(m.target);
+          else for (const a of m.addedNodes) walk(a);
+          if (m.target && (m.target.nodeName === 'TITLE' || (m.target.parentNode && m.target.parentNode.nodeName === 'TITLE'))) fixTitle();
+        }
+      }).observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['placeholder', 'title', 'alt', 'aria-label', 'value'] });
+    } catch (_) {}
+  };
+  if (document.body) start(); else addEventListener('DOMContentLoaded', start);
+})();
 // ---------- 🔊 talking voices that keep working ----------
 // Chrome only lets a page talk after a tap IN THAT PAGE, and games inside the book are their own little page.
 // So a game borrows the book's voice (the book already got Ben's tap). If the voice gets stuck, it un-sticks it and tries again.
@@ -95,6 +168,7 @@
     const realSpeak = synth.speak.bind(synth);
     const voice = {
       speak(u) {
+        try { if (window.GF_NAMEIFY && u && typeof u.text === 'string') u.text = window.GF_NAMEIFY(u.text); } catch (_) {}   // 📛 say the player's name
         const wasIdle = !synth.speaking && !synth.pending;
         let started = false;
         try { u.addEventListener('start', () => { started = true; }); } catch (_) {}

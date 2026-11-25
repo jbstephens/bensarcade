@@ -3,7 +3,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Boss Master Studio</title>
 <script>TOUCHPAD = { dpad: true, south: [' ', 'JUMP'], east: ['h', 'HELP'], west: ['j', 'POW'], north: ['q', 'SUPER'] };</script>
-<script src="touchpad.js?v=10"></script>
+<script src="touchpad.js?v=11"></script>
 <style>
   html, body { height: 100%; }
   body {
@@ -4815,7 +4815,7 @@ function updatePlayer() {
   p.hovering = false;
   const ice = fight && (fight.ch.ice || fight.arena === 'ice');   // 🧊 Slippery Stage (or the ❄️ Ice arena): Robo slides!
   const moon = fight && fight.arena === 'moon';           // 🌙 Moon arena: floaty jumps
-  p.vx += (dir * SPEED * (ice ? 1.15 : 1) - p.vx) * (ice ? (p.onGround ? 0.035 : 0.07) : (p.onGround ? 0.35 : 0.2));
+  p.vx += (dir * SPEED * (ice ? 1.15 : 1) * (fight && fight.up && fight.up.boots ? 1.12 : 1) - p.vx) * (ice ? (p.onGround ? 0.035 : 0.07) : (p.onGround ? 0.35 : 0.2));
   if (dir) p.face = dir;
   p.vy += moon ? GRAV * 0.6 : GRAV;
   if (!(fight && fight.ch.nohover) && !p.onGround && keys.jump && p.vy > 0 && p.fuel > 0) { p.vy = Math.min(p.vy, 1.2); p.fuel--; p.hovering = true; if (frame % 5 === 0) sfx.hover(); }   // 🪂 hover
@@ -4929,6 +4929,7 @@ function startChallenge(ch) {
   fight = { ch, round: 0, hits: 0, coins: 0, bonks: 0, shots: [], hazards: [], minions: [], bosses: [], mods: Object.assign({}, mods), hh: !!ch.heart };   // (hh = 💗 the EASIER Heart Helium)
   AR.easy = true; AR.speed = (mods.speed ? 1.25 : 0.8) * (ch.slow || 1) * (fight.hh ? HH_SLOW : 1);   // 😊 always the kinder boss timings; normal speed is a bit slower
   fight.maxHearts = mods.one ? 1 : mods.easy ? 10 : 8;
+  fight.up = shopUp(); if (fight.up.heart && !mods.one) fight.maxHearts += fight.up.heart;   // 🛒 Boss Shop upgrades (saved in the replay too)
   if (fight.hh && !mods.one) fight.maxHearts += 2;          // 💗 Heart Helium: +2 extra hearts
   fight.hearts = fight.maxHearts;
   fmChallengeStart();                                      // ⚔️ FIGHT MORE: arena + super move + timers
@@ -4940,7 +4941,7 @@ function startRound(withIntro) {
   const ch = fight.ch, list = ch.rounds[fight.round];
   seed = 777 + fight.round * 31 + list.length;
   fight.shots = []; fight.hazards = []; fight.minions = []; particles = []; popups = []; bubbles = []; pHist = [];
-  player = newPlayer(); AR.player = player; AR.t = 0; resetBuddy(); hardRoundStart();
+  player = newPlayer(); AR.player = player; AR.t = 0; resetBuddy(); hardRoundStart(); fight.shieldGone = false;
   fight.bosses = list.map((id, k) => makeFighter(id, k, list, ch));
   const keep = fight.keep && fight.keep.round === fight.round ? fight.keep : null; fight.keep = null;
   if (keep) {                                            // 😊 trying again: beaten bosses stay beaten, the others keep the damage you did
@@ -4970,6 +4971,7 @@ function hurtPlayer(dir) {
   if (p.inv > 0 || state !== 'fight') return;
   if (heartSafe()) return;                                // 💗 Heart Helium: the 2 safe ledges
   if (fmNoHitBump()) return;                              // 🛡️ No-Hit Challenge: a bump ends it (kindly)
+  if (bfShieldSave()) return;                             // 🫧 Boss Shop Bubble Shield: one free bump each fight
   fight.hearts--; fight.hits++; p.inv = 140; p.vy = -8; p.vx = (dir || -p.face) * 6;
   sfx.ouch(); shakeAmt = Math.max(shakeAmt, 8); burst(p.x + 15, p.y + 20, ['#ff5252', '#fff'], 12, 4);
   if (fight.hearts <= 0) {
@@ -5166,6 +5168,7 @@ function drawFighter(F) {
     ctx.drawImage(TC, 0, 0);
   } else { ctx.save(); try { F.def.draw(ctx, b, F.A); } catch (e) { noteErr(e, 'draw ' + F.id); } ctx.restore(); }
   if (save.silly && !b.hidden && !b.under) drawSillyHat(F);   // 🌀 Silly Mode hats
+  if (F.sch) schoolDraw(F);                               // 🏫 a learned attack's warning
   if (F.stun > 0) drawStunStars(F);
   if (F.rest && !b.hidden) heartRestDraw(F);              // 💤
   if (isVuln(F) && !b.hidden && !b.under && state === 'fight') {   // ⬇ "BONK ME!" arrow over dizzy bosses
@@ -5204,7 +5207,9 @@ function drawFightScene() {
   for (const s of fight.shots) drawShot(s);
   if (prizeOn('buddy')) drawBuddy();
   drawHelper();
+  bfDrawBehind();                                         // 🐣 baby pets + ✨ trails (looks only)
   drawRobo(player);
+  bfDrawFront();                                          // 🫧 Bubble Shield
   fmDrawOver();                                           // 💥 super moves
   for (const p of particles) { ctx.globalAlpha = Math.min(1, p.life / 20); ctx.fillStyle = p.c; ctx.fillRect(p.x - p.s / 2, p.y - p.s / 2, p.s, p.s); }
   ctx.globalAlpha = 1;
@@ -5391,13 +5396,14 @@ let menuTab = 0, menuSel = 0, menuMsg = '', menuMsgT = 0, confirmMix = null;
 const BACK_BTN = { x: 12, y: 8, w: 90, h: 40 };
 const MOD_KEYS = [['one', '❤️ One Heart Only'], ['speed', '⚡ Super Speed Bosses'], ['easy', '😊 Easy']];
 const modBtn = (i, y) => ({ x: 150 + i * 225, y, w: 210, h: 38 });
-const TAB_BTNS = [0, 1, 2, 3, 4, 5].map(i => ({ x: 12 + i * 157, y: 424, w: 150, h: 46 }));   // (6 tabs: ⚔️ FIGHT MORE, then 🏟️ BOSS ARENA)
+const TAB_BTNS = [0, 1, 2, 3, 4, 5, 6].map(i => ({ x: 8 + i * 135, y: 424, w: 129, h: 46 }));   // (7 tabs: ⚔️ FIGHT MORE, 🏟️ BOSS ARENA, then 🎈 BOSS FUN)
 function goMenu() { state = 'menu'; setSong('title'); fight = null; particles = []; }
 function menuCards(tab) {
   if (tab === 0) return CHALLENGES.map((c, i) => ({ kind: 'ch', i, ch: c })).concat([{ kind: 'maker' }]);
   if (tab === 3) return moreCards();                        // ✨ MORE FUN (the 7 new features)
   if (tab === 4) return fmCards();                          // ⚔️ FIGHT MORE (6 fighting features)
   if (tab === 5) return baCards();                          // 🏟️ BOSS ARENA (watch + cheer modes)
+  if (tab === 6) return bfCards();                          // 🎈 BOSS FUN (babies, photos, sleepover, talk show, school, shop)
   if (tab === 2) return HARD.map((c, i) => ({ kind: 'hard', i, ch: c }));
   return save.mixes.map(m => ({ kind: 'mix', m, ch: mixChallenge(m) })).concat([{ kind: 'random' }]);
 }
@@ -5423,6 +5429,7 @@ function activateCard(c) {
   else if (c.kind === 'more') { moreActivate(c); return; }
   else if (c.kind === 'fm') { fmActivate(c); return; }
   else if (c.kind === 'ba') { baActivate(c); return; }
+  else if (c.kind === 'bf') { bfActivate(c); return; }
   else if (c.kind === 'random') startChallenge(mixChallenge({ id: 'random', name: '🎲 Random Mix', ids: randomIds(3) }));
   sfx.click();
 }
@@ -5454,7 +5461,7 @@ function drawFaces(ids, cx, cy, maxW) {
 }
 function drawCard(c, r, selected) {
   if (c.kind === 'more') return drawMoreCard(c, r, selected);
-  if (c.kind === 'fm' || c.kind === 'ba') return drawFmCard(c, r, selected);
+  if (c.kind === 'fm' || c.kind === 'ba' || c.kind === 'bf') return drawFmCard(c, r, selected);
   const ch = c.ch, locked = (c.kind === 'ch' && !chOpen(c.i)) || (c.kind === 'hard' && !hardOpen());
   let fill = 'rgba(20,20,40,.75)';
   if (c.kind === 'maker') fill = '#00897b'; else if (c.kind === 'random') fill = '#6a1b9a'; else if (ch && ch.hard) fill = '#b71c1c'; else if (ch && ch.gold) fill = '#b8860b'; else if (ch && ch.ben) fill = '#e65100'; else if (c.kind === 'mix') fill = '#283593';
@@ -5483,7 +5490,7 @@ function drawCard(c, r, selected) {
 function drawMenu() {
   drawArena('royal'); overlay(0.25);
   button(BACK_BTN, '⬅', 'rgba(0,0,0,.45)', 22);
-  text(menuTab === 5 ? '🏟️ BOSS ARENA 🏟️' : menuTab === 4 ? '⚔️ FIGHT MORE ⚔️' : menuTab === 3 ? '✨ MORE FUN ✨' : menuTab === 0 ? 'CHOOSE YOUR CHALLENGE' : menuTab === 2 ? '🔥 HARD CHALLENGES 🔥' : `MY MIXES (${save.mixes.length} of ${MAX_MIXES})`, W / 2, 36, 30, menuTab === 2 ? '#ff8a80' : '#ffd740');
+  text(menuTab === 6 ? '🎈 BOSS FUN 🎈' : menuTab === 5 ? '🏟️ BOSS ARENA 🏟️' : menuTab === 4 ? '⚔️ FIGHT MORE ⚔️' : menuTab === 3 ? '✨ MORE FUN ✨' : menuTab === 0 ? 'CHOOSE YOUR CHALLENGE' : menuTab === 2 ? '🔥 HARD CHALLENGES 🔥' : `MY MIXES (${save.mixes.length} of ${MAX_MIXES})`, W / 2, 36, 30, menuTab === 2 ? '#ff8a80' : '#ffd740');
   text('👑 ' + crownCount(), W - 50, 36, 24, '#ffd740');
   drawMods(52);
   menuCards(menuTab).forEach((c, k) => drawCard(c, cardRect(k), k === menuSel));
@@ -5494,7 +5501,9 @@ function drawMenu() {
   button(TAB_BTNS[3], '✨ MORE FUN', menuTab === 3 ? '#00897b' : 'rgba(0,0,0,.45)', 20, menuTab === 3);
   button(TAB_BTNS[4], '⚔️ FIGHT MORE', menuTab === 4 ? '#c62828' : 'rgba(0,0,0,.45)', 20, menuTab === 4);
   button(TAB_BTNS[5], '🏟️ BOSS ARENA', menuTab === 5 ? '#6a1b9a' : 'rgba(0,0,0,.45)', 20, menuTab === 5);
+  button(TAB_BTNS[6], '🎈 BOSS FUN', menuTab === 6 ? '#ec407a' : 'rgba(0,0,0,.45)', 20, menuTab === 6);
   if (menuMsgT > 0) { roundRect(W / 2 - 300, 476, 600, 36, 12, 'rgba(0,0,0,.7)'); text(menuMsg, W / 2, 500, 18, '#fff59d'); }
+  else if (menuTab === 6) { const c = bfCards()[menuSel]; fitText(c ? c.tip : '', W / 2, 500, 17, 900, '#f8bbd0'); }
   else if (menuTab === 5) { const c = baCards()[menuSel]; fitText(c ? c.tip : '', W / 2, 500, 17, 900, '#e1bee7'); }
   else if (menuTab === 4) { const c = fmCards()[menuSel]; fitText(c ? c.tip : '', W / 2, 500, 17, 900, '#ffcdd2'); }
   else if (menuTab === 3) { const c = moreCards()[menuSel]; fitText(c ? c.tip : '', W / 2, 500, 17, 900, '#b2dfdb'); }
@@ -6140,6 +6149,7 @@ function update() {
   else if (state === 'printing') updatePrinting();
   else if (MORE_STATES[state]) MORE_STATES[state].u();     // ✨ the 7 new features
   fmPad();                                                // 🎮 touch buttons for ⚔️ FIGHT MORE
+  bfTick();                                               // 🐣 baby pets + trails (looks only, never the fight)
   clearPress();
 }
 function draw() {
@@ -6860,7 +6870,7 @@ function morePreRound() {                                      // (called at the
   if (fight.helper === undefined) { fight.helper = pendingHelper || null; pendingHelper = null; }
   if (fight.ch.tower) { fight.ch.floorNow = fight.round; fight.ch.th = TOWER_TH[Math.floor(fight.round / 5) % TOWER_TH.length]; }
   const keep = fight.keep && fight.keep.round === fight.round ? JSON.parse(JSON.stringify(fight.keep)) : null;
-  fight.rec = fight.replay ? null : { recipe: chRecipe(fight.ch), round: fight.round, hearts: fight.hearts, maxHearts: fight.maxHearts, keep, mods: Object.assign({}, fight.mods), help: fight.helper || null, inp: [], sync: [], frame0: null, hits0: fight.hits, look: save.look, arena: fight.arena || 'normal', sup: fight.superK || null, meter: fight.superM || 0, srT: fight.srT || 0, hh: fight.hh ? 1 : 0 };
+  fight.rec = fight.replay ? null : { recipe: chRecipe(fight.ch), round: fight.round, hearts: fight.hearts, maxHearts: fight.maxHearts, keep, mods: Object.assign({}, fight.mods), help: fight.helper || null, inp: [], sync: [], frame0: null, hits0: fight.hits, look: save.look, arena: fight.arena || 'normal', sup: fight.superK || null, meter: fight.superM || 0, srT: fight.srT || 0, hh: fight.hh ? 1 : 0, up: Object.assign({}, fight.up || {}) };
 }
 function moreRoundStart() {                                    // (called in startRound, after the bosses are made)
   resetHelper();
@@ -6889,7 +6899,7 @@ function recStep() {                                           // (called at the
 function recKeep() {                                           // a cleared round: keep it as "last win", and as "best" if it is the best one yet
   const R = fight.rec; fight.rec = null;
   if (!R || R.frame0 === null || R.inp.length < 30) return;
-  const pack = { recipe: R.recipe, round: R.round, hearts: R.hearts, maxHearts: R.maxHearts, keep: R.keep, mods: R.mods, help: R.help, frame0: R.frame0, inv0: R.inv0, look: R.look, arena: R.arena, sup: R.sup, meter: R.meter, hh: R.hh || 0,
+  const pack = { recipe: R.recipe, round: R.round, hearts: R.hearts, maxHearts: R.maxHearts, keep: R.keep, mods: R.mods, help: R.help, frame0: R.frame0, inv0: R.inv0, look: R.look, arena: R.arena, sup: R.sup, meter: R.meter, hh: R.hh || 0, up: R.up || {},
     inp: packInputs(R.inp), sync: R.sync, len: R.inp.length, hits: fight.hits - R.hits0, n: fight.bosses.length, name: fight.ch.name, icon: fight.ch.icon,
     ids: fight.bosses.map(F => F.id), when: todayStr() };
   const score = q => q.n * 1000 - q.hits * 400 - q.len / 60;
@@ -6930,6 +6940,7 @@ function playReplay(R) {
   AR.easy = true; AR.speed = (mods.speed ? 1.25 : 0.8) * (ch.slow || 1) * (fight.hh ? HH_SLOW : 1);   // (older Heart Helium replays: the old timings)
   fight.maxHearts = R.maxHearts; fight.hearts = R.hearts; fight.keep = R.keep ? JSON.parse(JSON.stringify(R.keep)) : null;
   fight.arena = R.arena || 'normal'; fight.superK = R.sup || null; fight.superM = R.meter || 0;   // ⚔️ (older replays: normal arena, no super)
+  fight.up = R.up || {};                                    // 🛒 replays use the upgrades they were recorded with (old ones: none)
   startRound(false);
   frame = R.frame0; player.inv = R.inv0 == null ? 90 : R.inv0; state = 'replay'; sfx.click();
 }
@@ -7127,7 +7138,7 @@ function fmActivate(c) {
 // ---------- 🎮 the touch buttons: SUPER on top; in Play AS the Boss the buttons become attacks 1, 2, 3 ----------
 let fmPadMode = '', fmPadBtns = null, fmPadTick = 0;
 function fmPad() {
-  const mode = state === 'pas' ? 'pas' : 'normal';
+  const mode = state === 'pas' ? 'pas' : state === 'tgplay' && fight && fight.tg ? 'tg' + fight.tg : 'normal';   // (🏐⚽🚩 team games: HELP = the action button)
   if (!fmPadBtns) {                                            // look for the touch pad twice a second until it shows up (no touch pad = nothing to do)
     if (fmPadTick++ % 30) return;
     const all = [...document.querySelectorAll('.tp-face')]; if (!all.length) return;
@@ -7138,7 +7149,7 @@ function fmPad() {
   fmPadMode = mode;
   const B = fmPadBtns, set = (k, label, show) => { if (B[k]) { B[k].textContent = label; B[k].style.display = show ? '' : 'none'; } };
   if (mode === 'pas') { set('JUMP', '1', true); set('POW', '2', true); set('HELP', '3', true); set('SUPER', 'SUPER', true); }
-  else { set('JUMP', 'JUMP', true); set('POW', 'POW', false); set('HELP', 'HELP', true); set('SUPER', 'SUPER', true); }
+  else { set('JUMP', 'JUMP', true); set('POW', 'POW', false); set('HELP', { tgdodge: 'THROW', tgsoccer: 'KICK', tgctf: 'GRAB' }[mode] || 'HELP', true); set('SUPER', 'SUPER', true); }
   if (B.JUMP) B.JUMP.style.fontSize = mode === 'pas' ? '26px' : ''; if (B.HELP) B.HELP.style.fontSize = mode === 'pas' ? '26px' : ''; if (B.POW) B.POW.style.fontSize = mode === 'pas' ? '26px' : '';
 }
 
@@ -7250,7 +7261,7 @@ const FM_SUPERS = [
   { k: 'stars', icon: '🌟', name: 'Star Shower', col: '#8e24aa', desc: ['Stars rain down on EVERY', 'boss and pop their shots!'] },
 ];
 const SUPER_BTN = { x: 120, y: 472, w: 200, h: 40 };
-function fmBonk() { if (!fight.superK) return; const was = fight.superM; fight.superM = Math.min(100, fight.superM + (fight.hh ? 50 : 34)); if (was < 100 && fight.superM >= 100) { popup(W / 2, 140, '💥 SUPER READY! Press SUPER!', '#ffd740', 28); sfx.chime(); } }
+function fmBonk() { if (!fight.superK) return; const was = fight.superM; fight.superM = Math.min(100, fight.superM + (fight.up && fight.up.fast ? (fight.hh ? 100 : 50) : (fight.hh ? 50 : 34))); if (was < 100 && fight.superM >= 100) { popup(W / 2, 140, '💥 SUPER READY! Press SUPER!', '#ffd740', 28); sfx.chime(); } }
 function fmHurtBoss(F, n, stun) {                              // a super move hits a boss (like n bonks in a row)
   if (!F || F.gone) return;
   for (let i = 0; i < n && !F.gone; i++) {
@@ -7348,7 +7359,7 @@ function fmFightUpdate() {
     fight.supNow = false;
     if (fight.superK && fight.superM >= 100 && !fight.supFx) {
       fight.superM = 0; player.inv = Math.max(player.inv, 100);
-      fight.supFx = fmSuperStart(fight.superK, player.x + 15, player.face || 1, fmBossTargets, (F, n, st) => fmHurtBoss(F, n, st), true);
+      fight.supFx = fmSuperStart(fight.superK, player.x + 15, player.face || 1, fmBossTargets, (F, n, st) => fmHurtBoss(F, n + (fight.up && fight.up.punch ? 1 : 0), st), true);   // (💪 Stronger Punch: +1 hit)
       if (!fight.replay) trophy('bossSuper');                   // 🏆 use a Super Move
     } else if (fight.superK && !fight.replay && !fight.supFx) popup(player.x + 15, player.y - 30, 'Bonk bosses to fill SUPER!', '#fff', 18);
   }
@@ -7625,6 +7636,7 @@ MORE_STATES.bvb = {
       const b = F.b; let steps = 1;
       if (F.k === f.cheer && f.boostT > 0) { F.acc = (F.acc || 0) + 0.3; if (F.acc >= 1) { F.acc -= 1; steps = 2; } }   // 📣 cheering = a little faster
       for (let s = 0; s < steps; s++) { try { if (F.stun > 0) stunStep(F); else F.def.update(b, F.A, 1); } catch (e) { noteErr(e, 'bvb update ' + F.id); } }
+      schoolStep(F);                                              // 🏫 attacks learned in Boss School
       if (!isFinite(b.x) || !isFinite(b.y)) { b.x = F.k ? 720 : 240; b.y = 200; }
       b.x = clamp(b.x, 30, W - 30);
       if (b.hurt > 0) b.hurt--; if (F.bonkCD > 0) F.bonkCD--; if (F.inv > 0) F.inv--;
@@ -8036,7 +8048,7 @@ function simStart(ids, o = {}) {
   player = newPlayer(); player.x = -400; AR.player = player;     // (nobody plays: Robo watches from the stands)
   const Fs = ids.map(id => makeFighter(id, 0, [id], {}));
   Fs.forEach((F, k) => {
-    F.k = k; F.team = o.teams ? o.teams[k] : k; F.inv = 0; F.b.hp = F.hp0 = (o.hp || 6) + (o.lucky && F.team === o.cheer ? o.lucky : 0);   // 🍀 lucky hearts for Ben's pick F.out = false; F.wait = o.wait ? !!o.wait[k] : false;
+    F.k = k; F.robo = F.id === 'robo'; F.team = o.teams ? o.teams[k] : k; F.inv = 0; F.b.hp = F.hp0 = (o.hp || 6) + (o.lucky && F.team === o.cheer ? o.lucky : 0);   // 🍀 lucky hearts for Ben's pick F.out = false; F.wait = o.wait ? !!o.wait[k] : false;
     const x = o.xs ? o.xs[k] : n === 1 ? W / 2 : 120 + k * (W - 240) / (n - 1); F.b.x = x; if (typeof F.b.tx === 'number') F.b.tx = x;
     F.view = { x: 0, y: GROUND - 40, w: 30, h: 40, vx: 0, vy: 0, onGround: true, face: 1, prevBottom: GROUND, inv: 0, jumps: 1 };   // = where its target is
     try { Object.defineProperty(F.A, 'player', { get: () => F.view, configurable: true }); } catch (e) { noteErr(e, 'sim proxy'); }
@@ -8084,12 +8096,15 @@ function simStep() {
   for (const F of act) {
     const b = F.b; let steps = 1;
     if (F.team === f.cheer && f.boostT > 0) { F.acc = (F.acc || 0) + f.boostAmt; if (F.acc >= 1) { F.acc -= 1; steps = 2; } }   // 📣 cheering = a little faster
-    for (let s = 0; s < steps; s++) { try { if (F.stun > 0) stunStep(F); else F.def.update(b, F.A, 1); } catch (e) { noteErr(e, 'sim update ' + F.id); } }
+    if (F.tgt && F.tgt.robo && f.t % 4 === 0) steps = 0;         // 🎮 a boss fighting Robo goes a bit easier on Ben
+    if (F.robo) roboStep(F);                                     // 🎮 Robo (Ben) in Tag-Team
+    else for (let s = 0; s < steps; s++) { try { if (F.stun > 0) stunStep(F); else F.def.update(b, F.A, 1); } catch (e) { noteErr(e, 'sim update ' + F.id); } }
+    if (!F.robo) schoolStep(F);                                  // 🏫 attacks learned in Boss School
     if (!isFinite(b.x) || !isFinite(b.y)) { b.x = W / 2; b.y = 200; }
     b.x = clamp(b.x, 30, W - 30);
     if (b.hurt > 0) b.hurt--; if (F.bonkCD > 0) F.bonkCD--; if (F.inv > 0) F.inv--;
     F.vulnT = isVuln(F) ? (F.vulnT || 0) + 1 : 0;
-    if (F.vulnT === 30 && F.tgt) simHit(F, 'BONK!');              // the other boss hops on the dizzy one
+    if (F.vulnT === (F.tgt && F.tgt.robo ? 150 : 30) && F.tgt) simHit(F, 'BONK!');   // the other boss hops on the dizzy one (vs Robo: Ben gets time to bonk it himself)
   }
   moveStuff();
   for (const F of act) {                                         // 💥 attacks bump bosses on the OTHER team
@@ -8100,7 +8115,7 @@ function simStep() {
     for (const o of f.minions) { if (o.harmless || o.kind === 'keyswitch') continue; const ow = f.bosses.find(G => G.A === o._A); if (ow && ow.team === F.team) continue; if (overlap(s0, minionBox(o))) { o.dead = true; simHit(F); } }
   }
   if (f.supFx && !fmSuperStep(f.supFx)) f.supFx = null;
-  for (const F of act) if (F.b.hp <= 0 && !F.out) simOut(F);
+  for (const F of act) if (F.b.hp <= 0 && !F.out && !F.robo) simOut(F);   // (🎮 Robo is never out: just a short dizzy)
 }
 function simFast(done, max = 4000) {                             // ⏩ skip: run the fight silently until it's over
   arMute = true;
@@ -8251,7 +8266,7 @@ function openTour() { state = 'tourpick'; tourPick = []; tourRandom = false; fmS
 function tourFromMaker() {
   let seeds = []; try { seeds = (JSON.parse(localStorage.getItem('bossBracket') || 'null') || {}).seeds || []; } catch (_) {}
   const norm = t => String(t || '').toLowerCase().replace(/[^a-z0-9]/g, '').replace(/^the/, '');
-  const ids = Object.keys(BOSSES).filter(id => BOSSES[id] && BOSSES[id].name);
+  const ids = Object.keys(BOSSES).filter(id => BOSSES[id] && BOSSES[id].name && id !== 'robo');
   const out = seeds.map(n => { const k = norm(n); return ids.find(id => norm(BOSSES[id].name) === k) || ids.find(id => { const m = norm(BOSSES[id].name); return m.length > 4 && (m.includes(k) || k.includes(m)); }); });
   if (seeds.length !== 8 || out.some(x => !x)) { menuMsg = seeds.filter(Boolean).length < 8 ? 'Make a bracket with 8 bosses in the Boss Bracket Maker first!' : 'Some bosses in your bracket are not here yet!'; sfx.click(); return; }
   tourPick = out; tourRandom = false; sfx.tada(); menuMsg = '📋 Your bracket is loaded! Same fights as your paper!';
@@ -8567,7 +8582,7 @@ MORE_STATES.arpick = {
       for (let i = 0; i < n; i++) {
         const r = arpCard(i, n), cx = r.x + r.w / 2, col = a.cheer === 'team' ? (i ? '#1e88e5' : '#e53935') : ['#e53935', '#1e88e5', '#43a047', '#f9a825', '#8e24aa', '#00897b'][i % 6];
         roundRect(r.x, r.y + 5, r.w, r.h, 16, 'rgba(0,0,0,.35)'); roundRect(r.x, r.y, r.w, r.h, 16, col);
-        if (a.cheer === 'team') { [0, 1].forEach(j => { const id = a.pick[i * 2 + j]; drawFaceFit(id, cx + (j ? 45 : -45), r.y + 100, 90); fitText(shortName(id), cx + (j ? 45 : -45), r.y + 168, 15, 90, '#fff'); }); text(i ? '🔵 BLUE TEAM' : '🔴 RED TEAM', cx, r.y + 36, 22, '#fff'); }
+        if (a.cheer === 'team') { const per = typeof a.per === 'function' ? a.per() : a.per || 2, gx = per === 3 ? 62 : 90; for (let j = 0; j < per; j++) { const id = a.pick[i * per + j], dx = (j - (per - 1) / 2) * gx; drawFaceFit(id, cx + dx, r.y + 100, gx); fitText(shortName(id), cx + dx, r.y + 168, 14, gx, '#fff'); } text(i ? '🔵 BLUE TEAM' : '🔴 RED TEAM', cx, r.y + 36, 22, '#fff'); }
         else { drawFaceFit(a.pick[i], cx, r.y + 100, Math.min(140, r.w - 10)); fitText(shortName(a.pick[i]), cx, r.y + 196, 18, r.w - 10, '#fff'); }
         text('📣 CHEER!', cx, r.y + 236, 20, '#fff59d');
         if (i === fmSel) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 5; mPath(r.x - 3, r.y - 3, r.w + 6, r.h + 6, 18); ctx.stroke(); }
@@ -8579,7 +8594,7 @@ MORE_STATES.arpick = {
     text(a.help + `  (${a.pick.length}/${a.max})`, W / 2, 70, 18, '#fff');
     if (!ids.length) text('Beat some bosses first, or tap 🎲 RANDOM for guest bosses!', W / 2, 240, 22, '#fff59d');
     ids.forEach((id, i) => {
-      const r = nhCell(i, ids.length), k = a.pick.indexOf(id), col = a.cheer === 'team' ? (k < 0 ? 'rgba(0,0,0,.5)' : k < 2 ? '#e53935' : '#1e88e5') : (k >= 0 ? '#f9a825' : 'rgba(0,0,0,.5)');
+      const r = nhCell(i, ids.length), k = a.pick.indexOf(id), col = a.cheer === 'team' ? (k < 0 ? 'rgba(0,0,0,.5)' : k < (typeof a.per === 'function' ? a.per() : a.per || 2) ? '#e53935' : '#1e88e5') : (k >= 0 ? '#f9a825' : 'rgba(0,0,0,.5)');
       roundRect(r.x, r.y, r.w, r.h, 12, col);
       nhFace(id, r);
       if (k >= 0) { circle(r.x + 14, r.y + 14, 12, '#fff'); text(String(k + 1), r.x + 14, r.y + 20, 16, '#e65100'); }
@@ -8647,7 +8662,7 @@ MORE_STATES.royale = {
 
 // ---------- 🤝 TAG-TEAM BATTLE: 2 vs 2! One of each team fights, the partner waits at the edge. TAG! ----------
 const TAG_EVERY = 720, TAG_BTN = { x: 380, y: 462, w: 200, h: 50 }, TT_LEN = 7200;
-function openTag() { openPicker({ title: 'TAG-TEAM BATTLE', icon: '🤝', min: 4, max: 4, cheer: 'team', help: 'Pick 4: the first 2 = 🔴 RED team, the next 2 = 🔵 BLUE team!', go: startTag }); }
+function openTag() { openPicker({ title: 'TAG-TEAM BATTLE', icon: '🤝', min: 4, max: 4, cheer: 'team', help: 'Pick 4: the first 2 = 🔴 RED team, the next 2 = 🔵 BLUE team!', go: (ids, cheer) => openJoin('tag', ids, cheer) }); }   // 🎮 then: watch, or join as Robo
 function startTag(ids, cheer) {
   simStart(ids, { mode: 'tag', cheer, hp: 4, len: TT_LEN, teams: [0, 0, 1, 1], wait: [false, true, false, true], xs: [240, 60, 720, W - 60] });
   fight.tagT = [0, 0]; fight.tagCD = 0; fight.slap = null;
@@ -9260,5 +9275,1235 @@ function baActivate(c) {
   else if (k === 'oly') openOly();
   else if (k === 'squad') openSquad();
   else if (k === 'hall') state = 'tourhall';
+  else if (TG_MODES[k]) openTeamMode(k);                     // 🏐⚽🚩 the 3 new team modes
 }
+</script>
+<script>
+// 🎈🎈 BOSS FUN: 6 NEW FEATURES 🎈🎈
+// 🐣 Baby Bosses, 📸 Boss Photo Booth, 🌙 Boss Sleepover, 🎤 Boss Talk Show, 🏫 Boss School, 🛒 Boss Shop. They live in the menu's 🎈 BOSS FUN tab.
+// Rules: every sound is soft (volume 0.06 or less). Babies + trails are only LOOKS: they use Math.random while drawing, never the seeded rnd(),
+// so fights + replays stay exactly the same. Shop upgrades are written into each replay, so old replays play the old way.
+if (!Array.isArray(save.babies)) save.babies = [];
+save.babies = save.babies.filter(id => BOSSES[id]).slice(0, 3);
+if (!Array.isArray(save.photos)) save.photos = [];
+save.photos = save.photos.filter(p => p && Array.isArray(p.ids) && p.ids.length).slice(-12);
+if (!save.school || typeof save.school !== 'object' || Array.isArray(save.school)) save.school = {};
+if (!save.shop || typeof save.shop !== 'object' || Array.isArray(save.shop)) save.shop = {};
+for (const k of ['own', 'on']) if (!save.shop[k] || typeof save.shop[k] !== 'object' || Array.isArray(save.shop[k])) save.shop[k] = {};
+if (!save.owls || typeof save.owls !== 'object' || Array.isArray(save.owls)) save.owls = {};
+for (const k of ['talkN', 'photoN', 'sleepN']) if (!(save[k] >= 0)) save[k] = 0;
+sfx.giggle = () => [988, 1175, 1047, 1319].forEach((f, i) => note(f, i * 0.07, 0.08, 'sine', 0.04, f * 1.12));
+sfx.flash = () => { note(1568, 0, 0.12, 'sine', 0.05); note(2093, 0.06, 0.25, 'sine', 0.035); };
+sfx.pillow = () => { note(260, 0, 0.18, 'sine', 0.05, 150); note(700, 0.04, 0.1, 'triangle', 0.02, 500); };
+sfx.laugh = () => [659, 784, 988, 784].forEach((f, i) => note(f, i * 0.1, 0.22, 'sine', 0.03));     // the audience: a gentle chime, never loud
+sfx.coin = () => { note(1319, 0, 0.08, 'sine', 0.05); note(1760, 0.07, 0.18, 'sine', 0.05); };
+sfx.bubble = () => note(900, 0, 0.16, 'sine', 0.05, 450);
+const bfHash = s => { let h = 7; for (const ch of String(s)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return h; };
+const bfPick = a => a[Math.floor(Math.random() * a.length)];
+const BF_PASTEL = ['#f8bbd0', '#b3e5fc', '#c8e6c9', '#fff9c4', '#e1bee7', '#ffe0b2'];
+const bfAll = () => ROSTER.concat(BOSSES.chaosrobo ? ['chaosrobo'] : []);
+// ---------- 🪙 the coins (the SAME pool the book's Bundle Room shows: gfCoins.bossstudio) ----------
+function bfCoins() { try { return Math.max(0, Math.floor(+(JSON.parse(localStorage.getItem('gfCoins') || '{}').bossstudio) || 0)); } catch (_) { return 0; } }
+function bfSpend(n) {                                          // never goes below 0: no coins = no buy
+  try {
+    const c = JSON.parse(localStorage.getItem('gfCoins') || '{}'), have = Math.max(0, Math.floor(+c.bossstudio || 0));
+    if (!(n > 0) || have < n) return false;
+    c.bossstudio = have - n; localStorage.setItem('gfCoins', JSON.stringify(c)); return true;
+  } catch (_) { return false; }
+}
+// ---------- the 🎈 BOSS FUN menu tab ----------
+const BF = [
+  { k: 'babies', icon: '🐣', name: 'BABY BOSSES', col: '#ec407a', sub: () => `${save.babies.length} of 3 pets`, tip: '🐣 Tiny baby bosses! Pick 3 to follow Robo in fights and cheer. Visit the Nursery too!' },
+  { k: 'photo', icon: '📸', name: 'PHOTO BOOTH', col: '#0288d1', sub: () => `${save.photos.length} of 12 photos`, tip: '📸 Pick bosses, props + a pose... say CHEESE! Then print your photos!' },
+  { k: 'sleep', icon: '🌙', name: 'SLEEPOVER', col: '#3949ab', sub: () => save.sleepN ? `🦉 ${save.sleepN} sleepovers` : 'Pillow fight!', tip: '🌙 A giant pajama party! Tap a boss to throw a pillow. Who stays awake the longest?' },
+  { k: 'talk', icon: '🎤', name: 'TALK SHOW', col: '#8e24aa', sub: () => `${save.talkN} questions`, tip: '🎤 Robo hosts a TV show! Tap a question and the boss answers. Tap a bubble to hear it.' },
+  { k: 'school', icon: '🏫', name: 'BOSS SCHOOL', col: '#2e7d32', sub: () => `${Object.values(save.school).reduce((n, l) => n + l.length, 0)} lessons`, tip: '🏫 YOU are the teacher! Teach a boss a new attack for Boss vs. Boss and the Tournament.' },
+  { k: 'shop', icon: '🛒', name: 'BOSS SHOP', col: '#ef6c00', sub: () => `🪙 ${bfCoins()} coins`, tip: '🛒 Spend your coins on upgrades for Robo! Turn them on or off any time.' },
+];
+function bfCards() { return BF.map(m => ({ kind: 'bf', m, tip: m.tip })); }
+function bfActivate(c) {
+  sfx.click();
+  const k = c.m.k;
+  if (k === 'babies') openBabies();
+  else if (k === 'photo') openPhoto();
+  else if (k === 'sleep') openSleep();
+  else if (k === 'talk') openPick('talk');
+  else if (k === 'school') openPick('school');
+  else if (k === 'shop') openShop();
+}
+// ---------- 🛒 BOSS SHOP ----------
+const SHOP = [
+  { k: 'punch', icon: '💪', name: 'Stronger Punch', price: 20, desc: 'SUPER does +1 hit!' },
+  { k: 'heart', icon: '❤️', name: 'Extra Heart', price: 15, max: 3, desc: '+1 heart (up to +3)' },
+  { k: 'fast', icon: '⚡', name: 'Faster Super', price: 25, desc: 'SUPER fills 1 bonk sooner' },
+  { k: 'boots', icon: '👟', name: 'Speed Boots', price: 30, desc: 'Robo runs a bit faster' },
+  { k: 'shield', icon: '🛡️', name: 'Bubble Shield', price: 40, desc: '1 free bump every fight' },
+  { k: 'sparkle', icon: '✨', name: 'Sparkle Trail', price: 5, trail: 1, desc: 'Sparkles follow Robo' },
+  { k: 'rainbow', icon: '🌈', name: 'Rainbow Trail', price: 10, trail: 1, desc: 'A rainbow follows Robo' },
+  { k: 'hearts', icon: '💖', name: 'Heart Trail', price: 10, trail: 1, desc: 'Hearts follow Robo' },
+];
+function shopUp() {                                            // what a NEW fight gets (it is copied into the fight + its replay)
+  const o = {}, S = save.shop;
+  for (const it of SHOP) if (S.own[it.k] > 0 && S.on[it.k]) { if (it.trail) o.trail = it.k; else o[it.k] = it.max ? Math.min(it.max, S.own[it.k]) : 1; }
+  return o;
+}
+let shopMsg = '', shopMsgT = 0;
+const shopCard = i => ({ x: 22 + (i % 4) * 234, y: 92 + Math.floor(i / 4) * 178, w: 220, h: 166 });
+const shopBuyBtn = (i, it) => { const r = shopCard(i), own = save.shop.own[it.k] || 0, two = own > 0 && it.max && own < it.max; return { x: two ? r.x + r.w / 2 + 3 : r.x + 10, y: r.y + r.h - 50, w: two ? r.w / 2 - 13 : r.w - 20, h: 40 }; };
+const shopTogBtn = (i, it) => { const r = shopCard(i), own = save.shop.own[it.k] || 0, two = own > 0 && it.max && own < it.max; return { x: r.x + 10, y: r.y + r.h - 50, w: two ? r.w / 2 - 13 : r.w - 20, h: 40 }; };
+function openShop() { state = 'bfshop'; shopMsgT = 0; setSong('title'); }
+function shopSay(s) { shopMsg = s; shopMsgT = 150; }
+function shopBuy(it) {
+  const own = save.shop.own[it.k] || 0;
+  if (own >= (it.max || 1)) return;
+  if (!bfSpend(it.price)) { shopSay('Not enough coins yet! Bonk bosses to earn more 🪙'); sfx.nope(); return; }
+  save.shop.own[it.k] = own + 1; save.shop.on[it.k] = true;
+  if (it.trail) for (const o of SHOP) if (o.trail && o.k !== it.k) save.shop.on[o.k] = false;   // (one trail at a time)
+  writeSave(); trophy('bossShop'); sfx.coin(); sfx.chime();
+  const r = shopCard(SHOP.indexOf(it)); burst(r.x + r.w / 2, r.y + 50, ['#ffd740', '#fff', '#69f0ae'], 24, 4);
+  shopSay(`${it.icon} You got ${it.name}${it.max ? ' (' + (own + 1) + ' of ' + it.max + ')' : ''}! It is ON.`);
+}
+function shopToggle(it) {
+  const on = !save.shop.on[it.k]; save.shop.on[it.k] = on;
+  if (on && it.trail) for (const o of SHOP) if (o.trail && o.k !== it.k) save.shop.on[o.k] = false;
+  writeSave(); sfx.click(); shopSay(`${it.icon} ${it.name} is ${on ? 'ON' : 'OFF'}.`);
+}
+MORE_STATES.bfshop = {
+  u() {
+    frame++; if (shopMsgT > 0) shopMsgT--;
+    for (const p of particles) { p.x += p.vx; p.y += p.vy; p.vy += 0.12; p.life--; } particles = particles.filter(p => p.life > 0);
+    if (press.esc || inBox(tap, BACK_BTN)) { particles = []; goMenu(); menuTab = 6; return; }
+    SHOP.forEach((it, i) => {
+      const own = save.shop.own[it.k] || 0;
+      if (own > 0 && inBox(tap, shopTogBtn(i, it))) { shopToggle(it); tap = null; }
+      else if (own < (it.max || 1) && inBox(tap, shopBuyBtn(i, it))) { shopBuy(it); tap = null; }
+    });
+  },
+  d() {
+    drawArena('sunset'); overlay(0.3); button(BACK_BTN, '⬅', 'rgba(0,0,0,.45)', 22);
+    text('🛒 BOSS SHOP', W / 2, 42, 32, '#ffd740');
+    roundRect(W - 200, 14, 186, 44, 14, 'rgba(0,0,0,.55)'); text('🪙 ' + bfCoins(), W - 107, 46, 28, '#ffd740');
+    text('Upgrades for Robo! Tap ON / OFF any time.', W / 2, 74, 17, '#fff');
+    SHOP.forEach((it, i) => {
+      const r = shopCard(i), own = save.shop.own[it.k] || 0, on = own > 0 && save.shop.on[it.k], max = it.max || 1;
+      roundRect(r.x, r.y + 4, r.w, r.h, 16, 'rgba(0,0,0,.35)'); roundRect(r.x, r.y, r.w, r.h, 16, on ? '#2e7d32' : 'rgba(30,20,50,.82)');
+      text(it.icon, r.x + 34, r.y + 46, 34);
+      fitText(it.name, r.x + r.w / 2 + 22, r.y + 32, 18, r.w - 74, '#fff');
+      fitText(it.desc, r.x + r.w / 2 + 22, r.y + 56, 13, r.w - 74, '#fff59d');
+      if (it.max) for (let k = 0; k < max; k++) mHeart(r.x + r.w / 2 - 30 + k * 30, r.y + 86, 10, k < own ? '#ff1744' : 'rgba(255,255,255,.25)');
+      else if (own) text('✅ YOURS!', r.x + r.w / 2, r.y + 94, 16, '#b9f6ca');
+      if (own > 0) button(shopTogBtn(i, it), on ? '✅ ON' : '⬜ OFF', on ? '#43a047' : '#616161', 18, on);
+      if (own < max) button(shopBuyBtn(i, it), `🪙 ${it.price}  BUY`, bfCoins() >= it.price ? '#ef6c00' : '#795548', 17);
+    });
+    for (const p of particles) { ctx.globalAlpha = Math.min(1, p.life / 20); ctx.fillStyle = p.c; ctx.fillRect(p.x - p.s / 2, p.y - p.s / 2, p.s, p.s); } ctx.globalAlpha = 1;
+    if (shopMsgT > 0) { roundRect(W / 2 - 320, 462, 640, 40, 12, 'rgba(0,0,0,.7)'); fitText(shopMsg, W / 2, 489, 19, 620, '#fff59d'); }
+    else fitText('Upgrades work in your Robo fights. Replays you made before play the same as before!', W / 2, 489, 16, 900, '#fff');
+  },
+};
+// ---------- 🐣 BABY BOSSES: a chibi copy of each boss's picture (a BIG head on a tiny body) ----------
+const BABY = {};
+function babyCanvas(id) {
+  if (BABY[id] !== undefined) return BABY[id];
+  const src = portrait(id); if (!src) return BABY[id] = null;
+  const cv = document.createElement('canvas'); cv.width = 200; cv.height = 200; const c = cv.getContext('2d');
+  c.drawImage(src, 0, 112, 200, 88, 45, 140, 110, 48);           // the body, squished small
+  c.drawImage(src, 0, 0, 200, 112, -22, -6, 244, 150);           // the head, BIGGER
+  return BABY[id] = cv;
+}
+function drawBaby(id, x, y, size, o = {}) {                     // (x, y) = feet. o.t = time, o.hop, o.face, o.giggle
+  const t = o.t || 0, h = bfHash(id), kind = h % 3, col = BF_PASTEL[h % BF_PASTEL.length];
+  const wob = o.still ? 0 : Math.sin(t * 0.18 + h) * 0.13, step = o.still ? 0 : Math.sin(t * 0.36 + h);
+  ctx.save(); ctx.translate(x, y - (o.hop || 0)); ctx.rotate(wob);
+  ctx.globalAlpha = 0.25; mEll(0, (o.hop || 0) + 2, size * 0.32, size * 0.06, '#000'); ctx.globalAlpha = 1;
+  for (const s of [-1, 1]) mEll(s * size * 0.14, -size * 0.04 - Math.max(0, step * s) * size * 0.06, size * 0.1, size * 0.06, col);   // wobbly little feet
+  const cv = babyCanvas(id);
+  if (cv) ctx.drawImage(cv, -size / 2, -size * 1.02, size, size); else text((BOSSES[id] && BOSSES[id].icon) || '?', 0, -size * 0.3, size * 0.6);
+  if (kind !== 1) {                                              // 👒 a frilly baby bonnet
+    ctx.fillStyle = col; ctx.beginPath(); ctx.arc(0, -size * 0.8, size * 0.36, Math.PI * 1.05, Math.PI * 1.95); ctx.lineTo(0, -size * 0.8); ctx.fill();
+    for (let i = 0; i < 7; i++) { const a = Math.PI * (1.05 + i * 0.15); circle(Math.cos(a) * size * 0.36, -size * 0.8 + Math.sin(a) * size * 0.36, size * 0.045, '#fff'); }
+    mEll(-size * 0.3, -size * 0.74, size * 0.06, size * 0.035, '#fff'); mEll(size * 0.3, -size * 0.74, size * 0.06, size * 0.035, '#fff');
+  }
+  if (kind !== 0 && !o.giggle) {                                 // 🍼 a pacifier
+    mEll(0, -size * 0.3, size * 0.13, size * 0.07, '#ff80ab'); circle(0, -size * 0.3, size * 0.045, '#fff');
+    ctx.strokeStyle = '#ff4081'; ctx.lineWidth = Math.max(1.5, size * 0.03); ctx.beginPath(); ctx.arc(0, -size * 0.22, size * 0.06, 0, Math.PI); ctx.stroke();
+  }
+  if (o.giggle) { mEll(0, -size * 0.28, size * 0.11, size * 0.08, '#c2185b'); mEll(0, -size * 0.25, size * 0.06, size * 0.04, '#ff80ab'); }   // 😆 giggling
+  ctx.restore();
+}
+// ---------- 🐣 the babies follow Robo in normal fights (only looks: nothing here touches the fight) ----------
+let bfPets = [], bfPetFight = null, bfPetBonks = 0, bfTrail = [], bfTrailPts = [];
+function bfTick() {                                             // (called from update() every frame)
+  const inFight = (state === 'fight' || state === 'replay') && fight && !fight.bvb && !fight.sim && player && player.x > -100;
+  if (!inFight) { if (state !== 'pause') { bfPets = []; bfTrail = []; bfPetFight = null; } return; }
+  if (bfPetFight !== fight) { bfPetFight = fight; bfPetBonks = fight.bonks || 0; bfTrailPts = []; bfPets = save.babies.map((id, i) => ({ id, x: player.x - 30 - i * 34, y: GROUND, cheer: 0, t: i * 17 })); }
+  bfTrailPts.push({ x: player.x + 15, y: player.y + player.h }); if (bfTrailPts.length > 60) bfTrailPts.shift();
+  if ((fight.bonks || 0) > bfPetBonks) { bfPetBonks = fight.bonks; for (const p of bfPets) { p.cheer = 50; p.say = bfPick(['YAY!', 'Go Robo!', 'Wheee!', 'Goo goo!', 'BONK!', 'Hee hee!']); } }
+  bfPets.forEach((p, i) => {
+    const q = bfTrailPts[Math.max(0, bfTrailPts.length - 1 - (i + 1) * 14)] || { x: player.x, y: GROUND }, back = (player.face || 1) * -(26 + i * 6);
+    p.x += (q.x + back - p.x) * 0.12; p.y += (Math.min(GROUND, q.y) - p.y) * 0.15; p.t++; if (p.cheer > 0) p.cheer--;
+  });
+  const up = fight.up || {};
+  if (up.trail && (Math.abs(player.vx) > 0.6 || !player.onGround) && frame % 2 === 0)
+    bfTrail.push({ x: player.x + 15 + (Math.random() - 0.5) * 12, y: player.y + player.h - 6 + (Math.random() - 0.5) * 10, life: 34, k: up.trail, h: (frame * 9) % 360, r: 3 + Math.random() * 3 });
+  for (const s of bfTrail) { s.life--; s.y -= 0.3; } bfTrail = bfTrail.filter(s => s.life > 0);
+}
+function bfDrawBehind() {                                       // (drawFightScene, before Robo): the trail + the babies
+  if (!fight || fight.bvb || fight.sim) return;
+  for (const s of bfTrail) {
+    ctx.globalAlpha = Math.min(1, s.life / 16);
+    if (s.k === 'hearts') mHeart(s.x, s.y, s.r * 1.6, '#ff80ab');
+    else if (s.k === 'rainbow') circle(s.x, s.y, s.r * 1.3, `hsl(${s.h},95%,62%)`);
+    else starShape(s.x, s.y, s.r * 1.4, s.life % 6 < 3 ? '#fff59d' : '#ffffff');
+  }
+  ctx.globalAlpha = 1;
+  for (const p of bfPets) {
+    const hop = p.cheer > 0 ? Math.abs(Math.sin(p.cheer * 0.25)) * 22 : Math.abs(Math.sin(p.t * 0.15)) * 4;
+    drawBaby(p.id, p.x, p.y, 36, { t: p.t, hop, giggle: p.cheer > 0 });
+    if (p.cheer > 20) text(p.say || 'YAY!', p.x, p.y - 50 - hop, 13, '#fff59d');
+  }
+}
+function bfDrawFront() {                                        // (drawFightScene, after Robo): the 🫧 Bubble Shield
+  if (!fight || !fight.up || !fight.up.shield || fight.shieldGone || !player || fight.bvb || fight.sim) return;
+  const x = player.x + 15, y = player.y + 20, r = 32 + Math.sin(frame * 0.1) * 2;
+  ctx.globalAlpha = 0.22; circle(x, y, r, '#80d8ff'); ctx.globalAlpha = 0.7; ctx.strokeStyle = '#e1f5fe'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.stroke(); ctx.globalAlpha = 0.8; mEll(x - 12, y - 14, 7, 4, '#fff', -0.6); ctx.globalAlpha = 1;
+}
+function bfShieldSave() {                                       // (hurtPlayer): the shield takes ONE bump each fight
+  const f = fight; if (!f || !f.up || !f.up.shield || f.shieldGone) return false;
+  f.shieldGone = true; player.inv = 140; player.vy = -6;
+  sfx.bubble(); burst(player.x + 15, player.y + 20, ['#80d8ff', '#e1f5fe', '#fff'], 18, 4); popup(player.x + 15, player.y - 30, '🫧 POP! The shield saved you!', '#80d8ff', 22);
+  return true;
+}
+// ---------- 🐣 the Baby Bosses screen: pick up to 3 pets ----------
+let babyMsg = '', babyMsgT = 0;
+const BB_NURSE = { x: 620, y: 452, w: 200, h: 54 }, BB_CLEAR = { x: 830, y: 452, w: 120, h: 54 };
+const bbCell = i => ({ x: 18 + (i % 12) * 77, y: 58 + Math.floor(i / 12) * 124, w: 72, h: 118 });
+function openBabies() { state = 'bfbabies'; babyMsgT = 0; setSong('title'); }
+function babyToggle(id) {
+  const i = save.babies.indexOf(id);
+  if (i >= 0) { save.babies.splice(i, 1); babyMsg = 'Bye-bye, baby ' + shortName(id) + '! Nap time.'; sfx.click(); }
+  else if (save.babies.length >= 3) { babyMsg = '3 babies is the most! Tap one of yours to let it nap.'; sfx.nope(); }
+  else { save.babies.push(id); babyMsg = 'Baby ' + shortName(id) + ' will follow Robo!'; sfx.giggle(); if (save.babies.length >= 3) trophy('bossBabies'); }
+  babyMsgT = 130; writeSave();
+}
+MORE_STATES.bfbabies = {
+  u() {
+    frame++; if (babyMsgT > 0) babyMsgT--;
+    if (press.esc || inBox(tap, BACK_BTN)) { goMenu(); menuTab = 6; return; }
+    if (inBox(tap, BB_NURSE) || press.enter) { openNursery(); return; }
+    if (inBox(tap, BB_CLEAR)) { save.babies = []; writeSave(); sfx.click(); return; }
+    bfAll().forEach((id, i) => { if (inBox(tap, bbCell(i))) babyToggle(id); });
+  },
+  d() {
+    drawArena('heart'); overlay(0.3); button(BACK_BTN, '⬅', 'rgba(0,0,0,.45)', 22);
+    text('🐣 BABY BOSSES', W / 2, 40, 30, '#ffd740');
+    bfAll().forEach((id, i) => {
+      const r = bbCell(i), k = save.babies.indexOf(id);
+      roundRect(r.x, r.y, r.w, r.h, 12, k >= 0 ? '#ec407a' : 'rgba(0,0,0,.45)');
+      drawBaby(id, r.x + r.w / 2, r.y + 92, 66, { t: frame + i * 9, hop: k >= 0 ? Math.abs(Math.sin(frame * 0.12 + i)) * 6 : 0 });
+      fitText(shortName(id), r.x + r.w / 2, r.y + r.h - 6, 11, r.w - 6, '#fff');
+      if (k >= 0) { circle(r.x + 13, r.y + 13, 11, '#fff'); text('❤', r.x + 13, r.y + 18, 13, '#ec407a'); }
+    });
+    roundRect(14, 446, 590, 66, 14, 'rgba(0,0,0,.5)');
+    save.babies.forEach((id, i) => drawBaby(id, 60 + i * 70, 506, 52, { t: frame + i * 20 }));
+    fitText(babyMsgT > 0 ? babyMsg : save.babies.length ? '❤ These babies follow Robo in fights + cheer!' : 'Tap up to 3 babies to be Robo\'s pets!', 400, 486, 17, 380, '#fff59d');
+    button(BB_NURSE, '🧸 NURSERY', '#8e24aa', 22); button(BB_CLEAR, '🧹 NONE', '#6d4c41', 18);
+  },
+};
+// ---------- 🧸 the Baby Nursery: the babies play. Tap one to make it giggle! ----------
+let nursery = null;
+const NURSE_SAYS = ['Hee hee hee!', 'Goo goo!', 'Tickles!', 'Again! Again!', 'Ba-ba-BONK!', 'Wheee!', 'Peekaboo!', 'Giggle giggle!'];
+function openNursery() {
+  const pool = bfAll().filter(id => !save.babies.includes(id)).sort(() => Math.random() - 0.5);
+  const ids = save.babies.concat(pool).slice(0, 9);
+  nursery = { kids: ids.map((id, i) => ({ id, x: 90 + i * 95, y: 400 + (i % 3) * 30, vx: (Math.random() - 0.5) * 1.4, hop: 0, vy: 0, gig: 0, t: i * 13, say: '' })), ball: { x: 480, y: 470, vx: 1.5 } };
+  state = 'bfnursery'; setSong('title');
+}
+MORE_STATES.bfnursery = {
+  u() {
+    frame++; const N = nursery; if (!N) { state = 'bfbabies'; return; }
+    if (press.esc || inBox(tap, BACK_BTN)) { nursery = null; state = 'bfbabies'; return; }
+    for (const k of N.kids) {
+      k.t++; k.x += k.vx; if (k.x < 50 || k.x > W - 50) { k.vx = -k.vx; k.x = clamp(k.x, 50, W - 50); }
+      if (Math.random() < 0.01) k.vx = (Math.random() - 0.5) * 1.6;
+      if (k.hop > 0 || k.vy) { k.vy += 0.5; k.hop -= k.vy; if (k.hop <= 0) { k.hop = 0; k.vy = 0; } }
+      else if (Math.random() < 0.004) k.vy = -6;
+      if (k.gig > 0) k.gig--;
+      if (Math.abs(k.x - N.ball.x) < 30 && Math.abs(k.y - N.ball.y) < 40) N.ball.vx = (N.ball.x > k.x ? 1 : -1) * (1.5 + Math.random() * 2);
+    }
+    N.ball.x += N.ball.vx; N.ball.vx *= 0.995; if (N.ball.x < 30 || N.ball.x > W - 30) { N.ball.vx = -N.ball.vx; N.ball.x = clamp(N.ball.x, 30, W - 30); }
+    for (const p of particles) { p.x += p.vx; p.y += p.vy; p.vy += 0.05; p.life--; } particles = particles.filter(p => p.life > 0);
+    if (tap) {
+      let best = null, bd = 60;
+      for (const k of N.kids) { const d = Math.hypot(tap.x - k.x, tap.y - (k.y - 40 - k.hop)); if (d < bd) { bd = d; best = k; } }
+      if (best) { best.gig = 80; best.vy = -7; best.hop = 0.1; best.say = bfPick(NURSE_SAYS); sfx.giggle(); burst(best.x, best.y - 60, ['#ff80ab', '#fff59d', '#b3e5fc'], 10, 2); }
+    }
+  },
+  d() {
+    const N = nursery; if (!N) return;
+    const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#fce4ec'); g.addColorStop(1, '#e1f5fe'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    for (let i = 0; i < 12; i++) starShape(40 + i * 80, 120 + (i % 2) * 30, 8, i % 2 ? '#fff59d' : '#ffffff');
+    ctx.fillStyle = '#ffe0b2'; ctx.fillRect(0, 330, W, H - 330); mEll(W / 2, 450, 380, 60, '#b2dfdb');
+    for (const [x, c, ch] of [[110, '#ef5350', 'A'], [150, '#42a5f5', 'B'], [130, '#66bb6a', 'C']]) { roundRect(x - 18, ch === 'C' ? 282 : 318, 36, 36, 6, c); text(ch, x, ch === 'C' ? 310 : 346, 22, '#fff'); }
+    ctx.strokeStyle = '#8d6e63'; ctx.lineWidth = 6; for (let i = 0; i < 6; i++) { ctx.beginPath(); ctx.moveTo(740 + i * 34, 260); ctx.lineTo(740 + i * 34, 340); ctx.stroke(); }   // a crib
+    ctx.beginPath(); ctx.moveTo(730, 262); ctx.lineTo(920, 262); ctx.moveTo(730, 338); ctx.lineTo(920, 338); ctx.stroke();
+    ctx.strokeStyle = '#bdbdbd'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(480, 0); ctx.lineTo(480, 60); ctx.stroke();                                         // a baby mobile
+    for (let i = 0; i < 4; i++) { const a = frame * 0.02 + i * 1.57, x = 480 + Math.cos(a) * 70; ctx.beginPath(); ctx.moveTo(480, 60); ctx.lineTo(x, 80); ctx.stroke(); starShape(x, 92, 10, BF_PASTEL[i]); }
+    circle(N.ball.x, N.ball.y, 20, '#ff7043'); ctx.fillStyle = '#fff59d'; ctx.fillRect(N.ball.x - 20, N.ball.y - 4, 40, 8);
+    for (const k of N.kids.slice().sort((a, b) => a.y - b.y)) {
+      drawBaby(k.id, k.x, k.y, 84, { t: k.t, hop: k.hop, giggle: k.gig > 0 });
+      if (k.gig > 20) { roundRect(k.x - 60, k.y - 140 - k.hop, 120, 28, 12, '#fff'); fitText(k.say, k.x, k.y - 120 - k.hop, 15, 112, '#c2185b'); }
+    }
+    for (const p of particles) { ctx.globalAlpha = Math.min(1, p.life / 20); ctx.fillStyle = p.c; ctx.fillRect(p.x - p.s / 2, p.y - p.s / 2, p.s, p.s); } ctx.globalAlpha = 1;
+    button(BACK_BTN, '⬅', 'rgba(0,0,0,.45)', 22);
+    text('🧸 THE BABY NURSERY', W / 2, 40, 30, '#ec407a');
+    text('Tap a baby to make it giggle!', W / 2, 70, 18, '#6a1b9a');
+  },
+};
+// ---------- 📸 BOSS PHOTO BOOTH ----------
+// A photo is saved as a recipe (who, backdrop, props, pose), so 12 photos fit easily + print sharp.
+const PB_BACKS = ['Starry Space', 'Sunny Beach', 'Candy Castle', 'Rainbow', 'Moon Base', 'Party Time'];
+const PB_HATS = ['No Hat', 'Party Hat', 'Top Hat', 'Crown', 'Cowboy Hat'];
+const PB_FACES = ['No Face Prop', 'Glasses', 'Sunglasses', 'Mustache', 'Glasses + Mustache'];
+const PB_POSES = [['😄', 'Smile'], ['🦘', 'Jump'], ['👋', 'Wave'], ['💪', 'Flex'], ['🤪', 'Silly']];
+const PB_LINES = ['', 'Say CHEESE!', 'I love pickles!', 'Best day EVER!', 'Boop!', 'I am SO fancy!', 'Look at my hat!', 'Bonk-tastic!', 'Party time!', 'Cheese pizza!', 'Hi, Mom!', 'I am a little teapot!'];
+function pbBackdrop(k, w, h, t) {                               // drawn with shapes only (no emoji), so it prints nicely
+  const sky = (a, b) => { const g = ctx.createLinearGradient(0, 0, 0, h); g.addColorStop(0, a); g.addColorStop(1, b); ctx.fillStyle = g; ctx.fillRect(0, 0, w, h); };
+  if (k === 0) { sky('#0d0b33', '#4a148c'); for (let i = 0; i < 40; i++) starShape((i * 97) % w, (i * 53) % (h * 0.8), 2 + (i % 3), '#fff'); circle(w * 0.82, h * 0.25, 40, '#ff8a65'); mEll(w * 0.82, h * 0.25, 66, 12, 'rgba(255,224,178,.7)', -0.3); }
+  else if (k === 1) { sky('#4fc3f7', '#e1f5fe'); circle(w * 0.15, h * 0.2, 36, '#ffeb3b'); ctx.fillStyle = '#0288d1'; ctx.fillRect(0, h * 0.55, w, h * 0.15); ctx.fillStyle = '#ffe082'; ctx.fillRect(0, h * 0.7, w, h * 0.3);
+    for (let i = 0; i < 6; i++) mEll(i * w / 5, h * 0.55, w / 10, 6, '#e1f5fe'); }
+  else if (k === 2) { sky('#f8bbd0', '#fff3e0'); ctx.fillStyle = '#ce93d8'; ctx.fillRect(w * 0.3, h * 0.25, w * 0.4, h * 0.6);
+    for (const x of [0.26, 0.5, 0.74]) { ctx.fillStyle = '#ba68c8'; ctx.fillRect(w * x - 26, h * 0.12, 52, h * 0.7); mPoly([w * x - 34, h * 0.13, w * x + 34, h * 0.13, w * x, h * 0.02], '#f06292'); }
+    roundRect(w * 0.45, h * 0.6, w * 0.1, h * 0.25, 20, '#6a1b9a'); ctx.fillStyle = '#a5d6a7'; ctx.fillRect(0, h * 0.85, w, h * 0.15); }
+  else if (k === 3) { sky('#e1f5fe', '#ffffff'); const cols = ['#ef5350', '#ffa726', '#ffee58', '#66bb6a', '#42a5f5', '#7e57c2'];
+    cols.forEach((c, i) => { ctx.strokeStyle = c; ctx.lineWidth = 22; ctx.beginPath(); ctx.arc(w / 2, h * 0.95, w * 0.46 - i * 22, Math.PI, 0); ctx.stroke(); });
+    for (const x of [0.08, 0.92]) { circle(w * x, h * 0.9, 34, '#fff'); circle(w * x + 30, h * 0.92, 26, '#fff'); circle(w * x - 30, h * 0.92, 26, '#fff'); } }
+  else if (k === 4) { sky('#000', '#263238'); for (let i = 0; i < 30; i++) circle((i * 71) % w, (i * 37) % (h * 0.6), 1.5, '#fff'); circle(w * 0.2, h * 0.22, 30, '#42a5f5'); mEll(w * 0.2 - 6, h * 0.2, 14, 9, '#66bb6a');
+    ctx.fillStyle = '#9e9e9e'; ctx.fillRect(0, h * 0.75, w, h * 0.25); for (let i = 0; i < 6; i++) mEll(40 + i * 110, h * 0.85 + (i % 2) * 12, 22, 7, '#757575');
+    roundRect(w * 0.66, h * 0.45, 140, h * 0.3, 40, '#cfd8dc'); }
+  else { sky('#ffecb3', '#fff8e1'); for (let i = 0; i < 9; i++) { const x = 40 + i * (w - 80) / 8, y = h * 0.3 + Math.sin(i * 1.7) * 30; ctx.strokeStyle = '#9e9e9e'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x, y + 30); ctx.lineTo(x + 6, y + 80); ctx.stroke(); mEll(x, y, 22, 28, ['#ef5350', '#42a5f5', '#66bb6a', '#ffca28', '#ab47bc'][i % 5]); }
+    for (let i = 0; i < 14; i++) { ctx.fillStyle = ['#ec407a', '#29b6f6', '#ffee58'][i % 3]; mPoly([i * w / 13, 0, i * w / 13 + 22, 0, i * w / 13 + 11, 30]); ctx.fill(); } }
+}
+function pbHat(k, x, y, s) {                                    // (x, y) = where the hat sits, s = boss size
+  ctx.save(); ctx.translate(x, y); const u = s / 100;
+  if (k === 1) { mPoly([-18 * u, 0, 18 * u, 0, 0, -50 * u], '#ff4081'); for (let i = 0; i < 3; i++) circle((i - 1) * 7 * u, -12 * u - i * 11 * u, 3.5 * u, '#ffeb3b'); circle(0, -52 * u, 7 * u, '#69f0ae'); }
+  else if (k === 2) { roundRect(-34 * u, -6 * u, 68 * u, 10 * u, 4 * u, '#212121'); roundRect(-22 * u, -52 * u, 44 * u, 48 * u, 4 * u, '#212121'); ctx.fillStyle = '#e53935'; ctx.fillRect(-22 * u, -16 * u, 44 * u, 8 * u); }
+  else if (k === 3) { mPoly([-30 * u, 0, 30 * u, 0, 34 * u, -34 * u, 16 * u, -16 * u, 0, -40 * u, -16 * u, -16 * u, -34 * u, -34 * u], '#ffc107', '#ff8f00', 2 * u);
+    circle(0, -12 * u, 5 * u, '#e91e63'); circle(-18 * u, -8 * u, 4 * u, '#2196f3'); circle(18 * u, -8 * u, 4 * u, '#4caf50'); }
+  else if (k === 4) { mEll(0, -2 * u, 46 * u, 10 * u, '#8d6e63'); ctx.fillStyle = '#795548'; ctx.beginPath(); ctx.moveTo(-24 * u, -4 * u); ctx.quadraticCurveTo(-26 * u, -42 * u, 0, -36 * u); ctx.quadraticCurveTo(26 * u, -42 * u, 24 * u, -4 * u); ctx.fill();
+    ctx.fillStyle = '#ffd54f'; ctx.fillRect(-24 * u, -12 * u, 48 * u, 5 * u); }
+  ctx.restore();
+}
+function pbFace(k, x, y, s) {                                   // (x, y) = between the eyes
+  ctx.save(); ctx.translate(x, y); const u = s / 100;
+  if (k === 1 || k === 4) { ctx.strokeStyle = '#212121'; ctx.lineWidth = 4 * u; for (const d of [-1, 1]) { ctx.beginPath(); ctx.arc(d * 17 * u, 0, 13 * u, 0, 7); ctx.stroke(); } ctx.beginPath(); ctx.moveTo(-4 * u, 0); ctx.lineTo(4 * u, 0); ctx.stroke();
+    ctx.globalAlpha = 0.25; circle(-17 * u, 0, 12 * u, '#b3e5fc'); circle(17 * u, 0, 12 * u, '#b3e5fc'); ctx.globalAlpha = 1; }
+  if (k === 2) { for (const d of [-1, 1]) roundRect(d * 18 * u - 15 * u, -10 * u, 30 * u, 20 * u, 8 * u, '#212121'); ctx.fillStyle = '#212121'; ctx.fillRect(-6 * u, -5 * u, 12 * u, 4 * u); mEll(-22 * u, -4 * u, 5 * u, 2.5 * u, 'rgba(255,255,255,.7)'); }
+  if (k === 3 || k === 4) { ctx.fillStyle = '#4e342e'; for (const d of [-1, 1]) { ctx.beginPath(); ctx.moveTo(0, 24 * u); ctx.quadraticCurveTo(d * 18 * u, 14 * u, d * 30 * u, 26 * u); ctx.quadraticCurveTo(d * 34 * u, 20 * u, d * 30 * u, 16 * u); ctx.quadraticCurveTo(d * 16 * u, 30 * u, 0, 30 * u); ctx.fill(); } }
+  ctx.restore();
+}
+function pbGlove(x, y, s) { circle(x, y, s * 0.09, '#fff'); ctx.strokeStyle = '#9e9e9e'; ctx.lineWidth = Math.max(1, s * 0.015); ctx.beginPath(); ctx.arc(x, y, s * 0.09, 0, 7); ctx.stroke(); }
+function pbArm(x0, y0, x1, y1, s) { ctx.strokeStyle = '#fff'; ctx.lineWidth = s * 0.06; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); pbGlove(x1, y1, s); }
+function pbBubble(str, x, y, maxX) {
+  if (!str) return;
+  ctx.font = 'bold 18px "Trebuchet MS", Arial, sans-serif'; const w = Math.min(260, (ctx.measureText(str).width || 80) + 26);
+  x = clamp(x, w / 2 + 6, maxX - w / 2 - 6); y = Math.max(36, y);
+  ctx.strokeStyle = '#222'; ctx.lineWidth = 2.5; ctx.fillStyle = '#fff';
+  mPath(x - w / 2, y - 30, w, 36, 14); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x - 8, y + 5); ctx.lineTo(x, y + 18); ctx.lineTo(x + 8, y + 5); ctx.fill(); ctx.stroke(); ctx.fillStyle = '#fff'; ctx.fillRect(x - 7, y + 2, 14, 5);
+  ctx.fillStyle = '#222'; ctx.textAlign = 'center'; ctx.fillText(str, x, y - 6, w - 14);
+}
+// draw a photo (recipe P) into a box at (x, y) of width w (the photo is 600 x 340 inside)
+function pbScene(P, x, y, w, t, o = {}) {
+  const s = w / 600; ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  ctx.beginPath(); ctx.rect(0, 0, 600, 340); ctx.clip();
+  pbBackdrop(P.bd || 0, 600, 340, t);
+  const n = P.ids.length, size = n === 1 ? 210 : n === 2 ? 178 : 150, pose = P.pose || 0;
+  P.ids.forEach((id, k) => {
+    const cx = 600 * (k + 1) / (n + 1), ph = t * 0.12 + k * 1.3;
+    let fy = 318, rot = 0, sc = 1;
+    if (pose === 1) { fy -= Math.abs(Math.sin(ph)) * 60; sc = 1 + Math.sin(ph * 2) * 0.03; }
+    else if (pose === 2) rot = Math.sin(ph) * 0.08;
+    else if (pose === 3) sc = 1.06 + Math.sin(ph) * 0.03;
+    else if (pose === 4) rot = Math.sin(ph * 2.2) * 0.18;
+    else fy -= Math.abs(Math.sin(ph * 0.5)) * 4;
+    ctx.save(); ctx.translate(cx, fy); ctx.rotate(rot); ctx.scale(sc, sc);
+    ctx.globalAlpha = 0.25; mEll(0, 6, size * 0.34, size * 0.06, '#000'); ctx.globalAlpha = 1;
+    if (pose === 2) pbArm(size * 0.3, -size * 0.45, size * 0.48 + Math.sin(ph * 3) * 8, -size * 0.82, size);
+    if (pose === 3) for (const d of [-1, 1]) { pbArm(d * size * 0.32, -size * 0.4, d * size * 0.52, -size * 0.48, size); pbArm(d * size * 0.52, -size * 0.48, d * size * 0.5, -size * 0.75, size); circle(d * size * 0.5, -size * 0.55, size * 0.06, '#fff'); }
+    drawFaceFit(id, 0, -size / 2, size);
+    if (pose === 4) { mEll(0, -size * 0.28, size * 0.07, size * 0.1, '#f06292'); ctx.strokeStyle = '#c2185b'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, -size * 0.34); ctx.lineTo(0, -size * 0.22); ctx.stroke(); }
+    const hat = (P.hat || [])[k] || 0, face = (P.face || [])[k] || 0;
+    if (hat) pbHat(hat, 0, -size * 0.9, size);
+    if (face) pbFace(face, 0, -size * 0.6, size);
+    if (o.sel === k) { ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.setLineDash([8, 6]); ctx.lineWidth = 3; ctx.strokeRect(-size / 2, -size * 1.05, size, size * 1.08); ctx.setLineDash([]); }
+    ctx.restore();
+  });
+  P.ids.forEach((id, k) => { const ln = PB_LINES[(P.line || [])[k] || 0]; if (ln) pbBubble(ln, 600 * (k + 1) / (n + 1) + (k % 2 ? 30 : -30), 340 - size * 1.15 - 18 - (k % 2) * 22, 600); });
+  ctx.restore();
+}
+let pb = null;
+const PB_STAGE = { x: 16, y: 58, w: 600, h: 340 };
+const PB_B = { who: { x: 632, y: 58, w: 312, h: 44 }, back: { x: 632, y: 110, w: 312, h: 44 }, hat: { x: 632, y: 162, w: 152, h: 44 }, face: { x: 792, y: 162, w: 152, h: 44 },
+  words: { x: 632, y: 214, w: 312, h: 44 }, snap: { x: 632, y: 330, w: 312, h: 66 }, strip: { x: 632, y: 404, w: 312, h: 44 } };
+const pbPoseBtn = i => ({ x: 632 + i * 63, y: 266, w: 58, h: 54 });
+const pbWhoCell = i => ({ x: 18 + (i % 12) * 77, y: 66 + Math.floor(i / 12) * 112, w: 72, h: 104 });
+function openPhoto() {
+  if (!pb) pb = { P: { ids: ['kinggloop'], bd: 0, hat: [3], face: [0], line: [1], pose: 0 }, sel: 0, snap: -1, flash: 0, msg: '', msgT: 0, who: false };
+  pb.snap = -1; pb.flash = 0; pb.who = false; state = 'bfphoto'; setSong('title');
+}
+function pbSay(s) { pb.msg = s; pb.msgT = 140; }
+function pbToggleWho(id) {
+  const P = pb.P, i = P.ids.indexOf(id);
+  if (i >= 0) { if (P.ids.length === 1) { pbSay('Keep at least 1 boss in the photo!'); sfx.nope(); return; } for (const k of ['ids', 'hat', 'face', 'line']) P[k].splice(i, 1); sfx.click(); }
+  else if (P.ids.length >= 3) { pbSay('3 bosses fit in the booth! Tap one to take it out.'); sfx.nope(); return; }
+  else { P.ids.push(id); P.hat.push(0); P.face.push(0); P.line.push(0); sfx.ding(); }
+  pb.sel = Math.min(pb.sel, P.ids.length - 1);
+}
+function pbSnap() {
+  const P = JSON.parse(JSON.stringify(pb.P)); P.when = todayStr();
+  save.photos.push(P); while (save.photos.length > 12) save.photos.shift();
+  save.photoN = (save.photoN || 0) + 1; writeSave();
+  if (save.photoN >= 5) trophy('bossPhoto');
+  pbSay(`📸 Saved to your photo strip! (${save.photos.length} of 12)`);
+}
+const PB_DONE = { x: W / 2 - 110, y: 456, w: 220, h: 50 };
+MORE_STATES.bfphoto = {
+  u() {
+    frame++; if (pb.msgT > 0) pb.msgT--; if (pb.flash > 0) pb.flash--;
+    if (pb.who) {                                                  // the "who is in the photo?" picker
+      if (press.esc || inBox(tap, BACK_BTN) || inBox(tap, PB_DONE) || press.enter) { pb.who = false; sfx.click(); return; }
+      bfAll().forEach((id, i) => { if (inBox(tap, pbWhoCell(i))) pbToggleWho(id); });
+      return;
+    }
+    if (pb.snap >= 0) {                                            // 3... 2... 1... say CHEESE!
+      pb.snap--;
+      if (pb.snap % 60 === 59 && pb.snap > 0) sfx.click();
+      if (pb.snap === 0) { pb.flash = 24; sfx.flash(); pbSnap(); pb.snap = -1; }
+      return;
+    }
+    if (press.esc || inBox(tap, BACK_BTN)) { goMenu(); menuTab = 6; return; }
+    const P = pb.P, n = P.ids.length, B = PB_B;
+    if (tap && inBox(tap, PB_STAGE)) { const lx = (tap.x - PB_STAGE.x); pb.sel = clamp(Math.floor(lx / (600 / n)), 0, n - 1); sfx.click(); return; }
+    if (inBox(tap, B.who)) { pb.who = true; sfx.click(); }
+    else if (inBox(tap, B.back)) { P.bd = (P.bd + 1) % PB_BACKS.length; sfx.click(); }
+    else if (inBox(tap, B.hat)) { P.hat[pb.sel] = (P.hat[pb.sel] + 1) % PB_HATS.length; sfx.pop(); }
+    else if (inBox(tap, B.face)) { P.face[pb.sel] = (P.face[pb.sel] + 1) % PB_FACES.length; sfx.pop(); }
+    else if (inBox(tap, B.words)) { P.line[pb.sel] = (P.line[pb.sel] + 1) % PB_LINES.length; sfx.click(); }
+    else if (inBox(tap, B.snap) || press.jump || press.enter) { pb.snap = 180; }
+    else if (inBox(tap, B.strip)) { openStrip(); return; }
+    PB_POSES.forEach((q, i) => { if (inBox(tap, pbPoseBtn(i))) { P.pose = i; sfx.boing ? sfx.boing() : sfx.click(); } });
+  },
+  d() {
+    drawArena('mix'); overlay(0.35); button(BACK_BTN, '⬅', 'rgba(0,0,0,.45)', 22);
+    text('📸 BOSS PHOTO BOOTH', 330, 40, 28, '#ffd740');
+    if (pb.who) {
+      text(`Who is in the photo? Tap 1 to 3 bosses (${pb.P.ids.length} picked)`, W / 2, 40, 22, '#ffd740');
+      bfAll().forEach((id, i) => { const r = pbWhoCell(i), k = pb.P.ids.indexOf(id); roundRect(r.x, r.y, r.w, r.h, 12, k >= 0 ? '#0288d1' : 'rgba(0,0,0,.45)'); drawFaceFit(id, r.x + r.w / 2, r.y + 44, 64); fitText(shortName(id), r.x + r.w / 2, r.y + r.h - 8, 11, r.w - 6, '#fff'); if (k >= 0) { circle(r.x + 13, r.y + 13, 11, '#fff'); text(String(k + 1), r.x + 13, r.y + 19, 14, '#0288d1'); } });
+      button(PB_DONE, '✅ DONE', '#43a047', 24);
+      return;
+    }
+    roundRect(PB_STAGE.x - 8, PB_STAGE.y - 8, PB_STAGE.w + 16, PB_STAGE.h + 16, 14, '#fff');
+    pbScene(pb.P, PB_STAGE.x, PB_STAGE.y, PB_STAGE.w, frame, { sel: pb.snap >= 0 ? -1 : pb.sel });
+    const P = pb.P, B = PB_B, k = pb.sel;
+    button(B.who, `👥 BOSSES (${P.ids.length} of 3)`, '#0288d1', 19);
+    button(B.back, '🖼️ ' + PB_BACKS[P.bd], '#00897b', 19);
+    button(B.hat, '🎩 ' + PB_HATS[P.hat[k]], '#6a1b9a', 15); button(B.face, '👓 ' + PB_FACES[P.face[k]], '#6a1b9a', 15);
+    button(B.words, '💬 ' + (PB_LINES[P.line[k]] || 'No words'), '#5e35b1', 17);
+    PB_POSES.forEach((q, i) => button(pbPoseBtn(i), q[0], P.pose === i ? '#ef6c00' : 'rgba(0,0,0,.5)', 26, P.pose === i));
+    button(B.snap, '📸 SNAP!', '#e53935', 30, frame % 50 < 25);
+    button(B.strip, `🎞️ MY PHOTOS (${save.photos.length})`, '#455a64', 19);
+    fitText(pb.msgT > 0 ? pb.msg : `Tap a boss in the photo to give it props. Pose: ${PB_POSES[P.pose][1]}!`, 316, 432, 17, 600, pb.msgT > 0 ? '#fff59d' : '#fff');
+    text('Hats, faces + words go on the boss with the dotted box.', 316, 458, 14, '#e0f7fa');
+    if (pb.snap >= 0) {
+      overlay(0.15); const n = Math.ceil(pb.snap / 60);
+      text(n > 0 ? String(n) : '', PB_STAGE.x + 300, PB_STAGE.y + 200, 120, '#fff');
+      text('say CHEESE!', PB_STAGE.x + 300, PB_STAGE.y + 70, 44, '#ffd740');
+    }
+    if (pb.flash > 0) { ctx.globalAlpha = pb.flash / 24; ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1; }
+  },
+};
+// ---------- 🎞️ the photo strip (up to 12) + printing ----------
+let stripSel = -1;
+const stripCell = i => ({ x: 24 + (i % 4) * 232, y: 66 + Math.floor(i / 4) * 128, w: 220, h: 124 });
+const ST_PRINT = { x: 200, y: 456, w: 260, h: 52 }, ST_BW = { x: 480, y: 456, w: 280, h: 52 }, ST_DEL = { x: 780, y: 456, w: 160, h: 52 };
+function openStrip() { state = 'bfstrip'; stripSel = -1; }
+MORE_STATES.bfstrip = {
+  u() {
+    frame++;
+    if (press.esc || inBox(tap, BACK_BTN)) { state = 'bfphoto'; sfx.click(); return; }
+    save.photos.forEach((P, i) => { if (inBox(tap, stripCell(i))) { stripSel = stripSel === i ? -1 : i; sfx.click(); } });
+    if (inBox(tap, ST_PRINT) && save.photos.length) bfPrint('photos', false);
+    else if (inBox(tap, ST_BW) && save.photos.length) bfPrint('photos', true);
+    else if (inBox(tap, ST_DEL) && stripSel >= 0) { save.photos.splice(stripSel, 1); stripSel = -1; writeSave(); sfx.pop(); }
+  },
+  d() {
+    drawArena('space'); overlay(0.3); button(BACK_BTN, '⬅', 'rgba(0,0,0,.45)', 22);
+    text(`🎞️ MY PHOTO STRIP (${save.photos.length} of 12)`, W / 2, 42, 28, '#ffd740');
+    if (!save.photos.length) text('No photos yet! Go back and tap 📸 SNAP!', W / 2, 250, 24, '#fff');
+    save.photos.forEach((P, i) => { const r = stripCell(i); roundRect(r.x - 4, r.y - 4, r.w + 8, r.h + 8, 8, i === stripSel ? '#ffd740' : '#fff'); pbScene(P, r.x, r.y, r.w, 12 + i * 7); });
+    button(ST_PRINT, '🖨️ PRINT (COLOR)', save.photos.length ? '#43a047' : 'rgba(0,0,0,.4)', 20);
+    button(ST_BW, '🖨️ PRINT (BLACK & WHITE)', save.photos.length ? '#424242' : 'rgba(0,0,0,.4)', 18);
+    button(ST_DEL, stripSel >= 0 ? '🗑️ DELETE' : 'Tap a photo', stripSel >= 0 ? '#e53935' : 'rgba(0,0,0,.4)', 18);
+    if (save.photos.length >= 12) text('Your strip is full: a new photo pushes out the oldest one.', W / 2, 440, 14, '#fff59d');
+  },
+};
+// one print engine for the photo page + the report card (pictures only on the paper: no emoji)
+function bfGray(cv) { const c = cv.getContext('2d'), im = c.getImageData(0, 0, PW, PH), a = im.data; for (let k = 0; k < a.length; k += 4) { const g = 0.3 * a[k] + 0.59 * a[k + 1] + 0.11 * a[k + 2], v = g > 235 ? 255 : g * 0.92; a[k] = a[k + 1] = a[k + 2] = v; } c.putImageData(im, 0, 0); return cv; }
+function pagesPhotos() {
+  const L = save.photos, per = 8, n = Math.max(1, Math.ceil(L.length / per)), out = [];
+  for (let pg = 0; pg < n; pg++) out.push(makePage(() => {
+    ptext('MY BOSS PHOTO BOOTH', PW / 2, 46, 34, '#5e35b1'); ptext(`page ${pg + 1} of ${n}  -  cut on the dotted lines!`, PW / 2, 74, 16, '#666');
+    L.slice(pg * per, pg * per + per).forEach((P, i) => {
+      const x = 40 + (i % 2) * 395, y = 96 + Math.floor(i / 2) * 248, w = 375;
+      roundRect(x - 8, y - 8, w + 16, 213 + 34, 10, '#fff'); strokeRR(x - 8, y - 8, w + 16, 213 + 34, 10, '#333', 2);
+      pbScene(P, x, y, w, 12);
+      pfit(P.ids.map(shortName).join(' + '), x + w / 2, y + 229, 17, w - 20, '#333');
+      cutBox(x - 14, y - 14, w + 28, 213 + 46, 14);
+    });
+  }));
+  return out;
+}
+function bfPrint(kind, bw) {                                    // (copies openCards: a paper preview with PRINT, BACK + COLOR / BLACK & WHITE)
+  const back = state === 'printing' ? printBack : state;
+  closePrint();
+  let pages = kind === 'report' ? [pageReport(school && school.id)] : pagesPhotos();
+  if (bw) pages = pages.map(bfGray);
+  printBox = document.createElement('div'); printBox.id = 'printBox';
+  const bar = document.createElement('div'); bar.className = 'pbBar';
+  const mk = (cls, txt, fn, bg) => { const b = document.createElement('button'); b.className = cls; b.textContent = txt; b.onclick = fn; if (bg) b.style.background = bg; return b; };
+  bar.append(mk('pbBack', '⬅ BACK', () => { closePrint(); sfx.click(); }),
+    mk('pbPrint', pages.length > 1 ? `🖨️ PRINT (${pages.length} pages)` : '🖨️ PRINT', () => { try { window.print(); } catch (_) {} }),
+    mk('pbBW', bw ? '🌈 COLOR' : '⚫ BLACK & WHITE', () => { sfx.click(); bfPrint(kind, !bw); }, bw ? '#e91e63' : '#424242'));
+  printBox.appendChild(bar);
+  const tip = document.createElement('div'); tip.className = 'pbTip';
+  tip.textContent = (kind === 'report' ? '🏫 Boss School Report Card' : `📸 ${save.photos.length} Boss Photos`) + '  •  ' + (bw ? 'Black & white: great for any printer!' : 'Tip: turn on color printing (or tap BLACK & WHITE)');
+  printBox.appendChild(tip);
+  for (const cv of pages) { const img = new Image(); img.className = 'pbPage'; img.alt = kind; img.src = cv.toDataURL('image/png'); printBox.appendChild(img); }
+  document.body.appendChild(printBox);
+  printBack = back; state = 'printing';
+}
+// ---------- 🌙 BOSS SLEEPOVER: everybody in pajamas + sleeping bags. Pillow fight! Who stays awake the longest? ----------
+const LULLABY = [67, 67, 70, 67, 67, 70, 67, 70, 75, 74, 72, 72, 70, 65, 67, 68, 65, 65, 67, 68, 65, 68, 74, 72, 70, 74, 75];   // Brahms' lullaby (soft!)
+let sleep = null;
+const SL_AGAIN = { x: 280, y: 300, w: 190, h: 56 }, SL_MENU = { x: 490, y: 300, w: 190, h: 56 };
+function openSleep() {
+  const ids = bfAll().slice(0, 33), per = 11;
+  sleep = { kids: ids.map((id, i) => ({ id, x: 52 + (i % per) * 86 + (Math.floor(i / per) % 2) * 20, y: 262 + Math.floor(i / per) * 92, awake: 0.6 + Math.random() * 0.4, asleep: false, yawn: 0, hitT: 0, cheer: 0, zT: Math.random() * 100 })),
+    pillows: [], feathers: [], t: 0, nextT: 200, over: null, mel: 0, melT: 0, taps: 0 };
+  state = 'bfsleep'; setSong('title');
+}
+function sleepMuteMusic(on) { if (!actx || !musicBus) return; const t = actx.currentTime; musicBus.gain.cancelScheduledValues(t); musicBus.gain.setValueAtTime(on ? 0 : musicBus.gain.value, t); if (!on) musicBus.gain.linearRampToValueAtTime(musicOn ? 0.6 : 0, t + 0.6); }
+function sleepLeave(to) { sleepMuteMusic(false); sleep = null; if (to === 'menu') { goMenu(); menuTab = 6; } }
+function throwPillow(from, to) { sleep.pillows.push({ x: from ? from.x : W / 2, y: from ? from.y - 60 : H, tx: to.x, ty: to.y - 50, t: 0, to, col: BF_PASTEL[Math.floor(Math.random() * 6)] }); sfx.whoosh(); }
+MORE_STATES.bfsleep = {
+  u() {
+    frame++; const S = sleep; if (!S) { goMenu(); return; }
+    if (actx && musicBus && musicBus.gain.value > 0.001) sleepMuteMusic(true);       // (the lullaby plays instead of the game music)
+    if (press.esc || inBox(tap, BACK_BTN)) { sfx.click(); sleepLeave('menu'); return; }
+    if (musicOn && ++S.melT >= 34) { S.melT = 0; const m = LULLABY[S.mel % LULLABY.length]; note(midi(m), 0, 1.1, 'sine', 0.035); if (S.mel % 3 === 0) note(midi(m - 12), 0, 1.6, 'sine', 0.02); S.mel++; }
+    S.t++;
+    const awake = S.kids.filter(k => !k.asleep);
+    for (const k of S.kids) { if (k.hitT > 0) k.hitT--; if (k.cheer > 0) k.cheer--; if (k.yawn > 0) k.yawn--; k.zT++; if (!k.asleep) k.awake = Math.max(0, k.awake - 0.0006); }
+    for (const p of S.pillows) { p.t++; const u = Math.min(1, p.t / 30); p.cx = p.x + (p.tx - p.x) * u; p.cy = p.y + (p.ty - p.y) * u - Math.sin(u * Math.PI) * 80;
+      if (p.t === 30) { p.to.hitT = 24; sfx.pillow(); for (let i = 0; i < 10; i++) S.feathers.push({ x: p.tx, y: p.ty, vx: (Math.random() - 0.5) * 3, vy: -Math.random() * 2.5, r: Math.random() * 6, life: 120 + Math.random() * 60 }); } }
+    S.pillows = S.pillows.filter(p => p.t < 32);
+    for (const f of S.feathers) { f.x += f.vx + Math.sin((f.life + f.r * 9) * 0.08) * 0.6; f.y += f.vy; f.vy = Math.min(0.6, f.vy + 0.05); f.vx *= 0.98; f.life--; }
+    S.feathers = S.feathers.filter(f => f.life > 0);
+    if (S.over) {
+      S.over.t++;
+      if (S.over.t > 50) { if (inBox(tap, SL_AGAIN) || ok()) { sfx.click(); openSleep(); } else if (inBox(tap, SL_MENU)) { sfx.click(); sleepLeave('menu'); } }
+      return;
+    }
+    if (tap) {                                                     // 🛏️ tap a boss: a pillow flies at it, and cheering keeps it awake!
+      let best = null, bd = 50;
+      for (const k of S.kids) { const d = Math.hypot(tap.x - k.x, tap.y - (k.y - 32)); if (d < bd) { bd = d; best = k; } }
+      if (best && !best.asleep) { const fr = bfPick(awake.filter(k => k !== best)) || null; throwPillow(fr, best); best.awake = Math.min(1.5, best.awake + 0.5); best.cheer = 60; best.yawn = 0; S.taps++; if (S.taps % 3 === 0) sfx.cheerSoft(); }
+      else if (best && best.asleep) popup(best.x, best.y - 80, 'Shhh... 💤', '#c5cae9', 18);
+    }
+    if (S.t % 50 === 0 && awake.length > 2) { const a = bfPick(awake), b = bfPick(awake.filter(k => k !== a)); if (b) throwPillow(a, b); }   // the bosses throw pillows too!
+    if (S.t >= S.nextT && awake.length > 1) {                     // 😴 one by one, the sleepiest boss falls asleep
+      const sl = awake.filter(k => k.cheer <= 0).sort((a, b) => a.awake - b.awake)[0] || awake.slice().sort((a, b) => a.awake - b.awake)[0];
+      const y0 = S.yawner && !S.yawner.asleep && S.yawner.cheer <= 0 ? S.yawner : null;
+      if (!y0) { S.yawner = sl; sl.yawn = 50; popup(sl.x, sl.y - 84, '*yaaawn*', '#e8eaf6', 16); S.nextT = S.t + 50; }
+      else { y0.asleep = true; y0.yawn = 0; S.yawner = null; S.nextT = S.t + Math.max(30, 80 - (33 - awake.length) * 1.5); }
+    }
+    const still = S.kids.filter(k => !k.asleep);
+    if (still.length === 1) {                                      // 🦉 the last one awake is the NIGHT OWL!
+      const w = still[0]; S.over = { w, t: 0 }; save.sleepN = (save.sleepN || 0) + 1; save.owls[w.id] = (save.owls[w.id] || 0) + 1; writeSave();
+      trophy('bossSleepover'); sfx.chime(); for (let i = 0; i < 20; i++) S.feathers.push({ x: w.x, y: w.y - 60, vx: (Math.random() - 0.5) * 4, vy: -Math.random() * 3, r: Math.random() * 6, life: 160 });
+    }
+  },
+  d() {
+    const S = sleep; if (!S) return;
+    const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#1a237e'); g.addColorStop(1, '#3949ab'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    roundRect(380, 54, 200, 130, 10, '#0d1442'); ctx.strokeStyle = '#8d6e63'; ctx.lineWidth = 8; ctx.strokeRect(380, 54, 200, 130); ctx.beginPath(); ctx.moveTo(480, 54); ctx.lineTo(480, 184); ctx.moveTo(380, 119); ctx.lineTo(580, 119); ctx.stroke();
+    circle(530, 92, 22, '#fff9c4'); circle(540, 86, 20, '#0d1442'); for (let i = 0; i < 8; i++) starShape(395 + (i * 47) % 180, 70 + (i * 29) % 100, 3, '#fff');
+    mEll(120, 140, 60, 80, 'rgba(255,241,118,.12)'); roundRect(108, 150, 24, 60, 6, '#8d6e63'); mPoly([90, 150, 150, 150, 136, 110, 104, 110], '#ffcc80');   // a cozy night-light
+    ctx.fillStyle = '#5d4037'; ctx.fillRect(0, 214, W, H - 214); ctx.fillStyle = 'rgba(255,255,255,.06)'; for (let i = 0; i < 12; i++) ctx.fillRect(i * 84, 214, 3, H);
+    mEll(W / 2, 360, 470, 120, '#7986cb');
+    for (const k of S.kids) {
+      const h = bfHash(k.id), col = BF_PASTEL[h % 6], wob = k.hitT > 0 ? Math.sin(k.hitT) * 0.25 : k.asleep ? 0.22 * (h % 2 ? 1 : -1) : Math.sin(frame * 0.05 + h) * 0.04;
+      ctx.save(); ctx.translate(k.x, k.y); ctx.rotate(wob);
+      roundRect(-30, -40, 60, 18, 8, '#fff');                     // pillow
+      drawFaceFit(k.id, 0, -38 + (k.asleep ? 6 : 0), 62);
+      if (k.asleep) { ctx.globalAlpha = 0.35; circle(0, -38, 30, '#1a237e'); ctx.globalAlpha = 1; }
+      mPoly([-26, -60, 26, -60, 30, -88, 16, -78 + Math.sin(frame * 0.05 + h) * 3], col);   // the nightcap
+      ctx.fillStyle = '#fff'; ctx.fillRect(-27, -63, 54, 6); circle(30, -88, 6, '#fff');
+      const top = k.asleep ? -36 : -22;                            // the sleeping bag (polka-dot pajamas!)
+      roundRect(-32, top, 64, -top + 8, 14, col); for (let d = 0; d < 4; d++) circle(-20 + d * 13, top + 10 + (d % 2) * 8, 3, 'rgba(255,255,255,.7)');
+      ctx.restore();
+      if (k.asleep) text('z'.repeat(1 + Math.floor((k.zT / 30) % 3)), k.x + 26, k.y - 70 - (k.zT % 30) * 0.6, 14, '#e8eaf6');
+      if (k.cheer > 0 && !k.asleep) text('📣', k.x - 28, k.y - 68, 16);
+    }
+    for (const p of S.pillows) { ctx.save(); ctx.translate(p.cx, p.cy); ctx.rotate(p.t * 0.3); roundRect(-16, -10, 32, 20, 8, p.col); ctx.restore(); }
+    for (const f of S.feathers) { ctx.save(); ctx.globalAlpha = Math.min(1, f.life / 40); ctx.translate(f.x, f.y); ctx.rotate(Math.sin(f.life * 0.1)); mEll(0, 0, 7, 2.5, '#fff'); ctx.restore(); }
+    const left = S.kids.filter(k => !k.asleep).length; ctx.globalAlpha = 0.35 * (1 - left / S.kids.length); ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1;
+    button(BACK_BTN, '⬅', 'rgba(0,0,0,.45)', 22);
+    text('🌙 BOSS SLEEPOVER', 250, 40, 28, '#fff59d'); text(`😊 ${left} still awake`, 780, 40, 22, '#fff');
+    if (!S.over) { roundRect(W / 2 - 330, 486, 660, 28, 10, 'rgba(0,0,0,.45)'); fitText('Tap a boss to throw a pillow! Cheering keeps your favorite awake. 🎶', W / 2, 506, 16, 640, '#e8eaf6'); }
+    else {
+      const w = S.over.w; roundRect(220, 96, 520, 270, 24, 'rgba(26,35,126,.92)');
+      text('🦉 NIGHT OWL! 🦉', W / 2, 142, 38, '#ffd740'); drawFaceFit(w.id, W / 2, 210, 100);
+      fitText(bossName(w.id) + ' stayed awake the longest!', W / 2, 284, 22, 480, '#fff');
+      if (S.over.t > 50) { button(SL_AGAIN, '🔁 AGAIN', '#43a047', 22); button(SL_MENU, '⬅ MENU', '#6d4c41', 22); }
+    }
+  },
+};
+// ---------- 🎤 BOSS TALK SHOW: answers that are TRUE to each boss's game (from the Game Factory's Hall of Heroes) + silly made-up fun ----------
+const TALK_Q = [['food', '🍕 What\'s your favorite food?'], ['move', '💥 What\'s your secret move?'], ['friend', '🤝 Who\'s your best friend?'], ['scared', '😱 What scares you?'], ['weekend', '🏖️ What do you do on weekends?']];
+const TALK = {
+  kinggloop: ['Goo-berry jelly! I slurped a whole bowl once and burped so big it shook the whole world!', 'My Goo Spit and my SPLAT Stomp! Bop my head 3 times... if you can!', 'Robo! We are friends now. And Baby Gloop borrowed my crown for a party once.', 'Losing my crown! It floated away on the Moon one time.', 'I judge the Snowman Contest in Snow Town. Everybody gets a ribbon!'],
+  megasaucer: ['Space spaghetti! I slurp it while I fly.', 'I drop bombs from the sky! Look up!', 'Robo! In Robo City I give him UFO rides around Star Station.', 'Running out of saucer fuel!', 'Flying loop-de-loops over Star Station!'],
+  warpsaucer: ['Warp waffles! They teleport into my mouth.', 'Bombs AND warping around! Now you see me, now you don\'t!', 'Mega Saucer. We are saucer cousins!', 'Warping into a wall. Bonk!', 'Zipping around Warp Nebula!'],
+  circuitsaucer: ['Battery juice! Zappy!', 'Watch out for my bombs! A little robot flies me, you know.', 'The little robot who drives me! Best co-pilot ever.', 'Springs that go BOING too hard!', 'Bouncing around Spring Circuit!'],
+  goorilla: ['Bananas! Big gooey ones!', 'My Ground Pound! It makes goo shockwaves, so JUMP!', 'King Gloop. Goo buddies forever!', 'Being the very FIRST boss. Everybody practices on me!', 'Chest-thumping practice. THUMP THUMP!'],
+  rj4final: ['Burnt toast. It is dark, like my armor!', 'Sky Rain, Drill Dig and my Copy Ball!', 'Robo AND Dusty! They are my very first friends.', 'Being alone. I only wanted a friend!', 'Camping! I copied King Gloop\'s burp and shook the whole world.'],
+  rj5final: ['Sparkly crystal crunchies!', 'Phantom Rain and my Orb Ring!', 'Every phantom! I am the crystal heart that powers them.', 'Cracks! I crack through 3 phases.', 'I practice glowing: teal, then purple, then PINK!'],
+  glitchrobo: ['Pixel pizza. Every slice is a perfect square!', 'I copy your jump, double jump AND dash. Then I teleport in static!', 'Robo 2.0! Wait... that is ME after my last bonk.', 'The Save Core cleaning up! It made me MEGA once.', 'I chill in save slot 14. It\'s cozy in there!'],
+  timerobo: ['Anything at exactly 12 o\'clock!', 'Time Freeze! And my Clock Hands go tick, tock, SWOOSH!', 'Robo! I froze time so his birthday present could fly right over his head.', 'Being late! I always arrive right on time.', 'I drive the Sea Hopper car ferry. Right on time, every time!'],
+  lockrobo: ['Key lime pie! Get it? KEY?', 'Padlock Drop and my Chain Whip!', 'Nega-Robo! I caught him with my gold chain when he floated away camping.', 'Being left out. I used to be lonely because I was never IN a game.', 'Building puzzle vaults. I made 48 of them to share!'],
+  laserheart: ['Heart-shaped cookies, sweetie!', 'Laser Sweep, Eye Beams and Heart Bolts!', 'Robo, sweetie! I joined his team.', 'Fake copies of me! Only the REAL Laserheart wears the gold crown.', 'I cheer in the Hall of Legends: Show me what you\'ve got, sweetie!'],
+  mirrorrobo: ['Whatever YOU are eating... but backwards!', 'I copy every move you make, a little late and flipped!', 'Robo! He is my best reflection.', 'Getting tricked! That is how Robo beat me.', 'Picking colors! I chose sunrise-pink and aqua. And my name is GLINT!'],
+  kingelement: ['Spicy-icy soup! Fire AND ice!', 'My Element Storm! Six elements at once!', 'The Element Guardians. The Gale Guardian told Robo I was just lonely.', 'Missing the sunrise! I was secretly guarding it all along.', 'Polishing my 6 crown gems. One for each element!'],
+  musicalrobo: ['Do-re-MI-nestrone soup!', 'Note Rain, Sound Waves and my Music Laser!', 'Dusty! I made her big burp the bass drum of The Burp Beat.', 'Silence! Shhh is my least favorite note.', 'Conducting! Zephyra the owl hoots along with my songs.'],
+  bookboss: ['Alphabet soup! I eat my words.', 'THE END! I slam shut, then pop open with my giant bookmark sword!', 'Every game in the Game Factory book!', 'Paper cuts! And spilled ink.', 'Reading! My eyes are Robo and Sparks icons, so I see every page.'],
+  ultimateboss: ['Eight lunches! I am 8 bosses at once, remember?', 'Skeleton Army and Phase Power!', 'Myself! All 8 of me.', 'Popping apart! Then all 8 of me run away yelling EEK!', 'Hard Mode practice. My hologram has FIVE phases!'],
+  chaosnova: ['Stardust sprinkles!', 'Star Fans, Crystal Wings and my NOVA BLAST!', 'Chaos Robo! He looks just like me.', 'Being forgotten. They call me the Forgotten Star.', 'Mirror tricks! Only the REAL me has a sparkly eye.'],
+  phantomrobo: ['Boo-berry muffins!', 'Phantom Dash! Then I vanish... whoosh!', 'Robo! I am a see-through echo of him from Moon Base.', 'The dark! I only wanted a night-light party.', 'Telling NOT-scary stories. In ghost, BOO means goodnight!'],
+  omegacore: ['Crystal crunchies with extra sparkle!', 'Hand Slam and Spinning Lasers!', 'Robo! When I turned good, I glowed GOLD.', 'Overheating! I need a big fan.', 'High fives! I have 4 robot arms, so that is a LOT of high fives.'],
+  factoryheart: ['Candy! I borrow the candy rain from the Candy Factory.', 'Candy Rain, Heart Pulse AND Snowballs!', 'All 7 factories! My pipes plug into every one.', 'Clogged pipes! Yuck!', 'Snowball fights with the Snow Factory!'],
+  krakenking: ['Seaweed spaghetti!', 'Tentacle Swipe! Three of them!', 'My son, Kraken Kid! He loves playing tag.', 'Bubbles on my nose! Four of them and I give away my spare crown.', 'Naps! After 3 tentacle swipes I get SO tired.'],
+  stormking: ['Sizzle-splash soup: hot AND wet!', 'Crown Lightning and my Sizzle Stomp!', 'Robo\'s crew! I asked to join it at the end.', 'Opposite elements! Each one breaks a shield.', 'Showing off the 6 element orbs in my crown!'],
+  magnetron: ['Iron-ic cereal. It sticks to me!', 'Magnet Pull! And Rolling Stars!', 'Everybody! I pulled every world together so I could have friends.', 'Things pulling away from me.', 'Hanging upside-down from the metal pipe on the ceiling. Comfy!'],
+  brickrobo: ['Brick-a-brack snacks. Crunchy!', 'Brick Throw and my Big Stomp!', 'Anyone who builds with me!', 'Stepping on a loose brick. OUCH!', 'Building towers and rainbow bridges for you!'],
+  recordrobo: ['Pancakes! Round and flat, like records.', 'Falling Records and my Scoreboard Laser!', 'My cape of high-score ribbons! And Robo, of course.', 'Losing my high score!', 'Polishing my trophy-shaped head. So shiny!'],
+  chaosrobo: ['Rainbow sprinkles on rainbow sprinkles!', 'Rainbow Chaos! When I get MAD the whole arena turns rainbow.', 'Chaos Nova! We look like twins.', 'Being found! I hide in a tiny rainbow rift in the wall.', 'CHAOS MODE! The whole shop goes rainbow!'],
+};
+function talkAnswer(id, qi) {
+  const L = TALK[id]; if (L) return L[qi];
+  const nm = shortName(id), mv = movesFor(id);
+  return [`Cosmic cookies! Every boss loves a snack, even ${nm}.`, `My ${mv[0]}! Watch out!`, 'Robo! We used to fight, but now we play.', 'Bath time! Brrr, bubbles!', 'Practicing my ' + (mv[1] || mv[0]) + ' and napping. Mostly napping.'][qi];
+}
+function bfSpeak(str, pitch = 1) {                              // 🔊 read out loud (only when Ben taps a bubble)
+  try { const u = new SpeechSynthesisUtterance(String(str).replace(/[^\w\s.,!?'\-]/g, '')); u.rate = 0.95; u.pitch = pitch; speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (_) {}
+}
+function bfHush() { try { speechSynthesis.cancel(); } catch (_) {} }
+// ---------- one boss picker for the Talk Show + Boss School ----------
+let bfPickFor = 'talk';
+const pickCell = i => ({ x: 18 + (i % 12) * 77, y: 70 + Math.floor(i / 12) * 112, w: 72, h: 104 });
+function openPick(what) { bfPickFor = what; state = 'bfpick'; setSong('title'); }
+MORE_STATES.bfpick = {
+  u() {
+    frame++;
+    if (press.esc || inBox(tap, BACK_BTN)) { goMenu(); menuTab = 6; return; }
+    bfAll().forEach((id, i) => { if (inBox(tap, pickCell(i))) { sfx.click(); if (bfPickFor === 'talk') openTalk(id); else openSchool(id); } });
+  },
+  d() {
+    drawArena(bfPickFor === 'talk' ? 'royal' : 'ladder'); overlay(0.3); button(BACK_BTN, '⬅', 'rgba(0,0,0,.45)', 22);
+    text(bfPickFor === 'talk' ? '🎤 Who is the guest today?' : '🏫 Pick a student!', W / 2, 42, 30, '#ffd740');
+    bfAll().forEach((id, i) => {
+      const r = pickCell(i), n = (save.school[id] || []).length;
+      roundRect(r.x, r.y, r.w, r.h, 12, 'rgba(0,0,0,.45)'); drawFaceFit(id, r.x + r.w / 2, r.y + 44, 64); fitText(shortName(id), r.x + r.w / 2, r.y + r.h - 8, 11, r.w - 6, '#fff');
+      if (bfPickFor === 'school' && n) { circle(r.x + r.w - 13, r.y + 13, 11, '#ffd740'); text(String(n), r.x + r.w - 13, r.y + 19, 14, '#2e7d32'); }
+      if (bfPickFor === 'talk' && TALK[id]) text('⭐', r.x + 13, r.y + 19, 13);
+    });
+    text(bfPickFor === 'talk' ? '⭐ = this boss has its own special answers!' : 'The number = attacks this boss has learned (3 max).', W / 2, 470, 17, '#fff');
+  },
+};
+let talk = null;
+const talkBtn = i => ({ x: 12 + i * 189, y: 440, w: 182, h: 68 });
+const TK_HOST = { x: 70, y: 70, w: 380, h: 70 }, TK_GUEST = { x: 470, y: 70, w: 470, h: 90 };
+function openTalk(id) { talk = { id, q: -1, t: 0, ans: '', asked: {}, clap: 0 }; state = 'bftalk'; setSong('title'); bfHush(); }
+function wrapBubble(str, size, maxW) { return wrapLines(str, size, maxW); }
+MORE_STATES.bftalk = {
+  u() {
+    frame++; const T = talk; if (!T) { goMenu(); return; }
+    if (press.esc || inBox(tap, BACK_BTN)) { bfHush(); talk = null; state = 'bfpick'; return; }
+    T.t++; if (T.clap > 0) T.clap--;
+    if (T.q >= 0 && T.t === 70) { T.ans = talkAnswer(T.id, T.q); }
+    if (T.q >= 0 && T.t === 110) { sfx.laugh(); T.clap = 90; }
+    TALK_Q.forEach((q, i) => {
+      if (inBox(tap, talkBtn(i)) || press['k' + (i + 1)]) {
+        T.q = i; T.t = 0; T.ans = ''; sfx.click(); bfHush();
+        save.talkN = (save.talkN || 0) + 1; writeSave(); if (save.talkN >= 10) trophy('bossTalkShow');
+      }
+    });
+    if (T.q >= 0 && inBox(tap, TK_HOST)) bfSpeak(TALK_Q[T.q][1], 1.25);       // 🔊 tap a bubble to hear it
+    if (T.ans && inBox(tap, TK_GUEST)) bfSpeak(T.ans, 0.8 + (bfHash(T.id) % 5) * 0.1);
+  },
+  d() {
+    const T = talk; if (!T) return;
+    ctx.fillStyle = '#4a148c'; ctx.fillRect(0, 0, W, H);
+    for (let i = 0; i < 16; i++) { ctx.fillStyle = i % 2 ? '#6a1b9a' : '#7b1fa2'; ctx.fillRect(i * 60, 0, 60, 330); }                // curtains
+    for (let i = 0; i < 20; i++) circle(24 + i * 48, 14, 6, (frame / 10 + i) % 4 < 2 ? '#ffd740' : '#fff59d');                    // stage lights
+    roundRect(W / 2 - 130, 22, 260, 40, 12, '#212121'); text('BOSS TALK', W / 2, 52, 26, frame % 60 < 30 ? '#ff4081' : '#40c4ff');
+    ctx.fillStyle = '#3e2723'; ctx.fillRect(0, 330, W, 100); ctx.fillStyle = '#5d4037'; ctx.fillRect(0, 330, W, 8);
+    roundRect(560, 270, 340, 90, 30, '#e91e63'); roundRect(570, 230, 320, 60, 26, '#f06292');                                    // the guest couch
+    roundRect(120, 270, 230, 110, 10, '#8d6e63'); roundRect(110, 262, 250, 16, 6, '#a1887f');                                     // Robo's desk
+    roundRect(310, 238, 30, 26, 6, '#fff'); ctx.fillStyle = '#795548'; ctx.fillRect(316, 232, 18, 8);                            // a mug
+    drawRoboAt(230, 268, 2.4, PAL_ROBO, { face: 1 });
+    const bob = T.q >= 0 && T.t > 70 && T.t < 160 ? Math.sin(T.t * 0.4) * 4 : Math.sin(frame * 0.05) * 2;
+    drawFaceFit(T.id, 730, 246 + bob, 150);
+    fitText(bossName(T.id), 730, 346, 18, 300, '#fff');
+    if (T.clap > 0) { roundRect(W / 2 - 90, 380, 180, 40, 10, '#d50000'); text('👏 APPLAUSE 👏', W / 2, 408, 20, '#fff'); }
+    for (let i = 0; i < 9; i++) { const x = 60 + i * 110, y = 420 + (T.clap > 0 ? -Math.abs(Math.sin(frame * 0.3 + i)) * 8 : 0); circle(x, y, 16, ['#5d4037', '#8d6e63', '#ffcc80', '#4e342e'][i % 4]); }   // the audience
+    if (T.q >= 0) {
+      const B = TK_HOST; roundRect(B.x, B.y, B.w, B.h, 16, '#fff'); mPoly([200, B.y + B.h, 230, B.y + B.h, 215, B.y + B.h + 22], '#fff');
+      fitText('🔊', B.x + B.w - 20, B.y + 26, 18, 30, '#fff');
+      wrapBubble(TALK_Q[T.q][1].replace(/^\S+\s/, ''), 19, B.w - 40).slice(0, 2).forEach((ln, i) => { ctx.font = 'bold 19px "Trebuchet MS", Arial, sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = '#222'; ctx.fillText(ln, B.x + B.w / 2 - 8, B.y + 30 + i * 24); });
+    }
+    if (T.ans) {
+      const B = TK_GUEST; roundRect(B.x, B.y, B.w, B.h, 16, '#fffde7'); mPoly([700, B.y + B.h, 740, B.y + B.h, 725, B.y + B.h + 20], '#fffde7');
+      fitText('🔊', B.x + B.w - 20, B.y + 26, 18, 30, '#fff');
+      wrapBubble(T.ans, 17, B.w - 44).slice(0, 4).forEach((ln, i) => { ctx.font = 'bold 17px "Trebuchet MS", Arial, sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = '#4a148c'; ctx.fillText(ln, B.x + B.w / 2 - 10, B.y + 24 + i * 20); });
+    } else if (T.q >= 0) text('Hmm...', 730, 120, 26, '#fff');
+    else { roundRect(270, 80, 420, 50, 14, 'rgba(0,0,0,.5)'); fitText('Welcome to BOSS TALK! Tap a question below!', W / 2, 112, 19, 400, '#fff59d'); }
+    TALK_Q.forEach((q, i) => { const r = talkBtn(i); roundRect(r.x, r.y + 4, r.w, r.h, 14, 'rgba(0,0,0,.35)'); roundRect(r.x, r.y, r.w, r.h, 14, T.q === i ? '#ef6c00' : '#1565c0');
+      const L = wrapLines(q[1], 15, r.w - 14).slice(0, 3); L.forEach((ln, k) => fitText(ln, r.x + r.w / 2, r.y + 36 - (L.length - 1) * 9 + k * 18, 15, r.w - 10, '#fff')); });
+    button(BACK_BTN, '⬅', 'rgba(0,0,0,.45)', 22);
+    text('🎤 Tap a bubble to hear it!', 100, 210, 12, '#fff59d');
+  },
+};
+// ---------- 🏫 BOSS SCHOOL: Ben is the teacher! A lesson = a new attack from the Boss Designer's attack library ----------
+const LESSONS = DES_ATK.filter(a => a.k !== 'charge');          // (no Charge: in a lesson the boss stays in its own spot)
+const LESSON_IDX = k => DES_ATK.findIndex(a => a.k === k);
+const SCHOOL_FAILS = ['Oops! Too short!', 'Whoops! Wrong way!', 'Ah... ah... ACHOO!', 'Was it left or right?', 'It went SPLAT on me!', 'Butterfingers!', 'Hmm, that was a sneeze-attack.', 'My aim is wobbly!'];
+let school = null;
+const lessonBtn = i => ({ x: 12 + i * 118, y: 430, w: 112, h: 78 });
+const SC_REPORT = { x: 720, y: 8, w: 228, h: 44 };
+const SC_TARGET = { x: 760, y: 250 };
+function openSchool(id) { school = { id, les: -1, tr: 0, t: 0, phase: 'idle', say: '', sayT: 0, shot: null, stars: [] }; state = 'bfschool'; setSong('title'); }
+function schoolKnows(id, k) { return (save.school[id] || []).includes(k); }
+function schoolLearn(id, k) {
+  const L = (save.school[id] || []).filter(x => x !== k); L.push(k);
+  let gone = null; if (L.length > 3) gone = L.shift();
+  save.school[id] = L; writeSave(); trophy('bossSchool');
+  return gone;
+}
+MORE_STATES.bfschool = {
+  u() {
+    frame++; const S = school; if (!S) { goMenu(); return; }
+    if (press.esc || inBox(tap, BACK_BTN)) { school = null; state = 'bfpick'; return; }
+    if (inBox(tap, SC_REPORT)) { bfPrint('report', false); return; }
+    if (S.sayT > 0) S.sayT--;
+    for (const p of particles) { p.x += p.vx; p.y += p.vy; p.vy += 0.12; p.life--; } particles = particles.filter(p => p.life > 0);
+    if (S.phase === 'idle') {
+      LESSONS.forEach((L, i) => { if (inBox(tap, lessonBtn(i))) { S.les = i; S.tr = 0; S.phase = 'warn'; S.t = 0; sfx.click(); S.say = 'Lesson time: ' + L.name + '!'; S.sayT = 70; } });
+      return;
+    }
+    S.t++;
+    if (S.phase === 'warn' && S.t >= DES_WARN) {                  // (the same fair warning as a real fight: 62 frames)
+      S.phase = 'fly'; S.t = 0; const fail = S.tr < 2;
+      S.shot = { x: 240, y: 260, fail, mode: fail ? (S.tr === 0 ? 'short' : bfPick(['back', 'up'])) : 'hit' }; sfx.whoosh();
+    } else if (S.phase === 'fly') {
+      const sh = S.shot, u = Math.min(1, S.t / 50);
+      if (sh.mode === 'hit') { sh.x = 240 + (SC_TARGET.x - 240) * u; sh.y = 260 - Math.sin(u * Math.PI) * 90 + (SC_TARGET.y - 260) * u; }
+      else if (sh.mode === 'short') { sh.x = 240 + 200 * u; sh.y = 260 - Math.sin(u * Math.PI) * 50 + 120 * u * u; }
+      else if (sh.mode === 'back') { sh.x = 240 - 170 * u; sh.y = 260 - Math.sin(u * Math.PI) * 70; }
+      else { sh.x = 240 + 30 * u; sh.y = 260 - 260 * u + 200 * u * u * u; }
+      if (S.t >= 50) {
+        S.phase = 'after'; S.t = 0;
+        if (sh.fail) { S.say = bfPick(SCHOOL_FAILS); S.sayT = 90; sfx.boing ? sfx.boing() : sfx.nope(); burst(sh.x, sh.y, ['#bdbdbd', '#fff'], 8, 2); }
+        else {
+          const L = LESSONS[S.les], gone = schoolLearn(S.id, L.k);
+          S.say = 'I DID IT! I learned ' + L.name + '!' + (gone ? '  (' + DES_ATK.find(a => a.k === gone).name + ' went on vacation)' : ''); S.sayT = 160;
+          sfx.chime(); sfx.cheerSoft(); for (let i = 0; i < 5; i++) burst(SC_TARGET.x, SC_TARGET.y, ['#ffd740', '#fff', '#69f0ae', '#ff80ab'], 10, 5);
+        }
+      }
+    } else if (S.phase === 'after' && S.t >= 70) {
+      if (S.shot.fail) { S.tr++; S.phase = 'warn'; S.t = 0; S.say = S.tr === 1 ? 'Let me try again, teacher!' : 'One more time!'; S.sayT = 60; }
+      else { S.phase = 'idle'; S.shot = null; }
+    }
+  },
+  d() {
+    const S = school; if (!S) return;
+    ctx.fillStyle = '#fff3e0'; ctx.fillRect(0, 0, W, H); ctx.fillStyle = '#a1887f'; ctx.fillRect(0, 360, W, H - 360);
+    roundRect(470, 70, 470, 270, 10, '#8d6e63'); roundRect(482, 82, 446, 246, 6, '#2e7d32');                                    // the chalkboard
+    ctx.globalAlpha = 0.8; for (const [r, c] of [[56, '#fff'], [40, '#ff8a80'], [24, '#fff'], [10, '#ff8a80']]) { ctx.strokeStyle = c; ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(SC_TARGET.x, SC_TARGET.y, r, 0, 7); ctx.stroke(); } ctx.globalAlpha = 1;
+    ctx.font = 'bold 22px "Comic Sans MS", "Trebuchet MS", sans-serif'; ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(255,255,255,.85)';
+    ctx.fillText(S.les >= 0 ? 'Today: ' + LESSONS[S.les].name : 'Today: pick a lesson!', 500, 116); ctx.fillText('A + B = BONK', 500, 300);
+    roundRect(90, 300, 300, 24, 6, '#6d4c41'); ctx.fillStyle = '#4e342e'; ctx.fillRect(110, 324, 12, 40); ctx.fillRect(358, 324, 12, 40);   // the student desk
+    circle(130, 290, 12, '#e53935'); ctx.fillStyle = '#33691e'; ctx.fillRect(129, 274, 3, 7);                                                    // an apple for the teacher
+    const wig = S.phase === 'warn' ? Math.sin(S.t * 0.5) * 0.08 : 0;
+    ctx.save(); ctx.translate(240, 300); ctx.rotate(wig); ctx.translate(-240, -300); drawFaceFit(S.id, 240, 220, 170); ctx.restore();
+    if (S.phase === 'warn') { roundRect(226, 92, 28, 40, 8, '#ffd740'); text('!', 240, 124, 30, '#d50000'); }
+    if (S.shot && S.phase === 'fly' || (S.shot && S.phase === 'after' && S.shot.fail)) schoolShot(LESSONS[S.les].k, S.shot.x, S.shot.y);
+    for (const p of particles) { ctx.globalAlpha = Math.min(1, p.life / 20); ctx.fillStyle = p.c; ctx.fillRect(p.x - p.s / 2, p.y - p.s / 2, p.s, p.s); } ctx.globalAlpha = 1;
+    if (S.sayT > 0) { roundRect(40, 60, 400, 52, 14, '#fff'); mPoly([220, 112, 250, 112, 238, 130], '#fff'); const L = wrapLines(S.say, 16, 380).slice(0, 2); L.forEach((ln, i) => fitText(ln, 240, 82 + i * 20 - (L.length - 1) * 6, 16, 380, '#2e7d32')); }
+    LESSONS.forEach((L, i) => {
+      const r = lessonBtn(i), kn = schoolKnows(S.id, L.k);
+      roundRect(r.x, r.y + 4, r.w, r.h, 12, 'rgba(0,0,0,.3)'); roundRect(r.x, r.y, r.w, r.h, 12, S.les === i && S.phase !== 'idle' ? '#ef6c00' : kn ? '#2e7d32' : '#1565c0');
+      fitText(L.name, r.x + r.w / 2, r.y + 28, 15, r.w - 10, '#fff'); fitText('from ' + L.from, r.x + r.w / 2, r.y + 48, 10, r.w - 8, '#e3f2fd');
+      text(kn ? '✅ LEARNED' : '📖 LESSON', r.x + r.w / 2, r.y + 69, 12, kn ? '#b9f6ca' : '#fff59d');
+    });
+    button(BACK_BTN, '⬅', 'rgba(0,0,0,.45)', 22);
+    text('🏫 BOSS SCHOOL', 330, 40, 28, '#1565c0');
+    button(SC_REPORT, '🖨️ REPORT CARD', '#6a1b9a', 18);
+    fitText(`${bossName(S.id)} knows: ${(save.school[S.id] || []).map(k => DES_ATK.find(a => a.k === k).name).join(', ') || 'nothing yet!'}  (uses them in Boss vs. Boss + Tournament)`, W / 2, 410, 14, 920, '#3e2723');
+  },
+};
+function schoolShot(k, x, y) {                                   // what the practice attack looks like
+  const fake = { x, y, r: 13, color: '#7c4dff' };
+  if (k === 'notes') desNote(ctx, fake);
+  else if (k === 'bombs') desBomb(ctx, fake);
+  else if (k === 'ring') for (let i = 0; i < 8; i++) { const a = i * 0.785 + frame * 0.1; circle(x + Math.cos(a) * 18, y + Math.sin(a) * 18, 6, '#e040fb'); }
+  else if (k === 'laser') { ctx.fillStyle = 'rgba(255,64,129,.85)'; ctx.fillRect(Math.min(240, x), y - 6, Math.abs(x - 240), 12); circle(x, y, 10, '#fff'); }
+  else if (k === 'minions') { ctx.globalAlpha = 0.9; mPath(x - 15, y - 14, 30, 28, [14, 14, 4, 4]); ctx.fillStyle = '#e1bee7'; ctx.fill(); circle(x - 5, y - 3, 4, '#4a148c'); circle(x + 5, y - 3, 4, '#4a148c'); ctx.globalAlpha = 1; }
+  else desGoo(ctx, Object.assign(fake, { color: k === 'goo' ? '#66bb6a' : k === 'pound' ? '#8d6e63' : '#42a5f5' }));
+}
+function pageReport(id) {                                       // 🖨️ the report card (drawings + words only: no emoji on the paper)
+  id = id || ROSTER[0];
+  return makePage(() => {
+    const L = save.school[id] || [];
+    roundRect(30, 30, PW - 60, PH - 60, 24, '#e8f5e9'); strokeRR(30, 30, PW - 60, PH - 60, 24, '#2e7d32', 6); strokeRR(44, 44, PW - 88, PH - 88, 18, '#81c784', 2);
+    ptext('BOSS SCHOOL', PW / 2, 108, 52, '#2e7d32'); ptext('REPORT CARD', PW / 2, 160, 38, '#1565c0');
+    roundRect(PW / 2 - 130, 190, 260, 230, 18, '#fff'); strokeRR(PW / 2 - 130, 190, 260, 230, 18, '#2e7d32', 3);
+    drawFaceFit(id, PW / 2, 300, 200);
+    pfit('Student: ' + bossName(id), PW / 2, 466, 30, PW - 160, '#222'); pfit('From: ' + (BOSSES[id].game || '???'), PW / 2, 500, 20, PW - 160, '#555');
+    ptext('SUBJECT', 110, 556, 22, '#2e7d32', 'left'); ptext('GRADE', 560, 556, 22, '#2e7d32', 'left'); ctx.fillStyle = '#2e7d32'; ctx.fillRect(100, 566, 650, 3);
+    LESSONS.forEach((les, i) => {
+      const y = 600 + i * 40, kn = L.includes(les.k);
+      if (i % 2) { ctx.fillStyle = 'rgba(46,125,50,.08)'; ctx.fillRect(100, y - 26, 650, 38); }
+      ptext(les.name, 110, y, 22, '#222', 'left');
+      if (kn) { ptext('A+  Super Star!', 560, y, 22, '#c62828', 'left'); starShape(735, y - 8, 12, '#ffd740'); }
+      else ptext('Coming soon...', 560, y, 20, '#9e9e9e', 'left');
+    });
+    const y2 = 600 + LESSONS.length * 40 + 16;
+    ptext('Bonking: A+      Sharing: A+      Being Silly: A++', PW / 2, y2, 22, '#1565c0');
+    ptext('Teacher: ______________________', 110, y2 + 66, 24, '#222', 'left'); ptext('Date: __________', 560, y2 + 66, 24, '#222', 'left');
+    for (const [x, y] of [[90, 90], [PW - 90, 90], [90, PH - 90], [PW - 90, PH - 90]]) starShape(x, y, 22, '#ffd740');
+  });
+}
+// ---------- 🏫 learned attacks in 🥊 Boss vs. Boss + 🏆 the Tournament (and every other watch mode) ----------
+// A boss that learned something does it about every 7 seconds, with the same 62-frame warning as the Boss Designer (fair: at least 55).
+const SCHOOL_EVERY = 420;
+function schoolStep(F) {                                        // (called right after the boss's own update in Boss vs. Boss + simStep)
+  if (F.sch === undefined) {
+    const L = (save.school[F.id] || []).filter(k => LESSON_IDX(k) >= 0 && k !== 'charge');
+    F.sch = L.length ? { list: L, n: 0, t: -120 - (F.k || 0) * 90, st: 'idle', sb: null } : null;
+  }
+  const S = F.sch; if (!S || !fight || fight.over) return;
+  const busy = F.stun > 0 || isVuln(F) || F.out || F.wait || F.gone || F.b.hidden || F.b.under;
+  if (busy) { if (S.st === 'warn') { S.st = 'idle'; S.t = 0; S.sb = null; } return; }
+  const bw = num(F.b.w, F.def.w), bh = num(F.b.h, F.def.h);
+  if (S.st === 'idle') {
+    if (++S.t < SCHOOL_EVERY) return;
+    const k = S.list[S.n++ % S.list.length], d = { atk: [LESSON_IDX(k)], col: bfHash(F.id) % 10, col2: (bfHash(F.id) + 5) % 10 };
+    S.d = d; S.sb = { x: F.b.x, y: F.b.y, w: bw, h: bh, ai: 0, t: 0 };
+    try { desWarn(S.sb, F.A, d); } catch (e) { noteErr(e, 'school warn ' + F.id); S.sb = null; S.st = 'idle'; S.t = 0; return; }
+    S.st = 'warn'; popup(F.b.x, F.b.y - bh / 2 - 40, '🏫 ' + DES_ATK[d.atk[0]].name + '!', '#b9f6ca', 22);
+  } else if (S.st === 'warn') {
+    S.sb.x = F.b.x; S.sb.y = F.b.y; S.sb.t++;
+    if (S.sb.t >= DES_WARN) { try { desAttack(S.sb, F.A, S.d); } catch (e) { noteErr(e, 'school atk ' + F.id); } S.st = 'atk'; S.sb.t = 0; }
+  } else if (S.st === 'atk') { if (++S.sb.t >= (S.sb.atkT || 50)) { S.st = 'idle'; S.t = 0; S.sb = null; } }
+}
+function schoolDraw(F) {                                        // (drawFighter) the warning: a big "!" + where it will hit
+  const S = F.sch; if (!S || S.st !== 'warn' || !S.sb) return;
+  const keep = ctx; try { ctx.save(); desTelegraph(S.sb, F.A); } catch (e) { noteErr(e, 'school draw'); } finally { ctx.restore(); ctx = keep; }
+}
+// ====================================================================================================
+// 🏐⚽🚩 3 MORE TEAM MODES (Dodgeball, Soccer, Capture the Flag) + 🎮 JOIN A TEAM AS ROBO (in all 4 team modes)
+// They live in the 🏟️ BOSS ARENA tab. Soft bouncy balls, nobody gets hurt: a bonk = a short dizzy. The other team aims at Robo less often.
+// ====================================================================================================
+if (!save.teamWins || typeof save.teamWins !== 'object' || Array.isArray(save.teamWins)) save.teamWins = {};
+BOSSES.robo = {                                                 // 🤖 Robo as a "team member" in 🤝 Tag-Team (Ben moves him; this never thinks by itself)
+  name: 'Robo', game: 'Robo Jump', icon: '🤖', w: 30, h: 40, hp: 4, flying: false,
+  init(b) { b.w = 30; b.h = 40; b.y = GROUND - 20; b.face = 1; },
+  update() {},
+  draw(c, b) { const k = ctx; ctx = c; try { const L = curLook(); drawRoboAt(b.x, b.y + 20, 1, L.rainbow ? rainbowPal() : (L.pal || PAL_ROBO), { face: b.face || 1, hat: L.hat }); } finally { ctx = k; } },
+};
+const TG_MODES = {
+  dodge: { icon: '🏐', name: 'BOSS DODGEBALL', min: 4, max: 6, per: () => arp && arp.pick.length >= 5 ? 3 : 2, help: 'Pick 4 (2 vs 2) or 6 (3 vs 3): first half = 🔴 RED, second half = 🔵 BLUE!', act: '🏐 THROW!' },
+  soccer: { icon: '⚽', name: 'BOSS SOCCER', min: 4, max: 4, per: () => 2, help: 'Pick 4: the first 2 = 🔴 RED team, the next 2 = 🔵 BLUE team!', act: '⚽ KICK!' },
+  ctf: { icon: '🚩', name: 'CAPTURE THE FLAG', min: 6, max: 6, per: () => 3, help: 'Pick 6: the first 3 = 🔴 RED team, the next 3 = 🔵 BLUE team!', act: '🚩 GRAB!' },
+};
+function openTeamMode(mode) {
+  const M = TG_MODES[mode];
+  openPicker({ title: M.name, icon: M.icon, min: M.min, max: M.max, per: M.per, cheer: 'team', help: M.help, th: 'mix',
+    go: (ids, cheer) => { if (ids.length % 2) { const p = ROSTER.filter(id => !ids.includes(id)); ids.push(p[Math.floor(Math.random() * p.length)]); } openJoin(mode, ids, cheer); } });
+}
+// ---------- 🎮 "Just watch" or "Join a team as Robo"? ----------
+let tgJoin = null;
+const JOIN_BTN = i => ({ x: 60 + i * 290, y: 150, w: 260, h: 230 });
+function openJoin(mode, ids, cheer) { tgJoin = { mode, ids, cheer }; state = 'tgjoin'; fmSel = 0; }
+function tgGo(join) {
+  const J = tgJoin; tgJoin = null; sfx.click();
+  const per = J.ids.length / 2, ids = J.ids.slice(), cheer = join >= 0 ? join : J.cheer;
+  if (join >= 0) ids[join * per + per - 1] = 'robo';           // Robo takes one boss slot on his team
+  if (J.mode === 'tag') startTag(ids, cheer); else tgStart(J.mode, ids, cheer);
+}
+MORE_STATES.tgjoin = {
+  u() {
+    frame++; const J = tgJoin; if (!J) { goMenu(); return; }
+    if (press.esc || inBox(tap, BACK_BTN)) { tgJoin = null; goMenu(); menuTab = 5; return; }
+    for (let i = 0; i < 3; i++) if (inBox(tap, JOIN_BTN(i)) || press['k' + (i + 1)]) { tgGo(i - 1); return; }
+    if (press.l) fmSel = Math.max(0, fmSel - 1); if (press.r) fmSel = Math.min(2, fmSel + 1);
+    if (ok()) tgGo(fmSel - 1);
+  },
+  d() {
+    const J = tgJoin; if (!J) return;
+    drawArena('mix'); overlay(0.35); button(BACK_BTN, '⬅', 'rgba(0,0,0,.45)', 22);
+    text('How do you want to play?', W / 2, 60, 32, '#ffd740');
+    const per = J.ids.length / 2;
+    ['👀 JUST WATCH', '🎮 JOIN RED', '🎮 JOIN BLUE'].forEach((lb, i) => {
+      const r = JOIN_BTN(i), cx = r.x + r.w / 2;
+      roundRect(r.x, r.y + 5, r.w, r.h, 18, 'rgba(0,0,0,.35)'); roundRect(r.x, r.y, r.w, r.h, 18, ['#5e35b1', '#e53935', '#1e88e5'][i]);
+      text(lb, cx, r.y + 40, 26, '#fff');
+      if (i === 0) { text('📣', cx, r.y + 130, 60); fitText('Cheer for ' + (J.cheer ? 'BLUE' : 'RED') + '!', cx, r.y + 200, 18, r.w - 20, '#fff59d'); }
+      else {
+        const t = i - 1, mates = J.ids.slice(t * per, t * per + per - 1);
+        drawRoboAt(cx - (mates.length ? 40 : 0), r.y + 170, 2, PAL_ROBO, { face: 1 });
+        mates.forEach((id, j) => drawFaceFit(id, cx + 40 + j * 14, r.y + 130 - j * 8, 70));
+        fitText('YOU play as Robo!', cx, r.y + 200, 18, r.w - 20, '#fff59d');
+      }
+      if (i === fmSel) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 5; mPath(r.x - 3, r.y - 3, r.w + 6, r.h + 6, 20); ctx.stroke(); }
+    });
+    fitText('🎮 Robo: ← → move, JUMP, and the ACTION button (H or Q). In Tag-Team, bonk dizzy bosses on the head!', W / 2, 430, 17, 900, '#fff');
+    fitText('Robo never gets "out" for long: just a quick dizzy, then back in the game!', W / 2, 460, 16, 900, '#b9f6ca');
+  },
+};
+// ---------- 🤖 Robo inside the Tag-Team sim (called from simStep instead of a boss update) ----------
+function roboStep(F) {
+  const b = F.b, p = player;
+  if (F.wait || F.out) { F.rIn = false; p.x = -400; return; }
+  if (!F.rIn) { F.rIn = true; const q = newPlayer(); Object.assign(p, q); p.x = clamp(b.x - 15, 0, W - 30); p.y = GROUND - 40; p.inv = 60; F.lastHp = b.hp; F.dz = 0; }
+  if (b.hp < F.lastHp) {                                       // 💫 bumped: a short dizzy (never "out")
+    F.dz = 45; p.vy = -6; sfx.softHit();
+    if (b.hp <= 0) { b.hp = 2; popup(b.x, b.y - 60, '💫 Robo needs a rest!', '#fff59d', 22); if (state === 'tagteam' && fight.bosses.some(G => G.team === F.team && G !== F && !G.out)) { F.lastHp = b.hp; tagSwap(F.team, '💫 TAG! Help me!'); return; } }
+  }
+  F.lastHp = b.hp;
+  if (F.dz > 0) { F.dz--; const k0 = Object.assign({}, keys); keys.left = keys.right = keys.jump = false; const pj = press.jump; press.jump = false; updatePlayer(); Object.assign(keys, k0); press.jump = pj; }
+  else updatePlayer();
+  p.inv = Math.max(p.inv, F.inv > 0 ? 2 : 0);
+  b.x = p.x + 15; b.y = p.y + 20; b.face = p.face; b.w = 30; b.h = 40; b.vx = p.vx;
+  for (const G of fight.bosses) {                              // 🦘 BONK a dizzy boss on the head!
+    if (G === F || G.team === F.team || G.out || G.wait || G.gone || G.b.hidden || G.b.under) continue;
+    const box = bossBox(G); if (!overlap(p, box)) continue;
+    if (fromAbove(p, box)) {
+      p.y = box.y - p.h; p.jumps = 1;
+      if (isVuln(G) && G.bonkCD <= 0) { simHit(G, 'BONK!', true); G.bonkCD = 40; p.vy = keys.jump ? -14 : -11; sfx.bonk(); burst(p.x + 15, box.y, ['#ffd740', '#fff', '#40c4ff'], 18, 4); }
+      else { p.vy = -7; p.vx = (p.x + 15 < G.b.x ? -1 : 1) * 5; if (frame - (G.clankT || -99) > 40) { G.clankT = frame; popup(p.x + 15, box.y - 16, 'Wait till it\'s dizzy!', '#fff', 16); } }
+    }
+  }
+}
+// ---------- the team-game engine: bosses walk + hop on the floor, using their real pictures ----------
+const TG_LEN = { dodge: 5400, soccer: 14400, ctf: 14400 };
+const TG_ACT = { x: 380, y: 462, w: 200, h: 50 };
+function tgStart(mode, ids, cheer) {
+  const per = ids.length / 2, size = per === 3 ? 64 : 74;
+  fight = { tg: mode, ch: { id: 'tg', th: 'mix', rounds: [ids] }, ids, cheer, cheers: 0, boostT: 0, t: 0, over: null, celebrate: 0, score: [0, 0], hits: [0, 0],
+    bosses: [], shots: [], hazards: [], minions: [], mods: {}, arena: 'normal', P: [], balls: [], flags: [], len: TG_LEN[mode], robo: ids.indexOf('robo') >= 0 };
+  AR.t = 0; particles = []; popups = []; bubbles = []; helper = null;
+  player = newPlayer(); player.x = -400; AR.player = player;
+  fight.P = ids.map((id, k) => ({ id, k, team: k < per ? 0 : 1, slot: k % per, robo: id === 'robo', x: 0, y: GROUND, vx: 0, size: id === 'robo' ? 40 : size, out: 0, hop: 0, vy: 0, cd: 0, wind: 0, hold: null, face: k < per ? 1 : -1, say: '', sayT: 0, t: k * 23 }));
+  tgKickoff();
+  state = 'tgplay'; setSong('battle'); sfx.whistle();
+  tgSay(fight.P.find(P => !P.robo && P.team === cheer) || fight.P[0], { dodge: 'Dodgeball! Bouncy balls only!', soccer: 'Kick-off! Let\'s play!', ctf: 'Grab their flag!' }[mode]);
+}
+sfx.whistle = () => { note(1760, 0, 0.12, 'sine', 0.04); note(1760, 0.16, 0.22, 'sine', 0.04); };
+function tgSay(P, s) { if (P) { P.say = s; P.sayT = 120; } }
+function tgHome(P) { const f = fight, per = f.ids.length / 2, side = P.team ? 1 : -1;
+  if (f.tg === 'dodge') return W / 2 + side * (110 + P.slot * 120);
+  if (f.tg === 'soccer') return W / 2 + side * (P.slot ? 300 : 110);
+  return W / 2 + side * (90 + P.slot * 120); }
+function tgKickoff() {                                          // everybody back to their spots
+  const f = fight;
+  for (const P of f.P) { P.x = tgHome(P); P.y = GROUND; P.vx = 0; P.hold = null; P.wind = 0; P.out = 0; P.carry = null; P.face = P.team ? -1 : 1;
+    if (P.robo) { Object.assign(player, newPlayer()); player.x = P.x - 15; player.y = GROUND - 40; player.inv = 30; player.face = P.face; } }
+  if (f.tg === 'dodge') { const n = f.ids.length / 2 + 1; f.balls = []; for (let i = 0; i < n; i++) f.balls.push({ x: W / 2 + (i % 2 ? 50 : -50) * (1 + Math.floor(i / 2)), y: GROUND - 16, vx: 0, vy: 0, r: 16, st: 'ground', team: -1, col: ['#ff7043', '#ffca28', '#ab47bc', '#26c6da'][i % 4] }); }
+  if (f.tg === 'soccer') f.ball = { x: W / 2, y: 200, vx: 0, vy: 0, r: 22, spin: 0 };
+  if (f.tg === 'ctf') f.flags = [0, 1].map(t => ({ team: t, home: t ? W - 60 : 60, x: t ? W - 60 : 60, st: 'home', by: null, dropT: 0 }));
+}
+const tgBoost = t => fight.boostT > 0 && t === fight.cheer ? 1.3 : 1;
+const tgFoes = P => fight.P.filter(Q => Q.team !== P.team && !Q.out);
+function tgWalk(P, tx, sp) { const d = tx - P.x; P.vx = Math.abs(d) < 4 ? 0 : Math.sign(d) * Math.min(Math.abs(d), sp); P.x += P.vx; if (P.vx) P.face = Math.sign(P.vx); }
+function tgRoboSync(P) {                                        // 🎮 Robo is moved by Ben (normal controls). A bump = a short dizzy.
+  const p = player;
+  if (P.out > 0) { const k0 = Object.assign({}, keys); keys.left = keys.right = keys.jump = false; const pj = press.jump; press.jump = false; updatePlayer(); Object.assign(keys, k0); press.jump = pj; }
+  else updatePlayer();
+  if (fight.tg === 'dodge') p.x = P.team ? clamp(p.x, W / 2 + 12, W - 30) : clamp(p.x, 0, W / 2 - 42);   // (stay on your side!)
+  P.x = p.x + 15; P.y = p.y + p.h; P.face = p.face; P.vx = p.vx;
+}
+const tgBox = P => P.robo ? { x: player.x, y: player.y, w: player.w, h: player.h } : { x: P.x - P.size * 0.32, y: P.y - P.size * 0.85 - P.hop, w: P.size * 0.64, h: P.size * 0.85 };
+function tgDizzy(P, label) {
+  P.out = P.robo ? 50 : fight.tg === 'dodge' ? 150 : 90; P.hold = null; P.wind = 0;
+  popup(P.x, P.y - P.size - 20, label || 'BOING! 💫', '#fff59d', 24); sfx.softHit(); burst(P.x, P.y - P.size / 2, ['#fff59d', '#fff', '#80d8ff'], 12, 3);
+  if (P.robo) { player.vy = -6; player.inv = 50; }
+}
+// ---------- 🏐 DODGEBALL ----------
+function dodgeThrow(P, T, fast) {                               // a soft ball in an arc that lands right where T was standing
+  const b = P.hold; if (!b) return; P.hold = null;
+  const Tf = fast ? 38 : 48, g = 0.3, x0 = P.x, y0 = P.y - P.size - 6, tx = T.x, ty = T.y - (T.robo ? 22 : T.size * 0.45);
+  b.x = x0; b.y = y0; b.vx = (tx - x0) / Tf; b.vy = (ty - y0 - 0.5 * g * Tf * Tf) / Tf; b.st = 'fly'; b.team = P.team; b.by = P; b.tx = tx;
+  sfx.whoosh(); P.cd = 90;
+}
+function dodgeUpdate() {
+  const f = fight;
+  for (const b of f.balls) {
+    if (b.st === 'held') continue;
+    b.vy += 0.3; b.x += b.vx; b.y += b.vy;
+    if (b.x < b.r) { b.x = b.r; b.vx = Math.abs(b.vx) * 0.6; } if (b.x > W - b.r) { b.x = W - b.r; b.vx = -Math.abs(b.vx) * 0.6; }
+    if (b.y + b.r > GROUND) { b.y = GROUND - b.r; b.vy = -Math.abs(b.vy) * 0.45; b.vx *= 0.85; if (b.st === 'fly') b.st = 'ground'; if (Math.abs(b.vy) < 1.2) b.vy = 0; }
+    if (b.st === 'ground') b.vx *= 0.97;
+    if (b.st === 'fly') for (const P of f.P) {
+      if (P.team === b.team || P.out) continue;
+      const bx = tgBox(P), cx = clamp(b.x, bx.x, bx.x + bx.w), cy = clamp(b.y, bx.y, bx.y + bx.h);
+      if ((b.x - cx) ** 2 + (b.y - cy) ** 2 < b.r * b.r) { tgDizzy(P); f.hits[b.team]++; b.st = 'ground'; b.vx = -b.vx * 0.3; b.vy = -3; break; }
+    }
+  }
+  for (const P of f.P) {
+    if (P.cd > 0) P.cd--;
+    if (P.out > 0) { if (!P.robo) { P.x += ((P.team ? W - 26 : 26) - P.x) * 0.1; if (P.out === 1) P.x = tgHome(P); } continue; }
+    if (P.hold) { P.hold.x = P.x; P.hold.y = P.y - P.size - 6 - (P.robo ? 6 : 0); }
+    if (!P.hold) for (const b of f.balls) if (b.st === 'ground' && (b.x < W / 2) === (P.team === 0) && Math.abs(b.x - P.x) < 26 + b.r && Math.abs(b.y - (P.y - 16)) < 40) { b.st = 'held'; b.team = P.team; P.hold = b; P.wind = 0; break; }
+    if (P.robo) continue;
+    const sp = 2.1 * tgBoost(P.team);
+    if (f.t < 120) { tgWalk(P, tgHome(P), sp); continue; }       // (READY... GO!)
+    const inc = f.balls.find(b => b.st === 'fly' && b.team !== P.team && Math.abs((b.tx || 0) - P.x) < 60);
+    if (inc && !P.wind) { if (P.dodge === undefined) P.dodge = Math.random() < 0.6 ? (P.x > inc.tx ? 1 : -1) * (Math.abs(P.x - (P.team ? W / 2 + 40 : W / 2 - 40)) < 60 ? -1 : 1) : 0; if (P.dodge) { P.x += P.dodge * 2.6; P.face = P.dodge; P.x = P.team ? clamp(P.x, W / 2 + 30, W - 30) : clamp(P.x, 30, W / 2 - 30); continue; } }
+    else P.dodge = undefined;
+    if (P.hold) {
+      if (!P.wind && P.cd <= 0) {                               // pick a target (Robo a bit less often), then wind up with a big "!"
+        let L = tgFoes(P); const nr = L.filter(Q => !Q.robo); if (nr.length && nr.length < L.length && Math.random() < 0.55) L = nr;
+        if (L.length) { P.tgt = L[Math.floor(Math.random() * L.length)]; P.wind = P.tgt.robo ? 70 : 55; }
+      } else if (P.wind > 0) { P.wind--; P.face = P.tgt && P.tgt.x > P.x ? 1 : -1; if (P.wind === 0) { if (P.tgt && !P.tgt.out) dodgeThrow(P, P.tgt, f.boostT > 0 && P.team === f.cheer); } }
+      else tgWalk(P, tgHome(P), sp * 0.6);
+    } else {
+      const mine = f.balls.filter(b => b.st === 'ground' && (b.x < W / 2) === (P.team === 0)).sort((a, c) => Math.abs(a.x - P.x) - Math.abs(c.x - P.x))[0];
+      tgWalk(P, mine ? mine.x : tgHome(P) + Math.sin(P.t * 0.02) * 40, sp);
+    }
+    P.x = P.team ? clamp(P.x, W / 2 + 30, W - 30) : clamp(P.x, 30, W / 2 - 30);
+  }
+  const inN = t => f.P.filter(P => P.team === t && !P.out).length;
+  if (((!inN(0) || !inN(1)) && f.t > 1800) || f.t >= f.len) {      // (clearing the other side counts after the first 30 seconds)
+    const a = inN(0), b = inN(1), wt = !b ? 0 : !a ? 1 : a !== b ? (a > b ? 0 : 1) : f.hits[0] !== f.hits[1] ? (f.hits[0] > f.hits[1] ? 0 : 1) : f.cheer;
+    tgEnd(wt, f.t >= f.len ? '⏱️ Time\'s up! ' + (a === b ? 'Most bonks wins!' : 'Most players left wins!') : '🏐 They cleared the other side!');
+  }
+}
+function dodgeRoboAct(P) {
+  if (P.hold) { const L = tgFoes(P).sort((a, c) => Math.abs(a.x - P.x) - Math.abs(c.x - P.x)); if (L[0]) dodgeThrow(P, L[0], true); }
+  else popup(P.x, P.y - 70, 'Grab a ball on your side!', '#fff', 16);
+}
+// ---------- ⚽ SOCCER (first to 3 goals) ----------
+const GOAL_H = 140, GOAL_W = 40;
+const GOAL_SAYS = ['GOOOOAL!', 'I did a goal dance!', 'Boing boing GOAL!', 'Who wants a high five?', 'Wheee! Score!', 'That was SO cool!'];
+function soccerKick(P, dir, hard) {
+  const B = fight.ball, m = tgBoost(P.team);
+  B.vx = dir * (hard ? 9 : 4.5 + Math.random() * 2.5) * m; B.vy = -(hard ? 6 : 2 + Math.random() * 4); P.cd = 26; sfx.softHit();
+}
+function soccerUpdate() {
+  const f = fight, B = f.ball;
+  if (f.celebrate > 0) { if (--f.celebrate === 0) { if (Math.max(...f.score) >= 3) tgEnd(f.score[0] >= 3 ? 0 : 1, '⚽ First to 3 goals!'); else tgKickoff(); } confetti(1); return; }
+  B.vy += 0.35; B.x += B.vx; B.y += B.vy; B.spin += B.vx * 0.05;
+  if (B.y + B.r > GROUND) { B.y = GROUND - B.r; B.vy = -Math.abs(B.vy) * 0.55; if (Math.abs(B.vy) < 1) B.vy = 0; B.vx *= 0.985; }
+  if (B.y - B.r < 0) { B.y = B.r; B.vy = Math.abs(B.vy); }
+  for (const side of [0, 1]) {                                  // the goals (left = RED's goal, right = BLUE's goal)
+    const inMouth = B.y > GROUND - GOAL_H, edge = side ? W - GOAL_W : GOAL_W;
+    if (side ? B.x + B.r > edge : B.x - B.r < edge) {
+      if (inMouth && (side ? B.x > edge + 6 : B.x < edge - 6)) { soccerGoal(side ? 0 : 1); return; }
+      if (!inMouth) { B.x = side ? edge - B.r : edge + B.r; B.vx = -B.vx * 0.7; }   // the crossbar + wall above it
+      if (side ? B.x + B.r > W : B.x - B.r < 0) { B.x = side ? W - B.r : B.r; B.vx = -B.vx * 0.6; }
+    }
+  }
+  for (const P of f.P) {
+    if (P.cd > 0) P.cd--;
+    if (P.out > 0) continue;
+    const dir = P.team ? -1 : 1, bx = tgBox(P), cx = clamp(B.x, bx.x, bx.x + bx.w), cy = clamp(B.y, bx.y, bx.y + bx.h);
+    if ((B.x - cx) ** 2 + (B.y - cy) ** 2 < B.r * B.r) {        // touching the ball pushes it
+      if (P.robo) { B.vx = player.vx * 1.1 + Math.sign(B.x - P.x || dir) * 1.5; if (player.vy < 0 && B.y < player.y + 10) B.vy = Math.min(B.vy, -6); else B.vy = Math.min(B.vy, -1.5); B.x += Math.sign(B.x - P.x || dir) * 3; }
+      else if (P.cd <= 0) soccerKick(P, dir, false);
+      else B.x += Math.sign(B.x - P.x || dir) * 2;
+    }
+    if (P.robo) continue;
+    const own = P.team ? W - 60 : 60, sp = 2.3 * tgBoost(P.team) * (f.robo && f.P.some(Q => Q.robo && Q.team !== P.team) ? 0.85 : 1);
+    const near = Math.abs(B.x - own) < 320;
+    if (P.slot === 0 || near) tgWalk(P, B.x - dir * (B.r + 18), sp);     // the striker (and a defender when the ball comes close)
+    else tgWalk(P, own + dir * 170, sp * 0.8);
+    P.x = clamp(P.x, 20, W - 20);
+  }
+}
+function soccerGoal(t) {
+  const f = fight; f.score[t]++; f.celebrate = 170; f.lastT = t; sfx.tada(); squadCheer();
+  for (let i = 0; i < 6; i++) burst(t ? 80 : W - 80, GROUND - 70, ['#ffd740', '#ff80ab', '#fff', t ? '#40c4ff' : '#ff5252'], 10, 5);
+  const P = f.P.filter(Q => Q.team === t && !Q.robo); tgSay(bfPick(P.length ? P : f.P), bfPick(GOAL_SAYS));
+  popup(W / 2, 170, (t ? '🔵 BLUE' : '🔴 RED') + ' SCORES! ⚽', '#ffd740', 40);
+}
+// ---------- 🚩 CAPTURE THE FLAG (first to 2) ----------
+function ctfUpdate() {
+  const f = fight;
+  if (f.celebrate > 0) { if (--f.celebrate === 0) { if (Math.max(...f.score) >= 2) tgEnd(f.score[0] >= 2 ? 0 : 1, '🚩 2 flags captured!'); else tgKickoff(); } confetti(1); return; }
+  for (const F0 of f.flags) {
+    if (F0.st === 'carried') { const P = F0.by; F0.x = P.x - P.face * 14; }
+    if (F0.st === 'dropped' && --F0.dropT <= 0) { F0.st = 'home'; F0.x = F0.home; popup(F0.x, GROUND - 120, 'The flag flew home!', '#fff', 18); }
+  }
+  const touch = (P, x, rr = 30) => Math.abs(P.x - x) < rr && P.y > GROUND - (P.robo ? 70 : 999);
+  for (const P of f.P) {
+    if (P.out > 0) continue;
+    const mine = f.flags[P.team], theirs = f.flags[1 - P.team];
+    if (theirs.st !== 'carried' && touch(P, theirs.x)) { theirs.st = 'carried'; theirs.by = P; P.carry = theirs; sfx.chime(); popup(P.x, P.y - P.size - 24, '🚩 GOT IT!', '#fff59d', 24); }
+    if (mine.st === 'dropped' && mine.dropT < 240 && touch(P, mine.x)) { mine.st = 'home'; mine.x = mine.home; sfx.ding(); popup(P.x, P.y - P.size - 24, 'Flag saved!', '#b9f6ca', 20); }
+    if (P.carry && Math.abs(P.x - mine.home) < 60) {             // 🏁 brought it home!
+      const fl = P.carry; P.carry = null; fl.st = 'home'; fl.x = fl.home; fl.by = null;
+      f.score[P.team]++; f.celebrate = 150; f.lastT = P.team; sfx.tada(); squadCheer(); tgSay(P.robo ? f.P.find(Q => Q.team === P.team && !Q.robo) : P, 'CAPTURED! Woo-hoo!');
+      popup(W / 2, 170, (P.team ? '🔵 BLUE' : '🔴 RED') + ' CAPTURED THE FLAG! 🚩', '#ffd740', 34); return;
+    }
+  }
+  for (const C of f.P) {                                        // ✋ tag a flag carrier: the flag drops, the carrier goes home dizzy
+    if (!C.carry || C.out) continue;
+    const tagger = f.P.find(Q => Q.team !== C.team && !Q.out && !(Q.cd > 0) && Math.abs(Q.x - C.x) < 34 && Math.abs((Q.y - (Q.robo ? 0 : Q.hop)) - (C.y - (C.robo ? 0 : C.hop))) < 50);
+    if (tagger && !tagger.robo && Math.random() > (C.robo ? 0.35 : 0.55)) { tagger.cd = 60; popup(C.x, C.y - (C.robo ? 60 : C.size) - 20, 'Whoosh! Missed! 😜', '#fff', 18); continue; }   // (a wiggly escape!)
+    if (tagger) {
+      const fl = C.carry; C.carry = null; fl.st = 'dropped'; fl.x = clamp(C.x, 80, W - 80); fl.dropT = 360; fl.by = null;
+      tgDizzy(C, '✋ TAGGED!'); C.x = C.team ? W - 50 : 50; if (C.robo) { player.x = C.x - 15; }
+    }
+  }
+  for (const P of f.P) {
+    if (P.cd > 0) P.cd--;
+    if (P.robo || P.out > 0) continue;
+    const dir = P.team ? -1 : 1, mine = f.flags[P.team], theirs = f.flags[1 - P.team], foeRobo = mine.by && mine.by.robo;
+    const sp = (P.carry ? 2.1 : mine.st === 'carried' ? 1.9 : 2.2) * tgBoost(P.team) * (foeRobo ? 0.8 : 1);
+    let tx;
+    if (P.carry) tx = mine.home;                                 // run home!
+    else if (mine.st === 'carried' && (P.slot === 2 || Math.abs(mine.by.x - P.x) < 150)) tx = mine.by.x;   // chase the thief
+    else if (mine.st === 'dropped' && P.slot === 2) tx = mine.x; // save our flag
+    else if (P.slot === 2) tx = mine.home + dir * (230 + Math.sin(P.t * 0.02) * 70);   // the defender guards the middle-ish
+    else if (theirs.st === 'carried') tx = theirs.by.x + dir * 40; // help our carrier
+    else tx = theirs.x;                                           // go get their flag
+    tgWalk(P, tx, sp); P.x = clamp(P.x, 20, W - 20);
+  }
+}
+// ---------- the team games: one screen for all 3 ----------
+function tgEnd(wt, why) {
+  const f = fight; if (f.over) return;
+  f.over = { wt, why, t: 0 }; f.celebrate = 0; setSong('victory'); sfx.tada(); sfx.crowd();
+  for (const P of f.P) { P.out = 0; P.hold = null; P.carry = null; }
+  if (wt === f.cheer) {                                          // 🏆 win one of each (with your team) = the bossTeams trophy
+    save.teamWins[f.tg] = 1; writeSave();
+    if (save.teamWins.dodge && save.teamWins.soccer && save.teamWins.ctf) trophy('bossTeams');
+  }
+}
+function tgCheer() {
+  const f = fight; f.cheers++; f.boostT = Math.min(240, f.boostT + 30);
+  const P = bfPick(f.P.filter(Q => Q.team === f.cheer && !Q.robo).concat(f.P.filter(Q => Q.team === f.cheer)));
+  popup(P.x + (Math.random() - 0.5) * 80, P.y - P.size - 30 - Math.random() * 30, ['📣 GO!', '📣 YAY!', '📣 WOO!', '💪', '⭐'][f.cheers % 5], '#fff59d', 24);
+  if (f.cheers % 2) sfx.cheerSoft(); squadCheer();
+}
+MORE_STATES.tgplay = {
+  u() {
+    const f = fight; if (!f || !f.tg) { goMenu(); return; }
+    if (press.esc || inBox(tap, BACK_BTN)) { sfx.click(); goMenu(); menuTab = 5; return; }
+    frame++; AR.t++;
+    for (const p of particles) { p.x += p.vx; p.y += p.vy; p.vy += 0.12; p.life--; } particles = particles.filter(p => p.life > 0);
+    for (const q of popups) { q.t--; q.y -= 0.8; } popups = popups.filter(q => q.t > 0);
+    if (f.over) {
+      f.over.t++; confetti(1);
+      for (const P of f.P) { P.t++; if (P.robo) tgRoboSync(P); }
+      if (f.over.t > 40) { if (inBox(tap, BVB_AGAIN) || press.enter) tgStart(f.tg, f.ids, f.cheer); else if (inBox(tap, BVB_NEW)) openTeamMode(f.tg); else if (inBox(tap, BVB_MENU)) { sfx.click(); goMenu(); menuTab = 5; } }
+      return;
+    }
+    const R = f.P.find(P => P.robo);
+    const act = R && (press.help || press.sup || press.atk2 || inBox(tap, TG_ACT));
+    if (act && R.out <= 0) {
+      if (f.tg === 'dodge') dodgeRoboAct(R);
+      else if (f.tg === 'soccer') { const B = f.ball; if (Math.hypot(B.x - R.x, B.y - (R.y - 20)) < 80) { soccerKick(R, R.team ? -1 : 1, true); popup(R.x, R.y - 60, 'KICK!', '#fff59d', 24); } else popup(R.x, R.y - 70, 'Get closer to the ball!', '#fff', 16); }
+      else { const th = f.flags[1 - R.team], mine = f.flags[R.team];
+        if (th.st !== 'carried' && Math.abs(th.x - R.x) < 70 && R.y > GROUND - 80) { th.st = 'carried'; th.by = R; R.carry = th; sfx.chime(); popup(R.x, R.y - 70, '🚩 GOT IT!', '#fff59d', 24); }
+        else if (mine.st === 'dropped' && Math.abs(mine.x - R.x) < 70) { mine.st = 'home'; mine.x = mine.home; sfx.ding(); }
+        else popup(R.x, R.y - 70, 'Run to the other flag!', '#fff', 16); }
+    } else if (tap && !inBox(tap, TG_ACT)) tgCheer();
+    else if (!R && (press.jump || press.enter)) tgCheer();
+    f.t++; if (f.boostT > 0) f.boostT--;
+    for (const P of f.P) {
+      P.t++; if (P.sayT > 0) P.sayT--;
+      if (P.out > 0) P.out--;
+      if (P.robo) { tgRoboSync(P); continue; }
+      if (P.vy || P.hop > 0) { P.vy += 0.4; P.hop -= P.vy; if (P.hop <= 0) { P.hop = 0; P.vy = 0; } }
+    }
+    if (f.celebrate > 0) for (const P of f.P) if (!P.robo && P.team === f.lastT && P.hop <= 0) P.vy = -5;   // 🎉 silly celebration hops
+    if (f.tg === 'dodge') dodgeUpdate(); else if (f.tg === 'soccer') soccerUpdate(); else ctfUpdate();
+    if (!f.over && f.t >= f.len && f.tg !== 'dodge') tgEnd(f.score[0] > f.score[1] ? 0 : f.score[1] > f.score[0] ? 1 : f.cheer, '⏱️ Time\'s up!');
+  },
+  d() {
+    const f = fight; if (!f || !f.tg) return;
+    drawArena('mix');
+    ctx.fillStyle = 'rgba(46,125,50,.55)'; ctx.fillRect(0, GROUND - 4, W, H - GROUND + 4);
+    if (f.tg === 'dodge') { ctx.fillStyle = 'rgba(255,255,255,.7)'; ctx.fillRect(W / 2 - 3, GROUND - 260, 6, 260); text('🔴', 40, GROUND + 30, 20); text('🔵', W - 40, GROUND + 30, 20); }
+    if (f.tg === 'soccer') for (const side of [0, 1]) {
+      const x = side ? W - GOAL_W : 0; ctx.globalAlpha = 0.35; ctx.fillStyle = '#fff'; for (let i = 0; i < 6; i++) ctx.fillRect(x + (i % 2) * 8, GROUND - GOAL_H + i * 24, GOAL_W - 8, 2); ctx.globalAlpha = 1;
+      roundRect(side ? W - GOAL_W : 0, GROUND - GOAL_H - 8, GOAL_W, 8, 3, '#fff'); roundRect(side ? W - GOAL_W - 4 : GOAL_W - 4, GROUND - GOAL_H - 8, 8, GOAL_H + 8, 3, '#fff');
+      ctx.fillStyle = side ? 'rgba(30,136,229,.35)' : 'rgba(229,57,53,.35)'; ctx.fillRect(x, GROUND - GOAL_H, GOAL_W, GOAL_H);
+    }
+    if (f.tg === 'ctf') for (const F0 of f.flags) {
+      mEll(F0.home, GROUND + 4, 56, 12, F0.team ? 'rgba(30,136,229,.6)' : 'rgba(229,57,53,.6)');
+      const fy = F0.st === 'carried' ? F0.by.y - (F0.by.robo ? 40 : F0.by.size) - (F0.by.robo ? 0 : F0.by.hop) : GROUND;
+      ctx.fillStyle = '#eceff1'; ctx.fillRect(F0.x - 2, fy - 90, 4, 90);
+      ctx.fillStyle = F0.team ? '#1e88e5' : '#e53935'; ctx.beginPath(); const wv = Math.sin(frame * 0.15) * 4; ctx.moveTo(F0.x + 2, fy - 90); ctx.lineTo(F0.x + 42, fy - 78 + wv); ctx.lineTo(F0.x + 2, fy - 62); ctx.fill();
+      if (F0.st === 'dropped') text('⏳', F0.x, fy - 100, 16);
+    }
+    for (const P of f.P.slice().sort((a, b) => a.out - b.out)) {
+      const col = P.team ? '#1e88e5' : '#e53935', won = f.over && f.over.wt === P.team, hop = won ? Math.abs(Math.sin(frame * 0.12 + P.k)) * 30 : 0;
+      mEll(P.x, P.y + 2, P.size * 0.34, 7, col);
+      if (P.robo) { drawRobo(player); text('YOU', P.x, player.y - 10, 14, '#fff59d'); }
+      else {
+        ctx.save(); ctx.translate(P.x, P.y - hop - P.hop); ctx.rotate(P.out > 0 ? 0.3 * Math.sin(frame * 0.2) : won ? Math.sin(frame * 0.2) * 0.15 : Math.sin(P.t * 0.15) * 0.05 * (P.vx ? 1 : 0.3));
+        ctx.scale(P.face < 0 ? -1 : 1, 1); drawFaceFit(P.id, 0, -P.size / 2, P.size); ctx.restore();
+      }
+      if (P.out > 0) dizzyStarsFM(P.x, P.y - P.size - 4, P.size);
+      if (P.wind > 0) { roundRect(P.x - 12, P.y - P.size - 62, 24, 34, 7, '#ffd740'); text('!', P.x, P.y - P.size - 36, 26, '#d50000'); }
+      if (P.sayT > 0) { const w = 200; roundRect(clamp(P.x, 110, W - 110) - w / 2, P.y - P.size - 76, w, 28, 12, '#fff'); fitText(P.say, clamp(P.x, 110, W - 110), P.y - P.size - 56, 15, w - 12, '#333'); }
+    }
+    if (f.tg === 'dodge') for (const b of f.balls) { circle(b.x, b.y, b.r, b.col); ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(b.x, b.y, b.r * 0.6, 0.3, 2.4); ctx.stroke(); }
+    if (f.tg === 'soccer') { const B = f.ball; ctx.save(); ctx.translate(B.x, B.y); ctx.rotate(B.spin); circle(0, 0, B.r, '#fff'); for (let i = 0; i < 5; i++) { const a = i * 1.257; circle(Math.cos(a) * B.r * 0.6, Math.sin(a) * B.r * 0.6, B.r * 0.22, '#212121'); } circle(0, 0, B.r * 0.25, '#212121'); ctx.restore(); }
+    for (const p of particles) { ctx.globalAlpha = Math.min(1, p.life / 20); ctx.fillStyle = p.c; ctx.fillRect(p.x - p.s / 2, p.y - p.s / 2, p.s, p.s); } ctx.globalAlpha = 1;
+    for (const q of popups) { ctx.globalAlpha = Math.min(1, q.t / 20); text(q.str, q.x, q.y, q.size, q.color); } ctx.globalAlpha = 1;
+    button(BACK_BTN, '⬅', 'rgba(0,0,0,.45)', 22);
+    for (const t of [0, 1]) {                                     // the team bars: faces + score (or players left)
+      const x = t ? 520 : 110, w = 330, mine = f.P.filter(P => P.team === t);
+      roundRect(x, 8, w, 44, 10, t ? 'rgba(21,101,192,.85)' : 'rgba(198,40,40,.85)');
+      mine.forEach((P, j) => { ctx.globalAlpha = P.out > 0 ? 0.4 : 1; if (P.robo) drawRoboAt(x + 22 + j * 36, 46, 0.8, PAL_ROBO, { face: 1 }); else drawFace(P.id, x + 22 + j * 36, 30, 34); ctx.globalAlpha = 1; });
+      fitText((t === f.cheer ? '📣 ' : '') + (t ? 'BLUE' : 'RED'), x + 150, 37, 16, 80, '#fff', 'left');
+      const sc = f.tg === 'dodge' ? mine.filter(P => !P.out).length + ' in' : f.score[t] + ' / ' + (f.tg === 'soccer' ? 3 : 2);
+      text(sc, x + 280, 40, 24, '#ffd740');
+    }
+    text(f.tg === 'dodge' ? '⏱️ ' + Math.max(0, Math.ceil((f.len - f.t) / 60)) : 'VS', W / 2, 38, 20, '#ffd740');
+    drawSquad(SQUAD_SPOT, f.over ? f.over.wt === f.cheer : false, f.cheer ? 'BLUE' : 'RED');
+    const R = f.P.find(P => P.robo);
+    if (!f.over) {
+      if (R) button(TG_ACT, TG_MODES[f.tg].act + ' (H)', R.out > 0 ? 'rgba(0,0,0,.5)' : R.team ? '#1e88e5' : '#e53935', 22, R.out <= 0 && frame % 40 < 20);
+      fitText(R ? '🎮 Move + JUMP with the arrows, ACTION = H. Tap the sky to cheer!' : '📣 Tap the screen to CHEER for ' + (f.cheer ? 'BLUE' : 'RED') + '! Cheering = faster!', W / 2, 74, 16, 760, '#fff59d');
+      if (f.celebrate > 0) text(f.tg === 'soccer' ? '⚽ GOOOAL! ⚽' : '🚩 CAPTURED! 🚩', W / 2, 150, 46, frame % 20 < 10 ? '#ffd740' : '#fff');
+      if (f.tg === 'dodge' && f.t < 120) text(f.t < 80 ? 'READY...' : 'GO!', W / 2, 180, 50, '#ffd740');
+      return;
+    }
+    roundRect(W / 2 - 330, 84, 660, 90, 18, 'rgba(0,0,0,.6)');
+    fitText((f.over.wt ? '🔵 BLUE' : '🔴 RED') + ' TEAM WINS! 🏆', W / 2, 124, 34, 640, '#ffd740');
+    fitText(f.over.why + (f.over.wt === f.cheer ? '  Your team! 📣' : '  Great game!'), W / 2, 158, 19, 640, '#fff');
+    if (f.over.t > 40) { button(BVB_AGAIN, '🔁 AGAIN', '#43a047', 22); button(BVB_NEW, '🔄 NEW TEAMS', '#8e24aa', 20); button(BVB_MENU, '📋 MENU', '#1e88e5', 22); }
+  },
+};
+BA.push(
+  { k: 'dodge', icon: '🏐', name: 'BOSS DODGEBALL', col: '#00897b', sub: () => save.teamWins.dodge ? '✅ Won!' : '2 vs 2 or 3 vs 3', tip: '🏐 Soft bouncy balls! A bonked boss gets dizzy and sits out a bit. Join as Robo or cheer!' },
+  { k: 'soccer', icon: '⚽', name: 'BOSS SOCCER', col: '#43a047', sub: () => save.teamWins.soccer ? '✅ Won!' : '2 vs 2, first to 3', tip: '⚽ Bosses chase a big ball! Push it into the other goal. First to 3 goals wins!' },
+  { k: 'ctf', icon: '🚩', name: 'CAPTURE THE FLAG', col: '#f4511e', sub: () => save.teamWins.ctf ? '✅ Won!' : '3 vs 3, first to 2', tip: '🚩 Grab the other flag and bring it home! Touch a flag carrier to tag them. First to 2!' });
 </script>
