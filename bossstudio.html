@@ -6262,7 +6262,10 @@ const SILLY_SAYS = ['Hee hee! That tickles!', 'My hat! My beautiful hat!', 'Boin
 function sillyBonk(F) { sfx.squeak(); if (Math.random() < 0.75) sayBubble(SILLY_SAYS[Math.floor(Math.random() * SILLY_SAYS.length)], F); }
 function drawSillyHat(F) {
   const box = bossBox(F), s = clamp(box.w / 70, 0.6, 1.6), x = F.b.x, y = box.y + 4, kind = (F.k + (F.id.length % 5)) % 5, t = frame;
-  ctx.save(); ctx.translate(x, y); ctx.scale(s, s); ctx.rotate(Math.sin(t * 0.1 + F.k) * 0.12);
+  sillyHatAt(kind, x, y, s, Math.sin(t * 0.1 + F.k) * 0.12, t);
+}
+function sillyHatAt(kind, x, y, s, rot, t) {                 // (🎨 the Boss Costume Shop uses these hats too)
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s); ctx.rotate(rot);
   if (kind === 0) {                                          // 🥳 a striped party hat
     mPoly([-18, 0, 18, 0, 0, -46], '#ff4081');
     ctx.save(); mPoly([-18, 0, 18, 0, 0, -46]); ctx.clip(); for (let k = 0; k < 4; k++) { ctx.fillStyle = '#ffeb3b'; ctx.fillRect(-20, -8 - k * 12, 40, 5); } ctx.restore();
@@ -11202,4 +11205,869 @@ function tnActivate(c) {
   if (k === 'tour') openTour(); else if (k === 'league') lgOpen(); else if (k === 'koh') kohOpen(); else if (k === 'draft') dfOpen();
   else if (k === 'sc') scOpen(); else if (k === 'wc') wcOpen(); else if (k === 'hall') state = 'tnhall';
 }
+</script>
+<script>
+// 📖🎨🌟 STORY TAB: 📖 Boss Story Mode, 🎨 Boss Costume Shop, 🌟 Boss Evolution (+ the Evolution Gallery) 📖🎨🌟
+// Costumes + evolution LOOKS are drawn on top of each boss (looks only: no rnd(), nothing touches the fight).
+// Each replay remembers its costumes + evolution levels, so old replays look + play exactly the same as before.
+// Rules: every sound is soft (volume 0.07 or less). Every story warning is 60+ frames, every dizzy window is long.
+if (!save.cos || typeof save.cos !== 'object' || Array.isArray(save.cos)) save.cos = {};          // 🎨 { bossId: { h, f, c, u, t } } = hat, face, cape, bow tie, color
+if (!save.cosOwn || typeof save.cosOwn !== 'object' || Array.isArray(save.cosOwn)) save.cosOwn = {};
+if (!save.evo || typeof save.evo !== 'object' || Array.isArray(save.evo)) save.evo = {};          // 🌟 { bossId: wins }
+if (!save.evoSeen || typeof save.evoSeen !== 'object' || Array.isArray(save.evoSeen)) save.evoSeen = {};   // the level each boss's party was already shown for
+if (save.evoOn === undefined) save.evoOn = true;
+if (!save.story || typeof save.story !== 'object' || Array.isArray(save.story)) save.story = {};
+if (!(save.story.done >= 0)) save.story.done = 0;                                                  // 📖 chapters finished (0-8)
+const ST_TAB = 8;
+sfx.sparkle = () => [1568, 1976, 2349, 3136].forEach((f, i) => note(f, i * 0.06, 0.18, 'sine', 0.04));
+sfx.evolve = () => { [523, 659, 784, 1047, 1319, 1568].forEach((f, i) => note(f, i * 0.09, 0.3, 'triangle', 0.05)); note(262, 0, 0.9, 'sine', 0.05, 523); };
+sfx.swish = () => note(500, 0, 0.18, 'sine', 0.04, 1100);
+sfx.page = () => { note(880, 0, 0.07, 'sine', 0.04); note(1175, 0.05, 0.1, 'sine', 0.035); };
+// ---------- 🎨 THE COSTUMES (hats + glasses are the SAME drawings as Silly Mode + the Photo Booth) ----------
+// p = price in Boss Studio coins (0 = free). Each draw gets (x, y = where it sits, s = 1 for a boss head about 70 wide).
+function cosMask(x, y, s, col) {                                      // 🦸 a hero mask with eye holes
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s); ctx.fillStyle = col; ctx.beginPath();
+  ctx.moveTo(-36, -4); ctx.quadraticCurveTo(-20, -16, 0, -8); ctx.quadraticCurveTo(20, -16, 36, -4); ctx.quadraticCurveTo(30, 14, 12, 10); ctx.quadraticCurveTo(0, 4, -12, 10); ctx.quadraticCurveTo(-30, 14, -36, -4);
+  for (const d of [-1, 1]) { ctx.moveTo(d * 17 + 7, 0); ctx.ellipse(d * 17, 0, 7, 5, 0, 0, Math.PI * 2, true); }
+  ctx.fill('evenodd'); ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = 1.5; ctx.stroke();
+  for (const d of [-1, 1]) { ctx.save(); ctx.translate(-d * 36, -4); ctx.rotate(d * 0.5); mEll(-d * 8, 4, 10, 3, col); ctx.restore(); }
+  ctx.restore();
+}
+function cosHeartGlasses(x, y, s) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  for (const d of [-1, 1]) { mHeart(d * 17, 0, 14, '#ff4081'); ctx.globalAlpha = 0.55; mHeart(d * 17, 0, 9, '#ffcdd2'); ctx.globalAlpha = 1; }
+  ctx.strokeStyle = '#c2185b'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(-6, -2); ctx.lineTo(6, -2); ctx.stroke();
+  ctx.restore();
+}
+function cosTie(x, y, s, k, t) {                                     // 🎀 a bow tie (red, polka dots or shiny gold)
+  const col = ['', '#e53935', '#1e88e5', '#ffc107'][k], dark = ['', '#b71c1c', '#0d47a1', '#ff8f00'][k];
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s); ctx.rotate(Math.sin(t * 0.08) * 0.08);
+  mPoly([0, 0, -22, -12, -22, 12], col, dark, 2); mPoly([0, 0, 22, -12, 22, 12], col, dark, 2);
+  if (k === 2) for (const [dx, dy] of [[-15, -4], [-13, 6], [15, -4], [13, 6]]) circle(dx, dy, 2.6, '#fff');
+  if (k === 3) { ctx.globalAlpha = 0.6 + Math.sin(t * 0.15) * 0.3; mPoly([-18, -6, -10, -3, -18, 0], '#fff'); ctx.globalAlpha = 1; }
+  roundRect(-6, -7, 12, 14, 4, dark);
+  ctx.restore();
+}
+function cosCape(F, box, nx, ny, k, t) {                              // 🦸 a cape behind the boss (it waves!)
+  const top = box.w * 0.34, bot = box.w * 0.62, by = box.y + box.h * 0.98, wav = i => Math.sin(t * 0.12 + i * 1.3) * 5;
+  const pts = []; for (let i = 0; i <= 6; i++) pts.push([nx - bot + i * bot / 3, by + wav(i)]);
+  ctx.save(); ctx.beginPath(); ctx.moveTo(nx - top, ny); ctx.lineTo(nx + top, ny);
+  for (let i = pts.length - 1; i >= 0; i--) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.closePath();
+  ctx.fillStyle = k === 1 ? '#e53935' : k === 2 ? '#1a237e' : '#8e24aa'; ctx.fill();
+  ctx.clip();
+  if (k === 2) for (let i = 0; i < 9; i++) starShape(nx - bot * 0.8 + (i * 37) % (bot * 1.6), ny + 14 + ((i * 53) % Math.max(20, by - ny - 10)), 5, '#ffd740');
+  if (k === 3) { const cols = ['#ef5350', '#ffa726', '#ffee58', '#66bb6a', '#42a5f5', '#7e57c2']; cols.forEach((c, i) => { ctx.fillStyle = c; ctx.fillRect(nx - bot - 10 + i * (bot * 2 + 20) / 6, ny - 5, (bot * 2 + 20) / 6 + 1, by - ny + 20); }); }
+  ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.fillRect(nx - bot - 10, ny, bot * 2 + 20, 7);
+  ctx.restore();
+  ctx.strokeStyle = k === 1 ? '#ffd740' : k === 2 ? '#ffd740' : '#fff'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(nx - top, ny); ctx.lineTo(nx + top, ny); ctx.stroke();
+}
+const COS = {
+  h: [{ n: 'No Hat', i: '🚫' },
+    { n: 'Party Hat', i: '🥳', p: 0, d: (x, y, s) => pbHat(1, x, y, 95 * s) },
+    { n: 'Propeller Beanie', i: '🧢', p: 0, d: (x, y, s, t) => sillyHatAt(1, x, y + 2 * s, s, 0, t) },
+    { n: 'Top Hat', i: '🎩', p: 10, d: (x, y, s) => pbHat(2, x, y, 90 * s) },
+    { n: 'Royal Crown', i: '👑', p: 15, d: (x, y, s) => pbHat(3, x, y, 85 * s) },
+    { n: 'Cowboy Hat', i: '🤠', p: 10, d: (x, y, s) => pbHat(4, x, y, 80 * s) },
+    { n: 'Chef Hat', i: '👨‍🍳', p: 8, d: (x, y, s, t) => sillyHatAt(2, x, y + 2 * s, s, 0, t) },
+    { n: 'Giant Bow', i: '🎀', p: 8, d: (x, y, s, t) => sillyHatAt(3, x, y + 4 * s, s, Math.sin(t * 0.1) * 0.1, t) },
+    { n: 'Rubber Duck', i: '🦆', p: 12, d: (x, y, s, t) => sillyHatAt(4, x, y + 2 * s, s, Math.sin(t * 0.1) * 0.12, t) }],
+  f: [{ n: 'No Glasses', i: '🚫' },
+    { n: 'Glasses', i: '👓', p: 0, d: (x, y, s) => pbFace(1, x, y, 95 * s) },
+    { n: 'Sunglasses', i: '🕶️', p: 8, d: (x, y, s) => pbFace(2, x, y, 95 * s) },
+    { n: 'Heart Glasses', i: '😍', p: 10, d: (x, y, s) => cosHeartGlasses(x, y, s) },
+    { n: 'Hero Mask', i: '🦸', p: 12, d: (x, y, s) => cosMask(x, y, s, '#3949ab') },
+    { n: 'Silly Mustache', i: '👨', p: 6, d: (x, y, s) => pbFace(3, x, y - 6 * s, 95 * s) }],
+  c: [{ n: 'No Cape', i: '🚫' }, { n: 'Hero Cape', i: '🟥', p: 0 }, { n: 'Star Cape', i: '⭐', p: 12 }, { n: 'Rainbow Cape', i: '🌈', p: 20 }],
+  u: [{ n: 'No Bow Tie', i: '🚫' }, { n: 'Red Bow Tie', i: '🎀', p: 0 }, { n: 'Polka-Dot Tie', i: '🔵', p: 6 }, { n: 'Gold Bow Tie', i: '✨', p: 10 }],
+  t: [{ n: 'Normal Colors', i: '🎨', hue: 0 }, { n: 'Sunny', i: '🌞', hue: 35, p: 0 }, { n: 'Minty', i: '🌿', hue: 100, p: 5 },
+    { n: 'Ocean', i: '🌊', hue: 170, p: 5 }, { n: 'Berry', i: '🫐', hue: 240, p: 5 }, { n: 'Candy', i: '🍬', hue: 300, p: 5 }],
+};
+const COS_SLOTS = [['h', '🎩 HAT'], ['f', '👓 GLASSES'], ['c', '🦸 CAPE'], ['u', '🎀 BOW TIE'], ['t', '🎨 COLOR']];
+const cosOwned = (sl, i) => i === 0 || !(COS[sl][i].p > 0) || !!save.cosOwn[sl + i];
+const cosDressed = id => { const c = save.cos[id]; return !!c && COS_SLOTS.some(([sl]) => c[sl] > 0); };
+// where each boss's head is: hy = hat (from the top of its box, 0-1), ey = eyes, ny = neck, hx = left/right nudge, s = size nudge
+const COS_ANCH = {
+  kinggloop: { ey: 0.4, ny: 0.86 }, megasaucer: { ey: 0.32, ny: 0.5, s: 0.55 }, warpsaucer: { ey: 0.32, ny: 0.5, s: 0.55 }, circuitsaucer: { ey: 0.32, ny: 0.5, s: 0.55 },
+  stoneagesaucer: { ey: 0.32, ny: 0.5, s: 0.5 }, goorilla: { ey: 0.17, ny: 0.42, s: 0.8 }, rj4final: { ey: 0.28, ny: 0.62 }, rj5final: { hy: 0.14, ey: 0.4, ny: 0.62 },
+  glitchrobo: { ey: 0.15, ny: 0.3, s: 1.2 }, timerobo: { hy: 0.1, ey: 0.27, ny: 0.45 }, lockrobo: { ey: 0.27, ny: 0.45 }, laserheart: { hy: 0.1, ey: 0.42, ny: 0.7, s: 0.75 },
+  mirrorrobo: { hy: 0.05, ey: 0.27, ny: 0.5, s: 1.3 }, g_fire: { hy: 0.03, ey: 0.25, ny: 0.45 }, g_water: { hy: 0.03, ey: 0.25, ny: 0.45 }, g_wind: { hy: 0.03, ey: 0.25, ny: 0.45 },
+  g_earth: { hy: 0.03, ey: 0.25, ny: 0.45 }, g_ice: { hy: 0.03, ey: 0.25, ny: 0.45 }, g_bolt: { hy: 0.03, ey: 0.25, ny: 0.45 }, kingelement: { hy: 0.03, ey: 0.18, ny: 0.33, s: 0.7 },
+  musicalrobo: { hy: 0.06, ey: 0.35, ny: 0.48, s: 0.8 }, bookboss: { ey: 0.48, ny: 0.75 }, ultimateboss: { hy: -0.38, ey: 0.2, ny: 0.45 }, chaosnova: { ey: 0.43, ny: 0.75, s: 0.8 },
+  phantomrobo: { ey: 0.25, ny: 0.45, s: 1.1 }, omegacore: { hy: 0.23, ey: 0.42, ny: 0.65, s: 0.8 }, factoryheart: { hy: 0.12, ey: 0.36, ny: 0.62 },
+  krakenking: { hy: 0.03, ey: 0.33, ny: 0.6, s: 0.8 }, stormking: { ey: 0.3, ny: 0.5, s: 0.9 }, magnetron: { hy: 0.08, ey: 0.27, ny: 0.4, s: 0.8 },
+  brickrobo: { ey: 0.11, ny: 0.28, s: 0.9 }, recordrobo: { ey: 0.14, ny: 0.28, s: 0.8 }, chaosrobo: { ey: 0.23, ny: 0.47, s: 1.1 }, prismrobo: { hy: 0, ey: 0.2, ny: 0.4, s: 0.9 },
+  shadowglitch: { hy: 0, ey: 0.34, ny: 0.76, s: 0.9 },
+};
+const cosAnch = id => Object.assign({ hy: 0.02, ey: 0.3, ny: 0.56, hx: 0, s: 1 }, COS_ANCH[id] || {});
+function cosSpots(F) {
+  const box = bossBox(F), a = cosAnch(F.id), s = clamp(box.w / 80, 0.6, 1.6) * a.s, x = F.b.x + a.hx * box.w;
+  return { box, s, x, hy: box.y + a.hy * box.h, ey: box.y + a.ey * box.h, ny: box.y + a.ny * box.h };
+}
+// ---------- 🌟 EVOLUTION: wins -> level 1 (normal), 2 Shiny (3 wins), 3 Super (7 wins), 4 MEGA (15 wins) ----------
+const EVO_AT = [0, 0, 3, 7, 15], EVO_NAME = ['', '', 'Shiny', 'SUPER', 'MEGA'];
+const evoLevelOf = w => w >= 15 ? 4 : w >= 7 ? 3 : w >= 3 ? 2 : 1;
+const evoLv = id => evoLevelOf(save.evo[id] || 0);
+const evoName = (id, lv) => (lv > 1 ? EVO_NAME[lv] + ' ' : '') + bossName(id);
+const EVO_OK = id => !!BOSSES[id] && !/^des_|^fus/.test(id);
+let evoQ = [];                                                        // evolutions waiting for their party
+function evoWin(id) {
+  if (!EVO_OK(id)) return;
+  const before = evoLv(id); save.evo[id] = (save.evo[id] || 0) + 1; const lv = evoLv(id);
+  if (lv > before && lv > (save.evoSeen[id] || 1)) { save.evoSeen[id] = lv; evoQ.push({ id, lv }); if (lv >= 4) trophy('bossEvolve'); }   // 🏆 evolve a boss to MEGA
+  writeSave();
+}
+function fEvo(F) {                                                    // what level a boss LOOKS like right now
+  if (F.preview) return F.lv || 1;
+  if (fight && fight.evLook && fight.bosses && fight.bosses.includes(F)) return fight.evLook[F.id] || 1;
+  return save.evoOn ? evoLv(F.id) : 1;
+}
+function fCos(F) {
+  if (F.preview) return F.cos || null;
+  if (fight && fight.cosSnap && fight.bosses && fight.bosses.includes(F)) return fight.cosSnap[F.id] || null;
+  return save.cos[F.id] || null;
+}
+const TC2 = document.createElement('canvas'); TC2.width = W; TC2.height = H; const tctx2 = TC2.getContext('2d');
+function evoAura(F, box, lv, t) {                                     // 🌟 Super + MEGA: a soft glowing aura behind the boss
+  const cx = F.b.x, cy = box.y + box.h / 2, r = Math.max(box.w, box.h) * 0.75 * (1 + Math.sin(t * 0.08) * 0.05);
+  const g = ctx.createRadialGradient(cx, cy, r * 0.2, cx, cy, r);
+  const col = lv >= 4 ? '255,215,64' : '128,216,255';
+  g.addColorStop(0, `rgba(${col},.45)`); g.addColorStop(1, `rgba(${col},0)`);
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.fill();
+}
+function evoSparkles(F, box, lv, t) {                                 // ✨ twinkly stars around the edge
+  const n = lv >= 4 ? 8 : 6;
+  for (let i = 0; i < n; i++) {
+    const a = i * 6.283 / n + t * 0.02, tw = Math.sin(t * 0.15 + i * 1.7);
+    if (tw < 0.1) continue;
+    const x = F.b.x + Math.cos(a) * (box.w * 0.62 + 6), y = box.y + box.h / 2 + Math.sin(a) * (box.h * 0.58 + 6);
+    starShape(x, y, 3 + tw * 5, lv >= 4 ? '#ffd740' : '#ffffff');
+  }
+}
+function evoEmblem(F, sp, lv, t, hasHat) {                            // 🌟 Super + MEGA: a star badge (and a little crown if there is no hat)
+  const s = sp.s, x = sp.x, y = Math.min(sp.box.y + sp.box.h - 12 * s, sp.ny + 24 * s);
+  circle(x, y, 11 * s, lv >= 4 ? '#ff8f00' : '#1e88e5'); circle(x, y, 8.5 * s, lv >= 4 ? '#ffd740' : '#80d8ff'); starShape(x, y, 7 * s, '#fff');
+  if (!hasHat) {
+    const cy = sp.hy - 6 * s + Math.sin(t * 0.08) * 3;
+    mPoly([x - 14 * s, cy, x - 14 * s, cy - 12 * s, x - 7 * s, cy - 5 * s, x, cy - 15 * s, x + 7 * s, cy - 5 * s, x + 14 * s, cy - 12 * s, x + 14 * s, cy], lv >= 4 ? '#ffd740' : '#b3e5fc', '#fff', 1.5);
+    circle(x, cy - 4 * s, 2.5 * s, '#e91e63');
+  }
+}
+function evoTrail(F, box, t) {                                        // 🌠 MEGA: a golden sparkle trail (looks only: Math.random, never rnd())
+  const T = F._trail || (F._trail = []);
+  if (F._tf !== frame) { F._tf = frame; if (frame % 3 === 0) T.push({ x: F.b.x + (Math.random() - 0.5) * box.w * 0.8, y: box.y + box.h * (0.3 + Math.random() * 0.7), life: 40, c: Math.random() < 0.5 ? '#ffd740' : '#fff59d' }); for (const p of T) { p.life--; p.y += 0.6; } F._trail = T.filter(p => p.life > 0); }
+  for (const p of F._trail) { ctx.globalAlpha = Math.min(1, p.life / 20); starShape(p.x, p.y, 2 + p.life / 12, p.c); }
+  ctx.globalAlpha = 1;
+}
+// ---------- drawing a boss in ANY mode (fights, replays, Boss vs. Boss, tournaments...) with its costume + evolution look ----------
+function drawBossBody(F, lv, hue) {
+  const b = F.b;
+  if (!F.tint && lv < 2 && !hue) { ctx.save(); try { F.def.draw(ctx, b, F.A); } catch (e) { noteErr(e, 'draw ' + F.id); } ctx.restore(); return; }
+  tctx.setTransform(1, 0, 0, 1, 0, 0); tctx.clearRect(0, 0, W, H);   // (drawn on a 2nd canvas first, like the tinted Mirror Robo copies)
+  tctx.save(); try { F.def.draw(tctx, b, F.A); } catch (e) { noteErr(e, 'draw ' + F.id); } tctx.restore();
+  if (F.tint) { tctx.globalCompositeOperation = 'source-atop'; tctx.fillStyle = F.tint; tctx.fillRect(0, 0, W, H); tctx.globalCompositeOperation = 'source-over'; }
+  if (lv >= 2) {                                                      // ✨ the sparkly outline (gold for MEGA)
+    tctx2.setTransform(1, 0, 0, 1, 0, 0); tctx2.globalCompositeOperation = 'source-over'; tctx2.clearRect(0, 0, W, H); tctx2.drawImage(TC, 0, 0);
+    tctx2.globalCompositeOperation = 'source-in'; tctx2.fillStyle = lv >= 4 ? '#ffc400' : lv >= 3 ? '#b3e5fc' : '#ffffff'; tctx2.fillRect(0, 0, W, H); tctx2.globalCompositeOperation = 'source-over';
+    const a0 = ctx.globalAlpha, d = lv >= 4 ? 3 : 2; ctx.globalAlpha = a0 * (0.75 + Math.sin(frame * 0.12) * 0.2);
+    for (const [dx, dy] of [[-d, 0], [d, 0], [0, -d], [0, d]]) ctx.drawImage(TC2, dx, dy);
+    ctx.globalAlpha = a0;
+  }
+  if (hue) ctx.filter = `hue-rotate(${hue}deg)`;
+  ctx.drawImage(TC, 0, 0);
+  if (hue) ctx.filter = 'none';
+}
+drawFighter = function (F) {
+  const b = F.b, hide = !!(b.hidden || b.under), lv = hide ? 1 : fEvo(F), csS = hide ? null : fCos(F), t = frame;
+  const hue = csS && csS.t > 0 && COS.t[csS.t] ? COS.t[csS.t].hue : 0;
+  let sp = null;
+  ctx.save();
+  if (lv >= 4) { const box = bossBox(F), fy = box.y + box.h; ctx.translate(b.x, fy); ctx.scale(1.12, 1.12); ctx.translate(-b.x, -fy); }   // 💪 MEGA = bigger (only the look)
+  if (lv >= 3 || (csS && csS.c > 0)) sp = cosSpots(F);
+  if (lv >= 3) evoAura(F, sp.box, lv, t);
+  if (lv >= 4) evoTrail(F, sp.box, t);
+  if (csS && csS.c > 0) { try { cosCape(F, sp.box, sp.x, sp.ny, csS.c, t); } catch (e) { noteErr(e, 'cape ' + F.id); } }
+  drawBossBody(F, lv, hue);
+  if (csS || lv >= 2) {
+    sp = sp || cosSpots(F);
+    try {
+      if (csS && csS.u > 0) cosTie(sp.x, sp.ny, sp.s * 0.9, csS.u, t);
+      if (lv >= 3) evoEmblem(F, sp, lv, t, !!(csS && csS.h > 0) || (save.silly && !F.preview));
+      if (csS && csS.f > 0 && COS.f[csS.f]) COS.f[csS.f].d(sp.x, sp.ey, sp.s * 0.9, t);
+      if (csS && csS.h > 0 && COS.h[csS.h]) COS.h[csS.h].d(sp.x, sp.hy, sp.s, t);
+    } catch (e) { noteErr(e, 'costume ' + F.id); }
+    if (lv >= 2) evoSparkles(F, sp.box, lv, t);
+  }
+  ctx.restore();
+  if (save.silly && !hide && !F.preview && !(csS && csS.h > 0)) drawSillyHat(F);   // 🌀 Silly Mode hats (a costume hat wins)
+  if (F.sch) schoolDraw(F);                               // 🏫 a learned attack's warning
+  if (F.stun > 0) drawStunStars(F);
+  if (F.rest && !b.hidden) heartRestDraw(F);              // 💤
+  if (!F.preview && isVuln(F) && !hide && state === 'fight') {   // ⬇ "BONK ME!" arrow over dizzy bosses
+    const box = bossBox(F), y = Math.max(30, box.y - 26 + Math.sin(frame * 0.2) * 5);
+    ctx.fillStyle = '#ffd740'; ctx.beginPath(); ctx.moveTo(b.x - 12, y - 14); ctx.lineTo(b.x + 12, y - 14); ctx.lineTo(b.x, y); ctx.fill();
+    text('BONK!', b.x, y - 18, 16, '#ffd740');
+  }
+};
+// ---------- the fight hooks: snapshot the costumes + levels into the fight (and its replay), +1 HP per level, XP for every win ----------
+function evoSnapIds(ch) { const ids = []; for (const r of (ch.rounds || [])) for (const id of r) if (!ids.includes(id)) ids.push(id); return ids; }
+const _stPre = morePreRound;
+morePreRound = function () {
+  if (fight.cosSnap === undefined) {
+    const R = fight.replay, ch = fight.ch;
+    if (R) { fight.cosSnap = R.cos || {}; fight.evLook = R.ev || {}; fight.evHp = R.evHp || 0; }   // (old replays: no costumes, no evolution)
+    else {
+      fight.cosSnap = {}; fight.evLook = {};
+      for (const id of evoSnapIds(ch)) { if (cosDressed(id)) fight.cosSnap[id] = Object.assign({}, save.cos[id]); if (save.evoOn && evoLv(id) > 1) fight.evLook[id] = evoLv(id); }
+      fight.evHp = save.evoOn && !ch.story && !ch.hp && !ch.tower && !ch.heart ? 1 : 0;
+      if (ch.story && save.story.helper && !fight.mods.one && !fight.stHelp) { fight.stHelp = 1; fight.maxHearts += 2; fight.hearts = fight.maxHearts; }   // 📖 story helper: +2 hearts
+    }
+  }
+  return _stPre.apply(this, arguments);
+};
+const _stMakeF = makeFighter;
+makeFighter = function (id, k, list, ch) {
+  const F = _stMakeF.apply(this, arguments);
+  if (fight && fight.evHp && fight.evLook && ch && ch === fight.ch && fight.evLook[id] > 1) { F.b.hp += fight.evLook[id] - 1; F.hp0 = F.b.hp; }   // 🌟 evolved = +1 HP per level
+  return F;
+};
+const _stRecKeep = recKeep;
+recKeep = function () {
+  const before = save.replays.last;
+  _stRecKeep.apply(this, arguments);
+  const P = save.replays.last;
+  if (P && P !== before && fight) { P.cos = JSON.parse(JSON.stringify(fight.cosSnap || {})); P.ev = Object.assign({}, fight.evLook || {}); P.evHp = fight.evHp || 0; writeSave(); }
+};
+const _stBossDone = bossDone;
+bossDone = function (F) {
+  _stBossDone.apply(this, arguments);
+  if (fight && !fight.replay && !fight.bvb && !fight.sim) evoWin(F.id);   // 🌟 every boss you beat earns 1 XP
+};
+// ---------- a "preview" boss (for the Changing Room + the Evolution Gallery): its real drawing, never in a fight ----------
+const PREV = {};
+function previewF(id) {
+  let F = PREV[id];
+  if (!F) {
+    const def = BOSSES[id], A = quietArena(), b = { x: W / 2, y: 250, vx: 0, vy: 0, hp: def.hp, t: 0, vuln: false, face: -1, hurt: 0, w: def.w, h: def.h };
+    try { def.init(b, A); } catch (e) { noteErr(e, 'preview ' + id); }
+    b.vuln = false; b.hurt = 0; b.hidden = false; b.under = false; if (typeof b.alpha === 'number') b.alpha = 1;
+    F = PREV[id] = { id, def, k: 0, b, A, preview: true, bonkCD: 0, gone: false, lastVuln: -99 };
+  }
+  const bh = Math.max(10, num(F.b.h, F.def.h)); F.b.x = W / 2; F.b.y = 420 - bh / 2; F.A.t = frame;
+  return F;
+}
+function drawPreview(id, cx, feet, maxH, o = {}) {                // a live boss drawing, feet at (cx, feet), at most maxH tall
+  const F = previewF(id), box = bossBox(F), k = Math.min(1.25, maxH / Math.max(box.h, box.w * 0.9, 1));
+  F.cos = o.cos || null; F.lv = o.lv || 1;
+  ctx.save(); ctx.translate(cx, feet); if (o.flip) ctx.scale(-1, 1); ctx.scale(k, k); ctx.translate(-F.b.x, -(box.y + box.h));
+  drawFighter(F); ctx.restore();
+}
+// ---------- 🎨 THE BOSS COSTUME SHOP + CHANGING ROOM ----------
+const cosIds = () => bfAll().concat(['prismrobo'].filter(id => BOSSES[id] && !bfAll().includes(id))).concat(save.story.done >= 8 && BOSSES.shadowglitch ? ['shadowglitch'] : []);
+let csS = { i: 0, page: 0, slot: 0, msg: '', msgT: 0 };
+const CS_PER = 9, csFace = k => ({ x: 70 + k * 58, y: 62, w: 54, h: 54 }), CS_PREV = { x: 12, y: 62, w: 50, h: 54 }, CS_NEXT = { x: 594, y: 62, w: 50, h: 54 };
+const csSlotBtn = i => ({ x: 492 + i * 92, y: 128, w: 86, h: 42 });
+const csItem = i => ({ x: 492 + (i % 3) * 152, y: 182 + Math.floor(i / 3) * 84, w: 144, h: 76 });
+const CS_RANDOM = { x: 660, y: 62, w: 136, h: 54 }, CS_OFF = { x: 806, y: 62, w: 138, h: 54 };
+function openCostumes() { state = 'stcos'; csS.msgT = 0; setSong('title'); const ids = cosIds(); csS.i = clamp(csS.i, 0, ids.length - 1); csS.page = Math.floor(csS.i / CS_PER); }
+function csSay(s) { csS.msg = s; csS.msgT = 160; }
+function csCheckTrophy() { if (cosIds().filter(cosDressed).length >= 5) trophy('bossCostume'); }   // 🏆 dress up 5 bosses
+function csPick(id, sl, i) {
+  const it = COS[sl][i], c = save.cos[id] || (save.cos[id] = {});
+  if (!cosOwned(sl, i)) {
+    if (!bfSpend(it.p)) { csSay('Not enough coins yet! Bonk bosses to earn more 🪙'); sfx.nope(); return; }
+    save.cosOwn[sl + i] = 1; sfx.coin(); csSay(`${it.i} You bought the ${it.n}! Now every boss can wear it.`);
+  } else { sfx.swish(); csSay(c[sl] === i && i > 0 ? `${it.i} Took off the ${it.n}.` : i ? `${it.i} ${shortName(id)} is wearing the ${it.n}!` : `${it.n}.`); }
+  c[sl] = c[sl] === i ? 0 : i;
+  if (!cosDressed(id)) delete save.cos[id];
+  writeSave(); csCheckTrophy();
+  burst(240, 260, ['#ffd740', '#fff', '#ff80ab'], 14, 3);
+}
+function csRandom(id) {
+  const c = {}; for (const [sl] of COS_SLOTS) { const own = COS[sl].map((_, i) => i).filter(i => cosOwned(sl, i)); c[sl] = own[Math.floor(Math.random() * own.length)]; }
+  save.cos[id] = c; if (!cosDressed(id)) delete save.cos[id]; writeSave(); csCheckTrophy(); sfx.sparkle(); csSay('🎲 Ta-da! A surprise outfit!');
+  burst(240, 260, ['#ffd740', '#fff', '#69f0ae', '#ff80ab'], 24, 4);
+}
+MORE_STATES.stcos = {
+  u() {
+    frame++; if (csS.msgT > 0) csS.msgT--;
+    for (const p of particles) { p.x += p.vx; p.y += p.vy; p.vy += 0.12; p.life--; } particles = particles.filter(p => p.life > 0);
+    if (press.esc || inBox(tap, BACK_BTN)) { particles = []; goMenu(); menuTab = ST_TAB; return; }
+    const ids = cosIds(), pages = Math.ceil(ids.length / CS_PER), id = ids[csS.i];
+    if (inBox(tap, CS_PREV)) { csS.page = (csS.page + pages - 1) % pages; sfx.page(); }
+    if (inBox(tap, CS_NEXT)) { csS.page = (csS.page + 1) % pages; sfx.page(); }
+    for (let k = 0; k < CS_PER; k++) { const j = csS.page * CS_PER + k; if (ids[j] && inBox(tap, csFace(k))) { csS.i = j; sfx.click(); } }
+    if (press.l) { csS.i = (csS.i + ids.length - 1) % ids.length; csS.page = Math.floor(csS.i / CS_PER); }
+    if (press.r) { csS.i = (csS.i + 1) % ids.length; csS.page = Math.floor(csS.i / CS_PER); }
+    COS_SLOTS.forEach((s, i) => { if (inBox(tap, csSlotBtn(i))) { csS.slot = i; sfx.click(); } });
+    if (press.u) csS.slot = (csS.slot + 4) % 5; if (press.d) csS.slot = (csS.slot + 1) % 5;
+    const sl = COS_SLOTS[csS.slot][0];
+    COS[sl].forEach((it, i) => { if (inBox(tap, csItem(i))) csPick(id, sl, i); });
+    if (inBox(tap, CS_RANDOM)) csRandom(id);
+    if (inBox(tap, CS_OFF)) { delete save.cos[id]; writeSave(); sfx.swish(); csSay('🧽 All clean! Back to normal.'); }
+  },
+  d() {
+    const ids = cosIds(), id = ids[csS.i], c = save.cos[id] || {}, t = frame;
+    ctx.fillStyle = '#4a2c5a'; ctx.fillRect(0, 0, W, H);                        // the shop's wallpaper
+    for (let x = 0; x < W; x += 40) for (let y = 0; y < H; y += 40) { ctx.globalAlpha = 0.12; starShape(x + ((y / 40) % 2) * 20, y, 6, '#ffd740'); } ctx.globalAlpha = 1;
+    roundRect(0, 0, W, 54, 0, 'rgba(0,0,0,.4)'); button(BACK_BTN, '⬅', 'rgba(0,0,0,.45)', 22);
+    text('🎨 BOSS COSTUME SHOP', W / 2, 40, 30, '#ffd740');
+    roundRect(W - 176, 8, 166, 40, 14, 'rgba(0,0,0,.55)'); text('🪙 ' + bfCoins(), W - 93, 38, 26, '#ffd740');
+    button(CS_PREV, '◀', '#6a1b9a', 24); button(CS_NEXT, '▶', '#6a1b9a', 24);
+    for (let k = 0; k < CS_PER; k++) { const j = csS.page * CS_PER + k, r = csFace(k); if (!ids[j]) continue;
+      roundRect(r.x, r.y, r.w, r.h, 10, j === csS.i ? '#ffd740' : 'rgba(255,255,255,.15)'); drawFace(ids[j], r.x + r.w / 2, r.y + r.h / 2, 48); if (cosDressed(ids[j])) text('👕', r.x + r.w - 8, r.y + 16, 13); }
+    button(CS_RANDOM, '🎲 SURPRISE', '#00897b', 18); button(CS_OFF, '🧽 TAKE OFF', '#546e7a', 18);
+    csDrawRoom(id, c, t);
+    COS_SLOTS.forEach(([sl, lab], i) => button(csSlotBtn(i), lab, i === csS.slot ? '#ec407a' : 'rgba(0,0,0,.45)', 14, i === csS.slot));
+    const sl = COS_SLOTS[csS.slot][0];
+    COS[sl].forEach((it, i) => {
+      const r = csItem(i), on = (c[sl] || 0) === i, own = cosOwned(sl, i);
+      roundRect(r.x, r.y + 3, r.w, r.h, 12, 'rgba(0,0,0,.35)'); roundRect(r.x, r.y, r.w, r.h, 12, on ? '#43a047' : 'rgba(30,20,50,.85)');
+      if (on) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; mPath(r.x, r.y, r.w, r.h, 12); ctx.stroke(); }
+      text(it.i, r.x + 26, r.y + 46, 28); fitText(it.n, r.x + 88, r.y + 32, 15, 100, '#fff');
+      fitText(on && i ? '✅ WEARING' : own ? (it.p > 0 ? '✅ yours' : '🆓 free') : `🪙 ${it.p}`, r.x + 88, r.y + 58, 14, 100, own ? '#b9f6ca' : bfCoins() >= it.p ? '#ffd740' : '#ffab91');
+    });
+    for (const p of particles) { ctx.globalAlpha = Math.min(1, p.life / 20); ctx.fillStyle = p.c; ctx.fillRect(p.x - p.s / 2, p.y - p.s / 2, p.s, p.s); } ctx.globalAlpha = 1;
+    roundRect(12, 478, 936, 36, 12, 'rgba(0,0,0,.6)');
+    fitText(csS.msgT > 0 ? csS.msg : 'Tap a boss, then tap things to try them on! Costumes are just for looks.', W / 2, 503, 17, 900, csS.msgT > 0 ? '#fff59d' : '#fff');
+  },
+};
+function csDrawRoom(id, c, t) {                                        // 🚪 the changing room: curtains, a spotlight, the boss + a big mirror
+  roundRect(12, 124, 470, 348, 18, '#f8bbd0');
+  ctx.save(); mPath(12, 124, 470, 348, 18); ctx.clip();
+  for (let x = 12; x < 482; x += 30) { ctx.fillStyle = (x / 30) % 2 < 1 ? '#f48fb1' : '#f8bbd0'; ctx.fillRect(x, 124, 15, 280); }   // striped wallpaper
+  ctx.fillStyle = '#8d6e63'; ctx.fillRect(12, 404, 470, 70); ctx.fillStyle = '#a1887f'; for (let x = 12; x < 482; x += 60) ctx.fillRect(x, 404, 3, 70);   // wooden floor
+  ctx.globalAlpha = 0.25; mPoly([150, 124, 80, 470, 230, 470], '#fffde7'); ctx.globalAlpha = 1;   // 🔦 spotlight
+  for (const side of [0, 1]) {                                          // 🎭 the curtains
+    const x0 = side ? 482 - 40 : 12; ctx.fillStyle = '#c62828'; ctx.fillRect(x0, 124, 40, 348);
+    ctx.fillStyle = '#e53935'; for (let k = 0; k < 4; k++) ctx.fillRect(x0 + 4 + k * 9, 124, 4, 348);
+  }
+  ctx.fillStyle = '#ffd740'; ctx.fillRect(12, 124, 470, 10);
+  mEll(150, 444, 70, 12, 'rgba(0,0,0,.25)');
+  drawPreview(id, 150, 444, 230, { cos: c, lv: save.evoOn ? evoLv(id) : 1 });
+  const mx = 352, my = 286;                                             // 🪞 the mirror (gold frame), the boss is reflected in it
+  mEll(mx, my, 92, 140, '#ffb300'); mEll(mx, my, 84, 132, '#ffe082'); mEll(mx, my, 78, 126, '#b3e5fc');
+  ctx.save(); ctx.beginPath(); ctx.ellipse(mx, my, 78, 126, 0, 0, 7); ctx.clip();
+  ctx.fillStyle = '#e1f5fe'; ctx.fillRect(mx - 80, my + 60, 160, 70);
+  drawPreview(id, mx, my + 112, 190, { cos: c, lv: save.evoOn ? evoLv(id) : 1, flip: true });
+  ctx.globalAlpha = 0.35; ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(mx - 60, my - 90); ctx.lineTo(mx - 30, my - 110); ctx.lineTo(mx + 40, my + 40); ctx.lineTo(mx + 10, my + 60); ctx.fill(); ctx.globalAlpha = 1;
+  ctx.restore();
+  for (let k = 0; k < 6; k++) { const a = k * 1.05 + t * 0.01; circle(mx + Math.cos(a) * 88, my + Math.sin(a) * 136, 4, k % 2 ? '#fff' : '#ff80ab'); }   // mirror lights
+  ctx.restore();
+  roundRect(62, 132, 370, 34, 12, 'rgba(0,0,0,.55)');
+  const lv = save.evoOn ? evoLv(id) : 1;
+  fitText((lv > 1 ? '🌟 ' : '') + evoName(id, lv), 247, 156, 20, 356, '#fff');
+}
+// ---------- 🌟 THE EVOLUTION GALLERY ----------
+let eg = { page: 0, sel: 0 };
+const EG_PER = 12, egCell = k => ({ x: 16 + (k % 4) * 132, y: 66 + Math.floor(k / 4) * 132, w: 124, h: 124 });
+const EG_PREV = { x: 16, y: 466, w: 120, h: 44 }, EG_NEXT = { x: 412, y: 466, w: 120, h: 44 }, EG_TOG = { x: 572, y: 466, w: 370, h: 44 };
+const egIds = () => cosIds();
+function openGallery() { state = 'stgal'; setSong('title'); eg.sel = clamp(eg.sel, 0, egIds().length - 1); }
+function egBar(x, y, w, id) {                                          // the progress bar to the next level
+  const wins = save.evo[id] || 0, lv = evoLevelOf(wins), next = EVO_AT[lv + 1], prev = EVO_AT[lv] || 0;
+  roundRect(x, y, w, 12, 6, 'rgba(0,0,0,.5)');
+  const f = lv >= 4 ? 1 : (wins - prev) / (next - prev);
+  roundRect(x + 2, y + 2, Math.max(0, (w - 4) * f), 8, 4, lv >= 4 ? '#ffd740' : '#69f0ae');
+  return lv >= 4 ? '👑 MEGA!' : `${wins}/${next} wins`;
+}
+MORE_STATES.stgal = {
+  u() {
+    frame++;
+    if (press.esc || inBox(tap, BACK_BTN)) { goMenu(); menuTab = ST_TAB; return; }
+    const ids = egIds(), pages = Math.ceil(ids.length / EG_PER);
+    if (inBox(tap, EG_PREV)) { eg.page = (eg.page + pages - 1) % pages; sfx.page(); }
+    if (inBox(tap, EG_NEXT)) { eg.page = (eg.page + 1) % pages; sfx.page(); }
+    if (inBox(tap, EG_TOG)) { save.evoOn = !save.evoOn; writeSave(); sfx.click(); }
+    for (let k = 0; k < EG_PER; k++) { const j = eg.page * EG_PER + k; if (ids[j] && inBox(tap, egCell(k))) { eg.sel = j; sfx.click(); } }
+    if (press.r) { eg.sel = (eg.sel + 1) % ids.length; eg.page = Math.floor(eg.sel / EG_PER); }
+    if (press.l) { eg.sel = (eg.sel + ids.length - 1) % ids.length; eg.page = Math.floor(eg.sel / EG_PER); }
+  },
+  d() {
+    const ids = egIds(), id = ids[eg.sel], lv = evoLv(id);
+    drawArena('space'); overlay(0.6); button(BACK_BTN, '⬅', 'rgba(0,0,0,.45)', 22);
+    text('🌟 EVOLUTION GALLERY', W / 2, 40, 30, '#ffd740');
+    for (let k = 0; k < EG_PER; k++) {
+      const j = eg.page * EG_PER + k, r = egCell(k), q = ids[j]; if (!q) continue;
+      const L = evoLv(q);
+      roundRect(r.x, r.y, r.w, r.h, 14, j === eg.sel ? '#ffd740' : L >= 4 ? '#b8860b' : L >= 3 ? '#1565c0' : L >= 2 ? '#00838f' : 'rgba(20,20,50,.8)');
+      roundRect(r.x + 3, r.y + 3, r.w - 6, r.h - 6, 12, 'rgba(0,0,0,.35)');
+      drawFace(q, r.x + r.w / 2, r.y + 50, 78);
+      text(['', '⭐', '✨', '🌟', '👑'][L] + ' Lv ' + L, r.x + r.w / 2, r.y + 98, 14, '#fff');
+      const lab = egBar(r.x + 10, r.y + 104, r.w - 20, q); fitText(lab, r.x + r.w / 2, r.y + 18, 11, r.w - 10, '#fff59d');
+    }
+    button(EG_PREV, '◀ MORE', '#3949ab', 18); button(EG_NEXT, 'MORE ▶', '#3949ab', 18);
+    text(`page ${eg.page + 1} of ${Math.ceil(ids.length / EG_PER)}`, 274, 496, 16, '#fff');
+    roundRect(560, 66, 384, 392, 18, 'rgba(0,0,0,.5)');
+    mEll(752, 396, 90, 14, 'rgba(255,255,255,.15)');
+    drawPreview(id, 752, 396, 230, { cos: save.cos[id], lv });
+    fitText(evoName(id, lv), 752, 96, 24, 360, lv >= 4 ? '#ffd740' : '#fff');
+    const lab = egBar(600, 420, 304, id); text(lab, 752, 450, 16, '#fff59d');
+    fitText(lv >= 4 ? 'The BIGGEST, shiniest look! +3 HP in fights.' : `Win ${EVO_AT[lv + 1] - (save.evo[id] || 0)} more to become ${EVO_NAME[lv + 1]}!` + (lv > 1 ? `  (+${lv - 1} HP)` : ''), 752, 124, 15, 360, '#b9f6ca');
+    button(EG_TOG, save.evoOn ? '✅ Use evolved bosses in fights: ON' : '⬜ Use evolved bosses in fights: OFF', save.evoOn ? '#43a047' : '#616161', 17, save.evoOn);
+  },
+};
+// ---------- 🌟 the EVOLUTION PARTY (shows up on the win screen, the menu or the story map) ----------
+let evoShow = null;
+const EVO_CALM = ['win', 'menu', 'stmap'];
+MORE_STATES.stevo = {
+  u() {
+    frame++; const E = evoShow; if (!E) { state = 'menu'; return; }
+    E.t++;
+    if (E.t === 2) sfx.evolve();
+    if (E.t === 100) { sfx.sparkle(); burst(W / 2, 260, ['#ffd740', '#fff', '#80d8ff', '#ff80ab'], 60, 7); }
+    for (const p of particles) { p.x += p.vx; p.y += p.vy; p.vy += 0.08; p.life--; } particles = particles.filter(p => p.life > 0);
+    if ((E.t > 130 && (ok() || tap)) || E.t > 420) { state = E.back; evoShow = null; particles = []; }
+  },
+  d() {
+    const E = evoShow; if (!E) return;
+    const t = E.t, before = t < 100, lv = before ? E.lv - 1 : E.lv;
+    ctx.fillStyle = '#0d0b33'; ctx.fillRect(0, 0, W, H);
+    ctx.save(); ctx.translate(W / 2, 270); ctx.rotate(t * 0.01);
+    for (let i = 0; i < 16; i++) { ctx.rotate(Math.PI / 8); ctx.globalAlpha = 0.18; mPoly([0, 0, -40, -560, 40, -560], i % 2 ? '#ffd740' : '#80d8ff'); } ctx.restore(); ctx.globalAlpha = 1;
+    const sh = before && t > 40 ? Math.sin(t * 1.3) * (t - 40) * 0.06 : 0;
+    drawPreview(E.id, W / 2 + sh, 400, 240, { cos: save.cos[E.id], lv });
+    if (before && t > 40) { ctx.globalAlpha = Math.min(0.85, (t - 40) / 60); circle(W / 2, 290, 30 + (t - 40) * 2.2, '#fff'); ctx.globalAlpha = 1; }
+    if (t >= 100 && t < 130) { ctx.globalAlpha = 1 - (t - 100) / 30; ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1; }
+    for (const p of particles) { ctx.globalAlpha = Math.min(1, p.life / 20); starShape(p.x, p.y, p.s, p.c); } ctx.globalAlpha = 1;
+    if (before) text('✨ What? ' + bossName(E.id) + ' is evolving! ✨', W / 2, 70, 30, '#fff59d');
+    else {
+      const k = 1 + Math.max(0, 1 - (t - 100) / 20) * 0.4;
+      ctx.save(); ctx.translate(W / 2, 64); ctx.scale(k, k); fitText(`🌟 ${bossName(E.id)} evolved into ${evoName(E.id, E.lv)}! 🌟`, 0, 0, 30, 900, '#ffd740'); ctx.restore();
+      text(['', '', '✨ A sparkly outline!', '🌟 A glowing aura + a star badge!', '👑 Golden trim, BIGGER, and a sparkle trail!'][E.lv], W / 2, 104, 22, '#fff');
+      text(`It is a little tougher now: +${E.lv - 1} HP`, W / 2, 448, 18, '#b9f6ca');
+      if (t > 130) text('Tap or press JUMP', W / 2, 490, 16, '#ddd');
+    }
+  },
+};
+const _stUpdate = update;
+update = function () {
+  if (evoQ.length && EVO_CALM.includes(state) && !(state === 'win' && winInfo && winInfo.t < 30)) { evoShow = Object.assign(evoQ.shift(), { t: 0, back: state }); state = 'stevo'; particles = []; }
+  return _stUpdate.apply(this, arguments);
+};
+window.__bsEvolve = (id, wins) => { save.evo[id] = 0; for (let i = 0; i < wins; i++) evoWin(id); return evoLv(id); };   // (a test hook)
+// ---------- 🔮 PRISM ROBO (Robo Jump 20): a robot made of GLASS CRYSTALS, drawn with Robo Jump 20's drawPrism ----------
+// He splits into rainbow copies, but only the REAL one blinks + casts a shadow. Every attack warns for 70+ frames.
+(function () {
+  var B = window.BOSSES, R7 = ['#ff5252', '#ff9800', '#ffeb3b', '#69f0ae', '#40c4ff', '#536dfe', '#e040fb'];
+  var clampP = function (v, a, b) { return Math.max(a, Math.min(b, v)); };
+  function poly(c, pts, f, st, lw) { c.beginPath(); for (var i = 0; i < pts.length; i += 2) c.lineTo(pts[i], pts[i + 1]); c.closePath(); if (f) { c.fillStyle = f; c.fill(); } if (st) { c.strokeStyle = st; c.lineWidth = lw || 2; c.stroke(); } }
+  function ell(c, x, y, rx, ry, f) { c.fillStyle = f; c.beginPath(); c.ellipse(x, y, Math.max(0, rx), Math.max(0, ry), 0, 0, 7); c.fill(); }
+  function dot(c, x, y, r, f) { c.fillStyle = f; c.beginPath(); c.arc(x, y, Math.max(0, r), 0, 7); c.fill(); }
+  function txt(c, s, x, y, size, col) { c.font = 'bold ' + size + 'px "Trebuchet MS", Arial, sans-serif'; c.textAlign = 'center'; c.lineJoin = 'round'; c.strokeStyle = 'rgba(0,0,0,.6)'; c.lineWidth = Math.max(3, size / 6); c.strokeText(s, x, y); c.fillStyle = col || '#fff'; c.fillText(s, x, y); }
+  function star(c, x, y, r, f, rot) { c.fillStyle = f; c.beginPath(); for (var i = 0; i < 10; i++) { var a = (rot || 0) + i * Math.PI / 5 - Math.PI / 2, q = i % 2 ? r * 0.45 : r; c.lineTo(x + Math.cos(a) * q, y + Math.sin(a) * q); } c.closePath(); c.fill(); }
+  function bang(c, x, y, t) { var k = 1 + Math.sin(t * 0.4) * 0.12; dot(c, x, y, 18 * k, t % 16 < 8 ? '#ff4081' : '#ffea00'); txt(c, '!', x, y + 10 * k, 28 * k, '#fff'); }
+  function rr(c, x, y, w, h, r, f) { c.fillStyle = f; c.beginPath(); if (c.roundRect) c.roundRect(x, y, w, h, r); else c.rect(x, y, w, h); c.fill(); }
+  function warnLen(A) { return Math.round(72 / Math.min(1, A.speed || 1)); }
+  function drawPrism(c, x, gy, s, o) {                    // (x, gy) = middle of his feet
+    var t = o.t || 0, tint = o.tint || '#b3e5fc', f = o.face || -1, i, d;
+    if (o.shadow) ell(c, x, gy + 2, 44 * s, 8 * s, 'rgba(20,0,40,.35)');
+    c.save(); c.globalAlpha *= o.alpha === undefined ? 1 : o.alpha;
+    var bob = o.dizzy ? 0 : Math.sin(t * 0.06) * 4; c.translate(x, gy + bob * s); c.scale(s, s);
+    var glass = 'rgba(225,245,255,.82)', edge = '#ffffff';
+    poly(c, [-24, -40, -12, -40, -14, -2, -26, -2], glass, tint, 2); poly(c, [12, -40, 24, -40, 26, -2, 14, -2], glass, tint, 2);
+    poly(c, [-30, -4, -10, -4, -10, 2, -32, 2], tint); poly(c, [10, -4, 30, -4, 32, 2, 10, 2], tint);
+    poly(c, [-40, -100, 40, -100, 30, -40, -30, -40], glass, edge, 3);
+    c.save(); c.beginPath(); c.moveTo(-40, -100); c.lineTo(40, -100); c.lineTo(30, -40); c.lineTo(-30, -40); c.closePath(); c.clip();
+    for (i = 0; i < 7; i++) { c.fillStyle = R7[(i + Math.floor(t / 40)) % 7]; c.fillRect(-60 + i * 18 + Math.sin(t * 0.03) * 10, -100, 9, 70); }
+    c.fillStyle = 'rgba(255,255,255,.45)'; c.fillRect(-40, -100, 80, 60); c.restore();
+    poly(c, [0, -92, 14, -62, -14, -62], '#ffffff', tint, 2);
+    for (i = 0; i < 4; i++) { c.strokeStyle = R7[i * 2]; c.lineWidth = 2; c.beginPath(); c.moveTo(8, -72); c.lineTo(26, -82 + i * 6); c.stroke(); }
+    poly(c, [-40, -100, -58, -112, -48, -84], glass, tint, 2); poly(c, [40, -100, 58, -112, 48, -84], glass, tint, 2);
+    var hb = Math.sin(t * 0.08) * 5;
+    for (d = -1; d <= 1; d += 2) poly(c, [d * 62, -76 + hb, d * 72, -64 + hb, d * 62, -52 + hb, d * 52, -64 + hb], glass, tint, 2);
+    poly(c, [-34, -150, 34, -150, 44, -128, 0, -100, -44, -128], glass, edge, 3);
+    poly(c, [-34, -150, -14, -166, 14, -166, 34, -150], glass, edge, 3);
+    c.save(); c.globalAlpha *= 0.5; poly(c, [-20, -160, -6, -160, -16, -150], '#fff'); c.restore();
+    rr(c, -28, -144, 56, 22, 10, '#2a1b4a');
+    var ex = f * 3;
+    if (o.dizzy) { for (d = -1; d <= 1; d += 2) { c.strokeStyle = '#fff59d'; c.lineWidth = 2; c.beginPath(); for (var a = 0; a < 12; a += 0.5) c.lineTo(ex + d * 12 + Math.cos(a + t * 0.2) * a * 0.55, -133 + Math.sin(a + t * 0.2) * a * 0.55); c.stroke(); } }
+    else { var closed = o.blink && t % 70 < 9; for (d = -1; d <= 1; d += 2) { if (closed) { c.strokeStyle = tint; c.lineWidth = 3; c.beginPath(); c.moveTo(ex + d * 12 - 5, -133); c.lineTo(ex + d * 12 + 5, -133); c.stroke(); } else { ell(c, ex + d * 12, -133, 6, 6.5, tint); dot(c, ex + d * 12 + 1.5, -135, 2, '#fff'); } } }
+    c.strokeStyle = tint; c.lineWidth = 2.5; c.beginPath();
+    if (o.nice) c.arc(ex, -118, 8, 0.2, Math.PI - 0.2); else { c.moveTo(ex - 8, -114); c.quadraticCurveTo(ex, o.dizzy ? -110 : -118, ex + 8, -114); }
+    c.stroke();
+    if (o.dizzy) for (i = 0; i < 4; i++) star(c, Math.cos(t * 0.08 + i * 1.6) * 40, -176 + Math.sin(t * 0.08 + i * 1.6) * 8, 6, R7[i * 2], t * 0.1);
+    c.restore();
+  }
+  window.drawPrismRobo = drawPrism;
+  function pickX(A, avoid, gap) { var x, m = 0; do { x = 70 + A.rand() * (A.W - 140); } while (avoid.some(function (q) { return Math.abs(q - x) < gap; }) && ++m < 40); return x; }
+  var PR_PLANS = [['beams', 'shards'], ['copies'], ['shards', 'beams'], ['copies']];
+  var PR_SAY = { beams: 'RAINBOW BEAMS! Watch the stripes!', shards: 'Crystal rain! Look for the rings!', copies: 'Which one is the REAL me? Look for my shadow!' };
+  B.prismrobo = {
+    name: 'Prism Robo', game: 'Robo Jump 20', icon: '🔮', w: 100, h: 150, hp: 6, flying: false,
+    init: function (b, A) { b.x = typeof b.x === 'number' ? b.x : A.W * 0.7; b.y = A.GROUND - 75; b.mode = 'idle'; b.mt = 0; b.plan = []; b.pn = 0; b.vuln = false; b.face = -1; b.atk = null; b.copies = null; b.tx = b.x; },
+    update: function (b, A, dt) {
+      var sp = A.speed || 1, G = A.GROUND, P = A.player.x + A.player.w / 2, wl = warnLen(A); b.mt += dt; b.face = P < b.x ? -1 : 1; b.y = G - 75;
+      if (b.mode === 'idle') {
+        if (Math.abs(b.tx - b.x) < 4 || b.mt < 2) b.tx = clampP(P > A.W / 2 ? A.W * 0.25 : A.W * 0.75, 80, A.W - 80);   // (walks to the side AWAY from Robo)
+        b.x += clampP(b.tx - b.x, -1.2 * sp, 1.2 * sp);
+        if (b.mt > 80 / sp) {
+          if (!b.plan.length) b.plan = PR_PLANS[b.pn++ % PR_PLANS.length].slice();
+          b.atk = b.plan.shift(); b.mode = 'warn'; b.mt = 0; A.say(PR_SAY[b.atk]); A.sfx('warn');
+          if (b.atk === 'beams') { var xs = [clampP(P, 50, A.W - 50)]; xs.push(pickX(A, xs.concat([b.x]), 200));
+            xs.forEach(function (x, i) { A.hazard({ x: x - 36, y: 0, w: 72, h: G, warn: wl + i * 20, life: 30, kind: 'prismBeam', draw: function (c, z, warning) {
+              var cx = z.x + z.w / 2;
+              if (warning) { c.globalAlpha = z.age % 16 < 8 ? 0.28 : 0.14; for (var k = 0; k < 7; k++) { c.fillStyle = R7[k]; c.fillRect(z.x + k * z.w / 7, 0, z.w / 7 + 1, G); } c.globalAlpha = 1; txt(c, '!', cx, G - 16, 28, z.age % 16 < 8 ? '#ffea00' : '#fff'); return; }
+              c.globalAlpha = 0.85; for (var q = 0; q < 7; q++) { c.fillStyle = R7[(q + (z.age >> 2)) % 7]; c.fillRect(z.x + q * z.w / 7, 0, z.w / 7 + 1, G); } c.globalAlpha = 0.6; c.fillStyle = '#fff'; c.fillRect(cx - 6, 0, 12, G); c.globalAlpha = 1; } }); }); }
+          if (b.atk === 'shards') { var xs2 = [clampP(P, 50, A.W - 50)]; for (var n = 0; n < 3; n++) xs2.push(pickX(A, xs2, 130));
+            xs2.forEach(function (x, i) { A.hazard({ x: x - 26, y: G - 64, w: 52, h: 64, warn: wl + i * 10, life: 16, kind: 'prismShard', draw: function (c, z, warning) {
+              var cx = z.x + z.w / 2, fall = 24; c.globalAlpha = warning ? (z.age % 16 < 8 ? 0.5 : 0.25) : 0.5; ell(c, cx, G - 3, 30, 8, '#e040fb'); c.globalAlpha = 1;
+              if (warning && z.age < z.warn - fall) { txt(c, '!', cx, G - 18, 26, z.age % 16 < 8 ? '#ffea00' : '#fff'); return; }
+              var u = warning ? 1 - (z.warn - z.age) / fall : 1, y = warning ? -30 + (G - 40) * u : G - 30;
+              poly(c, [cx, y - 26, cx + 14, y, cx, y + 26, cx - 14, y], 'rgba(179,229,252,.95)', '#fff', 2); poly(c, [cx, y - 14, cx + 6, y, cx, y + 14, cx - 6, y], R7[(z.age >> 3) % 7]); } }); }); }
+          if (b.atk === 'copies') { b.copies = [pickX(A, [b.x, P], 170)]; b.copies.push(pickX(A, [b.x, P, b.copies[0]], 170)); }
+        }
+      } else if (b.mode === 'warn') {
+        if (b.atk === 'copies') { if (b.mt > 40) { b.mode = 'copies'; b.mt = 0; b.vuln = true; A.sfx('chime'); } }
+        else if (b.mt > wl + 50) { b.mode = 'after'; b.mt = 0; }
+      } else if (b.mode === 'copies') {
+        if (b.mt > 260) { b.mode = 'idle'; b.mt = 0; b.vuln = false; b.copies = null; A.say('Hee hee! Too slow!'); }
+      } else if (b.mode === 'after') {
+        if (b.mt > 50) { b.mt = 0; if (b.plan.length) b.mode = 'idle'; else { b.mode = 'tired'; b.vuln = true; A.say('All my rainbows are used up... I\'m dizzy!'); A.sfx('chime'); } }
+      } else if (b.mode === 'tired') {
+        if (b.mt > 250) { b.mode = 'idle'; b.mt = 0; b.vuln = false; }
+      }
+    },
+    draw: function (c, b, A) {
+      var t = A.t || 0, feet = b.y + 75, tint = R7[Math.floor(t / 30) % 7];
+      if (b.hurt > 0 && Math.floor(t / 4) % 2) c.globalAlpha = 0.55;
+      if (b.copies) b.copies.forEach(function (x, i) { drawPrism(c, x, feet, 0.9, { t: t + i * 17, tint: R7[(i * 3 + 2 + Math.floor(t / 30)) % 7], face: b.face, alpha: 0.8 }); });
+      drawPrism(c, b.x, feet, 0.9, { t: t, tint: tint, face: b.face, shadow: true, blink: true, dizzy: b.mode === 'tired', nice: b.nice });
+      if (b.mode === 'warn' && b.mt < warnLen(A)) bang(c, b.x, b.y - 100, t);
+      c.globalAlpha = 1;
+    },
+    onBonk: function (b, A) { A.sfx('pop'); A.particles(b.x, b.y, '#e040fb', 14); b.copies = null; if (b.hp > 0) { b.mode = 'idle'; b.mt = -30; b.vuln = false; } },
+  };
+  // ---------- 👾 SHADOW GLITCH (the Story Mode mystery boss): a goofy wobbly pixel blob with googly eyes. Not scary, just silly! ----------
+  // Robo's 7 new friends help: after 2 attacks a friend bonks him silly, then he is DIZZY for a long time.
+  var SG_FRIENDS = [['kinggloop', 'King Gloop throws a goo ball'], ['goorilla', 'GOO-RILLA does a goo ground-pound'], ['laserheart', 'Laserheart shoots a heart beam'],
+    ['magnetron', 'Magnetron Robo pulls with his magnet'], ['krakenking', 'Kraken King tickles with a tentacle'], ['brickrobo', 'Brick Robo builds a bouncy brick'], ['prismrobo', 'Prism Robo shines a rainbow']];
+  var SG_PLAN = ['hiccup', 'wave', 'friend'];
+  function drawGlitch(c, x, y, s, o) {
+    var t = o.t || 0, i;
+    c.save(); c.translate(x, y); c.scale(s, s);
+    var gl = !o.dizzy && t % 90 < 6;                              // a tiny "glitch wiggle" (pink + cyan copies)
+    var parts = function (col, alpha, dx) {
+      c.globalAlpha = alpha; c.fillStyle = col; c.beginPath(); c.moveTo(-48 + dx, 30);
+      c.quadraticCurveTo(-54 + dx, -48, 0 + dx, -50); c.quadraticCurveTo(54 + dx, -48, 48 + dx, 30);
+      for (i = 0; i < 4; i++) c.quadraticCurveTo(36 - i * 24 + dx, 46 + Math.sin(t * 0.2 + i) * 4, 24 - i * 24 + dx, 32);
+      c.closePath(); c.fill();
+    };
+    if (gl) { parts('#ff80ab', 0.5, -6); parts('#84ffff', 0.5, 6); }
+    parts('#5e4b8b', 1, 0); c.globalAlpha = 1;
+    for (i = 0; i < 10; i++) { var px = -44 + ((i * 37) % 88), py = -40 + ((i * 23) % 64); if ((t >> 3) % 10 !== i) { c.fillStyle = i % 2 ? '#9575cd' : '#7e57c2'; c.fillRect(px, py, 8, 8); } }
+    for (var d = -1; d <= 1; d += 2) {                          // 👀 big googly eyes
+      dot(c, d * 18, -16, 17, '#fff'); c.strokeStyle = '#311b92'; c.lineWidth = 2; c.beginPath(); c.arc(d * 18, -16, 17, 0, 7); c.stroke();
+      if (o.dizzy) { c.strokeStyle = '#311b92'; c.lineWidth = 2.5; c.beginPath(); for (var a = 0; a < 11; a += 0.5) c.lineTo(d * 18 + Math.cos(a + t * 0.25) * a * 0.9, -16 + Math.sin(a + t * 0.25) * a * 0.9); c.stroke(); }
+      else dot(c, d * 18 + Math.sin(t * 0.13 + d) * 6, -14 + Math.cos(t * 0.17 + d * 2) * 6, 7, '#1a1a2e');
+      ell(c, d * 34, 6, 7, 4, 'rgba(255,128,171,.7)');
+    }
+    c.fillStyle = '#311b92'; c.beginPath(); c.ellipse(0, 10, 16, o.nice ? 8 : 11, 0, 0, Math.PI); c.fill();      // a goofy grin + tongue
+    ell(c, 4, 16, 7, 4, '#ff80ab');
+    for (d = -1; d <= 1; d += 2) { c.strokeStyle = '#7e57c2'; c.lineWidth = 6; c.lineCap = 'round'; c.beginPath(); c.moveTo(d * 46, 0); c.quadraticCurveTo(d * 62, -10 + Math.sin(t * 0.2 + d) * 10, d * 66, -24 + Math.sin(t * 0.2 + d) * 12); c.stroke(); dot(c, d * 66, -24 + Math.sin(t * 0.2 + d) * 12, 6, '#b39ddb'); }
+    c.strokeStyle = '#7e57c2'; c.lineWidth = 3; c.beginPath(); c.moveTo(0, -50); c.lineTo(6, -64); c.stroke();
+    dot(c, 6, -70, 9, '#fff59d'); txt(c, o.nice ? '♥' : '?', 6, -64, 13, '#7e57c2');
+    c.restore();
+  }
+  window.drawShadowGlitch = drawGlitch;
+  B.shadowglitch = {
+    name: 'Shadow Glitch', game: 'Boss Story Mode', icon: '👾', w: 110, h: 100, hp: 8, flying: true,
+    init: function (b, A) { b.x = typeof b.x === 'number' ? b.x : A.W * 0.7; b.y = 170; b.mode = 'idle'; b.mt = 0; b.pn = 0; b.fi = 0; b.vuln = false; b.face = -1; b.atk = null; },
+    update: function (b, A, dt) {
+      var sp = A.speed || 1, G = A.GROUND, P = A.player.x + A.player.w / 2, wl = warnLen(A); b.mt += dt;
+      var ty = b.mode === 'dizzy' ? G - 50 : 165 + Math.sin((A.t || 0) * 0.05) * 12; b.y += (ty - b.y) * 0.06;
+      if (b.mode === 'idle' || b.mode === 'after') b.x += clampP(clampP(A.W - P + Math.sin((A.t || 0) * 0.02) * 120, 90, A.W - 90) - b.x, -1.4 * sp, 1.4 * sp);
+      if (b.mode === 'idle' && b.mt > 80 / sp) {
+        b.atk = SG_PLAN[b.pn++ % SG_PLAN.length]; b.mt = 0;
+        if (b.atk === 'friend') { b.mode = 'friend'; var fr = SG_FRIENDS[b.fi % SG_FRIENDS.length]; A.say(fr[1] + '! Shadow Glitch is DIZZY!'); A.sfx('chime'); }
+        else { b.mode = 'warn'; A.say(b.atk === 'hiccup' ? '*HIC!* Oopsie! Glitchy hiccups!' : 'Wibbly wobbly STATIC WAVE! Jump!'); A.sfx('warn');
+          if (b.atk === 'hiccup') { var xs = [clampP(P, 50, A.W - 50)]; for (var n = 0; n < 2; n++) xs.push(pickX(A, xs, 150));
+            xs.forEach(function (x, i) { A.hazard({ x: x - 24, y: G - 56, w: 48, h: 56, warn: wl + i * 12, life: 16, kind: 'glitchSquare', draw: function (c, z, warning) {
+              var cx = z.x + z.w / 2, fall = 24; c.globalAlpha = warning ? (z.age % 16 < 8 ? 0.5 : 0.25) : 0.5; ell(c, cx, G - 3, 28, 7, '#7e57c2'); c.globalAlpha = 1;
+              if (warning && z.age < z.warn - fall) { txt(c, '!', cx, G - 18, 26, z.age % 16 < 8 ? '#ffea00' : '#fff'); return; }
+              var u = warning ? 1 - (z.warn - z.age) / fall : 1, y = warning ? -30 + (G - 40) * u : G - 26;
+              rr(c, cx - 18, y - 18, 36, 36, 6, (z.age >> 3) % 2 ? '#9575cd' : '#b388ff'); txt(c, 'hic', cx, y + 6, 13, '#fff'); } }); }); }
+          if (b.atk === 'wave') b.wdir = P < A.W / 2 ? -1 : 1;      // (the wave comes from the far side, so there is time to see it)
+        }
+      } else if (b.mode === 'warn') {
+        if (b.atk === 'wave' && b.mt > wl) { A.shot({ x: b.wdir > 0 ? -20 : A.W + 20, y: G - 14, vx: b.wdir * 2.4 * sp, vy: 0, r: 14, life: 520, kind: 'glitchWave', draw: function (c, s2) {
+            for (var k = 0; k < 5; k++) { c.fillStyle = k % 2 ? '#b388ff' : '#84ffff'; c.fillRect(s2.x - 16 + k * 6, s2.y - 14 + Math.sin(s2.x * 0.1 + k) * 6, 6, 22); } } }); b.mode = 'after'; b.mt = 0; A.sfx('pop'); }
+        else if (b.atk === 'hiccup' && b.mt > wl + 40) { b.mode = 'after'; b.mt = 0; }
+      } else if (b.mode === 'after') { if (b.mt > 90) { b.mode = 'idle'; b.mt = 0; } }
+      else if (b.mode === 'friend') { if (b.mt > 50) { b.mode = 'dizzy'; b.mt = 0; b.vuln = true; } }
+      else if (b.mode === 'dizzy') { if (b.mt > 300) { b.mode = 'idle'; b.mt = 0; b.vuln = false; b.fi++; } }
+    },
+    draw: function (c, b, A) {
+      var t = A.t || 0, main = c.canvas && c.canvas.id === 'game';
+      if (b.hurt > 0 && Math.floor(t / 4) % 2) c.globalAlpha = 0.55;
+      if (b.mode === 'warn' && b.atk === 'wave' && b.mt < warnLen(A)) { var ex = b.wdir > 0 ? 30 : A.W - 30; bang(c, ex, A.GROUND - 40, t); }
+      drawGlitch(c, b.x, b.y, 1, { t: t, dizzy: b.mode === 'dizzy', nice: b.nice });
+      if (b.mode === 'warn' && b.mt < warnLen(A)) bang(c, b.x, b.y - 80, t);
+      if (b.mode === 'dizzy') for (var k = 0; k < 3; k++) { var a = t * 0.08 + k * 2.1; txt(c, '★', b.x + Math.cos(a) * 40, b.y - 62 + Math.sin(a) * 8, 18, '#ffea00'); }
+      c.globalAlpha = 1;
+      if (main && b.mode === 'friend') { var fr = SG_FRIENDS[b.fi % SG_FRIENDS.length], u = Math.min(1, b.mt / 30), fx = b.x + (b.x < A.W / 2 ? 1 : -1) * (260 - 200 * u); drawFace(fr[0], fx, b.y - 10, 90); if (u >= 1) txt(c, 'POW!', b.x, b.y - 70, 30, '#ffd740'); }
+      if (main && typeof fight !== 'undefined' && fight && fight.ch && fight.ch.story === 8)        // 🎉 the friends cheer from the stage floor
+        SG_FRIENDS.forEach(function (fr, i) { drawFace(fr[0], 378 + i * 86, 490 - Math.abs(Math.sin(t * 0.1 + i)) * 10, 46); });   // (right of the SUPER button)
+    },
+    onBonk: function (b, A) { A.sfx('pop'); A.particles(b.x, b.y, '#b388ff', 16); if (b.hp > 0) { b.mode = 'idle'; b.mt = -30; b.vuln = false; b.fi++; A.say(['Hee hee, that tickles!', 'Boop! My pixels!', 'Okay, okay, you\'re good at this!'][b.hp % 3]); } },
+  };
+  GROUP.prismrobo = 'a'; GROUP.shadowglitch = 'a';
+})();
+// ---------- 📖 BOSS STORY MODE: Robo travels across the world map. Every boss becomes a friend + joins Robo's team! ----------
+// The friends' lines use TRUE facts from their games (the Game Factory's Hall of Heroes).
+Object.assign(THEMES, {
+  swamp:    { sky: ['#1b5e20', '#9ccc65'], crowd: '#0d3311', floor: '#4a148c', stripe: '#b388ff', beams: ['#ccff90', '#b388ff'] },
+  jungle:   { sky: ['#004d40', '#66bb6a'], crowd: '#00251a', floor: '#5d4037', stripe: '#aed581', beams: ['#fff59d', '#69f0ae'] },
+  junkyard: { sky: ['#37474f', '#ffb74d'], crowd: '#263238', floor: '#5d4037', stripe: '#90a4ae', beams: ['#40c4ff', '#ff5252'] },
+  sea:      { sky: ['#01579b', '#4dd0e1'], crowd: '#002f6c', floor: '#c2a35e', stripe: '#80deea', beams: ['#e1f5fe', '#ea80fc'] },
+  blocks:   { sky: ['#1565c0', '#90caf9'], crowd: '#0d2a5c', floor: '#43a047', stripe: '#ffd23f', beams: ['#ff4d4d', '#ffd23f', '#3f8cff'] },
+  crystal:  { sky: ['#311b92', '#b3e5fc'], crowd: '#1a0f4a', floor: '#5e35b1', stripe: '#e1f5fe', beams: ['#ff80ab', '#80d8ff', '#ccff90'] },
+  glitch:   { sky: ['#1a0b3a', '#7e57c2'], crowd: '#120830', floor: '#311b92', stripe: '#84ffff', beams: ['#ff80ab', '#84ffff', '#fff59d'] },
+});
+const STORY = [
+  { boss: 'kinggloop', icon: '🟣', name: "King Gloop's Goo Swamp", th: 'swamp', xy: [100, 372], hp: 3,
+    intro: [['narr', 'Chapter 1: Robo sets off on a big adventure across the world!'], ['robo', 'Hi! I am Robo! I want to meet every boss in the whole world!'], ['kinggloop', 'Blub blub! Nobody crosses MY Goo Swamp without a goo fight!'], ['robo', 'Okay! I will wait till you get dizzy... then BONK!']],
+    friend: [['kinggloop', 'Wow, you are good at bonking! Can I be on your team?'], ['kinggloop', 'I can throw goo blobs, and I can make a goo shield that blocks one bonk!'], ['robo', 'Welcome to the team, King Gloop!']] },
+  { boss: 'goorilla', icon: '🦍', name: "GOO-RILLA's Jungle", th: 'jungle', xy: [226, 290], hp: 4,
+    intro: [['narr', 'Chapter 2: Deep in the jungle, the trees start to shake...'], ['goorilla', 'OOK OOK! I POUND the ground and make goo shockwaves!'], ['robo', 'Then I will jump right over them!'], ['kinggloop', 'Go Robo! You can do it!']],
+    friend: [['goorilla', 'OOK! That was the most fun ever!'], ['goorilla', 'I was the very first boss in Robo Jump 3. Now I want to be your friend!'], ['robo', 'Hooray! GOO-RILLA joins the team!']] },
+  { boss: 'laserheart', icon: '💗', name: "Laserheart's Heart Factory", th: 'heart', xy: [362, 372], hp: 4,
+    intro: [['narr', 'Chapter 3: A factory full of glowing hearts. But it is so quiet...'], ['laserheart', 'Nobody ever visits me... I am SO lonely!'], ['robo', 'Let us play! Then you will not be lonely any more.'], ['laserheart', 'Show me what you have got, sweetie!']],
+    friend: [['laserheart', 'You made my heart glow! I was only lonely.'], ['laserheart', 'Only the REAL Laserheart wears a gold crown, you know!'], ['robo', 'Welcome to the team, Laserheart!']] },
+  { boss: 'magnetron', icon: '🧲', name: "Magnetron's Junkyard", th: 'junkyard', xy: [470, 250], hp: 4,
+    intro: [['narr', 'Chapter 4: A junkyard full of pots, pans and old robot parts.'], ['magnetron', 'Bzzt! Things always pull AWAY from me!'], ['robo', 'I will not run away! Let us have a fair fight.'], ['laserheart', 'Watch out for his magnet pull, sweetie!']],
+    friend: [['magnetron', 'You stayed! My compass needle is spinning with happiness!'], ['magnetron', 'Now I will use my magnet to pull every world together!'], ['robo', 'Magnetron Robo joins the team!']] },
+  { boss: 'krakenking', icon: '🐙', name: "Kraken King's Sea", th: 'sea', xy: [598, 352], hp: 4,
+    intro: [['narr', 'Chapter 5: Robo dives down to the bottom of the sea. Bubbles everywhere!'], ['krakenking', 'Ahoy! I am Kraken Kid\'s dad, the KRAKEN KING!'], ['robo', 'Kraken Kid just wanted to play tag. Do you want to play too?'], ['krakenking', 'Ha ha! Catch me if you can!']],
+    friend: [['krakenking', 'Honk honk! That was a great game!'], ['krakenking', 'After 3 tentacle swipes I always get tired. You found my secret!'], ['robo', 'Kraken King joins the team!']] },
+  { boss: 'brickrobo', icon: '🧱', name: "Brick Robo's Block Land", th: 'blocks', xy: [714, 236], hp: 4,
+    intro: [['narr', 'Chapter 6: A land made of snap-together toy blocks!'], ['brickrobo', 'I am BRICK ROBO! Snap! Click! STOMP!'], ['robo', 'Are you lonely too? Do you want someone to build with?'], ['brickrobo', 'Maybe! First, watch out for my bricks! Look at the shadows!']],
+    friend: [['brickrobo', 'You are the best building buddy ever!'], ['brickrobo', 'I only wanted someone to build with. Now I will build a rainbow bridge to the next land!'], ['robo', 'Brick Robo joins the team!']] },
+  { boss: 'prismrobo', icon: '🔮', name: "Prism Robo's Crystal Peak", th: 'crystal', xy: [830, 320], hp: 5,
+    intro: [['narr', 'Chapter 7: Up, up, up a giant crystal mountain!'], ['prismrobo', 'Look at all my rainbow copies! Can you find the REAL me?'], ['robo', 'The real one blinks and casts a shadow!'], ['brickrobo', 'You can do it, Robo!']],
+    friend: [['prismrobo', 'You found the real me! I just wanted to show everyone my rainbows.'], ['robo', 'Your rainbows are beautiful! Do you want to join the team?'], ['prismrobo', 'YES! Prism Robo joins the team!']] },
+  { boss: 'shadowglitch', icon: '👾', name: 'The Shadow Glitch', th: 'glitch', xy: [862, 132], hp: 6, final: true,
+    intro: [['narr', 'Chapter 8: Oh no! The whole world is going wibbly wobbly...'], ['shadowglitch', 'Hee hee! I am the SHADOW GLITCH! I made everything wibbly wobbly!'], ['robo', 'Friends, can you help me?'], ['all', 'WE ARE ON YOUR TEAM, ROBO!'], ['shadowglitch', 'Uh oh. That is a LOT of friends.']],
+    friend: [['shadowglitch', 'Okay, okay, you win! I just wanted to be in the game too...'], ['robo', 'You can be in the game! You can be our friend!'], ['shadowglitch', 'Really? Hooray! No more wibbly wobbly!'], ['all', 'PARTY TIME!']] },
+];
+const STORY_FRIENDS = () => STORY.slice(0, Math.min(save.story.done, 7)).map(c => c.boss);
+function storyCh(n) {
+  const C0 = STORY[n - 1]; if (!C0 || !BOSSES[C0.boss]) return null;
+  return { id: 'story' + n, icon: C0.icon, name: 'Story ' + n + ': ' + C0.name, story: n, noSticker: true, slow: 0.8, hp: C0.hp || 4, rounds: [[C0.boss]], th: C0.th, song: C0.final ? 'booknova' : 'battle' };
+}
+const _stFromRecipe = chFromRecipe;
+chFromRecipe = function (r) { const m = r && r.t === 'ch' && /^story(\d)$/.exec(r.id || ''); if (m) return storyCh(+m[1]); return _stFromRecipe.apply(this, arguments); };
+const _stVictory = victory;
+victory = function () {
+  const ch = fight && fight.ch;
+  _stVictory.apply(this, arguments);
+  if (ch && ch.story) storyWon(ch.story);
+};
+function storyWon(n) {
+  const first = save.story.done < n; save.story.done = Math.max(save.story.done, n); writeSave();
+  const C0 = STORY[n - 1];
+  stPlay(n, C0.friend, () => {
+    if (C0.final) { trophy('bossStory'); openParty(); }                  // 🏆 finish Story Mode
+    else openMap(first ? n : -1);
+  });
+}
+// ---------- 🎬 the cut scenes: speech bubbles, bouncing characters, 🔊 read out loud ONLY when Ben taps the speaker ----------
+let stS = null;
+const SC_SPEAK = { x: 846, y: 92, w: 64, h: 52 }, SC_SKIP = { x: 838, y: 8, w: 110, h: 40 };
+function stPlay(n, lines, done) { bfHush(); stS = { n, lines, i: 0, t: 0, done }; state = 'stscene'; setSong('title'); }
+function stWho(w) { return w === 'robo' ? 'Robo' : w === 'all' ? 'Everybody' : w === 'narr' ? '' : bossName(w); }
+function stBackdrop(th, t) {                                           // a simple painted place for each chapter
+  const T = THEMES[th] || THEMES.mix, g = ctx.createLinearGradient(0, 0, 0, 430); g.addColorStop(0, T.sky[0]); g.addColorStop(1, T.sky[1]);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  for (let i = 0; i < 7; i++) {                                         // far-away shapes (hills, trees, crystals, waves... in the theme's colors)
+    const x = (i * 157 + 40) % W, h = 90 + (i * 37) % 80;
+    ctx.globalAlpha = 0.35; ctx.fillStyle = T.crowd;
+    if (th === 'crystal' || th === 'glitch') mPoly([x - 40, 430, x, 430 - h - 40, x + 40, 430], T.crowd);
+    else if (th === 'blocks') { ctx.fillRect(x - 30, 430 - h, 60, h); ctx.fillStyle = T.beams[i % T.beams.length]; ctx.fillRect(x - 30, 430 - h, 60, 12); }
+    else if (th === 'jungle') { ctx.fillRect(x - 8, 430 - h, 16, h); circle(x, 430 - h, 46, T.crowd); }
+    else { mEll(x, 430, 110, h * 0.7, T.crowd); }
+    ctx.globalAlpha = 1;
+  }
+  for (let i = 0; i < 12; i++) {                                        // floaty sparkles / bubbles
+    const x = (i * 83 + t * (0.3 + (i % 3) * 0.2)) % W, y = 380 - ((i * 59 + t * 0.6) % 360);
+    ctx.globalAlpha = 0.4; if (th === 'sea' || th === 'swamp') circle(x, y, 4 + i % 4, '#e1f5fe'); else starShape(x, y, 3 + i % 3, T.beams[i % T.beams.length]); ctx.globalAlpha = 1;
+  }
+  ctx.fillStyle = T.floor; ctx.fillRect(0, 430, W, H - 430); ctx.fillStyle = T.stripe; ctx.fillRect(0, 430, W, 6);
+}
+function stBubble(who, str, t) {
+  const tx = who === 'robo' ? 260 : who === 'narr' || who === 'all' ? W / 2 : 690;
+  roundRect(40, 60, 880, 130, 22, who === 'narr' ? '#fff59d' : '#ffffff');
+  if (who !== 'narr') mPoly([clamp(tx, 120, 840) - 18, 186, clamp(tx, 120, 840) + 18, 186, tx, 226], '#ffffff');
+  if (stWho(who)) { roundRect(60, 44, Math.min(320, stWho(who).length * 14 + 40), 34, 12, who === 'robo' ? '#1e88e5' : who === 'all' ? '#43a047' : '#8e24aa'); fitText(stWho(who), 60 + Math.min(320, stWho(who).length * 14 + 40) / 2, 68, 20, 300, '#fff'); }
+  const lines = wrapLines(str, 26, 740).slice(0, 3);
+  lines.forEach((ln, i) => { ctx.font = 'bold 26px "Trebuchet MS", Arial, sans-serif'; ctx.textAlign = 'left'; ctx.fillStyle = '#222'; ctx.fillText(ln, 74, 108 + i * 32 + (3 - lines.length) * 14); });
+  button(SC_SPEAK, '🔊', '#ff9800', 26);
+}
+MORE_STATES.stscene = {
+  u() {
+    frame++; const S = stS; if (!S) { openMap(); return; }
+    S.t++;
+    const L = S.lines[S.i];
+    if (inBox(tap, SC_SPEAK)) { bfSpeak(stWho(L[0]) ? stWho(L[0]) + ' says: ' + L[1] : L[1], L[0] === 'robo' ? 1.3 : L[0] === 'narr' ? 1 : 0.85); tap = null; return; }
+    if (inBox(tap, SC_SKIP) || press.esc) { bfHush(); sfx.click(); S.i = S.lines.length; }
+    else if (S.t > 14 && (ok() || tap)) { bfHush(); sfx.page(); S.i++; S.t = 0; }
+    if (S.i >= S.lines.length) { stS = null; S.done(); }
+  },
+  d() {
+    const S = stS; if (!S) return;
+    const C0 = STORY[S.n - 1], L = S.lines[Math.min(S.i, S.lines.length - 1)], t = frame, who = L[0];
+    stBackdrop(C0.th, t);
+    const hop = w => who === w || who === 'all' ? Math.abs(Math.sin(t * 0.18)) * 16 : 0;
+    mEll(260, 432, 60, 10, 'rgba(0,0,0,.25)'); mEll(690, 432, 90, 12, 'rgba(0,0,0,.25)');
+    drawRoboAt(260, 430 - hop('robo'), 3.2, curLook().pal || PAL_ROBO, { face: 1 });
+    ctx.save(); ctx.translate(0, -hop(C0.boss)); drawPreview(C0.boss, 690, 430, 210, { cos: save.cos[C0.boss], lv: save.evoOn ? evoLv(C0.boss) : 1 }); ctx.restore();
+    if (C0.final) STORY.slice(0, 7).forEach((c, i) => drawFace(c.boss, 70 + i * 137, 478 - (who === 'all' ? Math.abs(Math.sin(t * 0.18 + i)) * 18 : Math.abs(Math.sin(t * 0.05 + i)) * 4), 64));
+    stBubble(who, L[1], t);
+    button(SC_SKIP, '⏭ SKIP', 'rgba(0,0,0,.5)', 18);
+    text(`${Math.min(S.i + 1, S.lines.length)} / ${S.lines.length}`, 76, 30, 16, '#fff');
+    if (S.t > 14) text('Tap or press JUMP to keep going ▶', W / 2, C0.final ? 420 : 505, 17, '#fff');
+  },
+};
+// ---------- 🗺️ THE WORLD MAP ----------
+let sm = { sel: 0, joined: -1, jt: 0 };
+const SM_HELP = { x: 120, y: 8, w: 300, h: 40 }, SM_PARTY = { x: 640, y: 8, w: 190, h: 40 };
+const smNode = i => ({ x: STORY[i].xy[0] - 36, y: STORY[i].xy[1] - 36, w: 72, h: 72 });
+const stOpen = i => i <= save.story.done;
+function openMap(joined) { state = 'stmap'; setSong('title'); sm.sel = clamp(save.story.done, 0, 7); sm.joined = joined >= 1 ? joined : -1; sm.jt = 0; fight = null; particles = []; }
+function stStart(n) {
+  const C0 = STORY[n - 1];
+  stPlay(n, C0.intro, () => { const ch = storyCh(n); if (ch) { pendingHelper = null; startChallenge(ch); } else openMap(); });
+}
+MORE_STATES.stmap = {
+  u() {
+    frame++; sm.jt++;
+    for (const p of particles) { p.x += p.vx; p.y += p.vy; p.vy += 0.1; p.life--; } particles = particles.filter(p => p.life > 0);
+    if (sm.joined > 0 && sm.jt === 20) { const q = STORY[sm.joined - 1].xy; burst(q[0], q[1], ['#ffd740', '#fff', '#ff80ab', '#69f0ae'], 40, 5); sfx.sparkle(); }
+    if (press.esc || inBox(tap, BACK_BTN)) { goMenu(); menuTab = ST_TAB; return; }
+    if (inBox(tap, SM_HELP)) { save.story.helper = !save.story.helper; writeSave(); sfx.click(); return; }
+    if (save.story.done >= 8 && inBox(tap, SM_PARTY)) { sfx.click(); openParty(); return; }
+    if (press.r) sm.sel = Math.min(7, sm.sel + 1); if (press.l) sm.sel = Math.max(0, sm.sel - 1);
+    for (let i = 0; i < 8; i++) if (inBox(tap, smNode(i))) { if (stOpen(i)) { sfx.click(); stStart(i + 1); } else { sfx.nope(); sm.msg = '🔒 Finish the chapter before it first!'; sm.msgT = 120; } return; }
+    if (ok() && stOpen(sm.sel)) { sfx.click(); stStart(sm.sel + 1); }
+    if (sm.msgT > 0) sm.msgT--;
+  },
+  d() {
+    const t = frame;
+    ctx.fillStyle = '#4fc3f7'; ctx.fillRect(0, 0, W, H);                            // 🌊 the sea, with waves
+    ctx.globalAlpha = 0.25; for (let i = 0; i < 30; i++) mEll((i * 131 + t * 0.2) % (W + 60) - 30, 60 + (i * 71) % 420, 18, 4, '#fff'); ctx.globalAlpha = 1;
+    mEll(300, 330, 300, 170, '#8bc34a'); mEll(640, 290, 240, 150, '#9ccc65'); mEll(840, 210, 130, 170, '#aed581');   // 🏝️ the land
+    mEll(300, 340, 270, 140, '#9ccc65'); mPoly([800, 250, 862, 70, 930, 250], '#b39ddb'); mPoly([835, 170, 862, 70, 890, 170], '#ede7f6');   // ⛰️ Crystal Peak + the glitchy cloud
+    ctx.strokeStyle = '#fff3e0'; ctx.lineWidth = 10; ctx.setLineDash([16, 12]); ctx.beginPath();
+    STORY.forEach((c, i) => i ? ctx.lineTo(c.xy[0], c.xy[1]) : ctx.moveTo(c.xy[0], c.xy[1])); ctx.stroke(); ctx.setLineDash([]);
+    STORY.forEach((c, i) => {
+      const r = smNode(i), cx = c.xy[0], cy = c.xy[1], open = stOpen(i), done = i < save.story.done;
+      circle(cx, cy + 5, 38, 'rgba(0,0,0,.25)'); circle(cx, cy, 38, done ? '#43a047' : open ? '#ff9800' : '#78909c'); circle(cx, cy, 31, done ? '#a5d6a7' : open ? '#ffe0b2' : '#b0bec5');
+      if (done) drawFace(c.boss, cx, cy, 58); else text(open ? c.icon : '🔒', cx, cy + 12, 32);
+      if (i === sm.sel) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(cx, cy, 43 + Math.sin(t * 0.15) * 3, 0, 7); ctx.stroke(); }
+      roundRect(cx - 66, cy + 40, 132, 24, 10, 'rgba(0,0,0,.55)'); fitText((i + 1) + '. ' + c.name, cx, cy + 58, 13, 126, done ? '#b9f6ca' : '#fff');
+      if (done) text('✅', cx + 30, cy - 26, 20);
+    });
+    const at = STORY[clamp(save.story.done, 0, 7)].xy;                               // 🤖 Robo waits at the next chapter
+    drawRoboAt(at[0] - 50, at[1] + 22 - Math.abs(Math.sin(t * 0.12)) * 8, 1.1, curLook().pal || PAL_ROBO, { face: 1 });
+    roundRect(0, 446, W, 74, 0, 'rgba(0,0,0,.55)'); text('🤝 ROBO\'S TEAM:', 92, 490, 18, '#ffd740');
+    const team = STORY.slice(0, save.story.done).map(c => c.boss);
+    if (!team.length) text('Beat a boss to make a new friend!', 400, 490, 18, '#fff');
+    team.forEach((id, i) => { const j = sm.joined - 1 === i && sm.jt < 60 ? (1 - sm.jt / 60) * 30 : 0; drawFace(id, 210 + i * 92, 482 - j - Math.abs(Math.sin(t * 0.1 + i)) * 4, 62); });
+    button(BACK_BTN, '⬅', 'rgba(0,0,0,.45)', 22);
+    button(SM_HELP, save.story.helper ? '🤝 Story Helper: +2 ❤️ ON' : '🤝 Story Helper: OFF', save.story.helper ? '#43a047' : 'rgba(0,0,0,.5)', 17, !!save.story.helper);
+    if (save.story.done >= 8) button(SM_PARTY, '🎉 PARTY!', '#e91e63', 20); else text('📖 BOSS STORY', 735, 38, 26, '#fff');
+    for (const p of particles) { ctx.globalAlpha = Math.min(1, p.life / 20); starShape(p.x, p.y, p.s, p.c); } ctx.globalAlpha = 1;
+    if (sm.joined > 0 && sm.jt < 160) { roundRect(W / 2 - 280, 160, 560, 50, 16, 'rgba(0,0,0,.7)'); fitText('🎉 ' + bossName(STORY[sm.joined - 1].boss) + ' joined Robo\'s team!', W / 2, 194, 26, 540, '#ffd740'); }
+    else if (sm.msgT > 0) { roundRect(W / 2 - 250, 160, 500, 46, 16, 'rgba(0,0,0,.7)'); text(sm.msg, W / 2, 191, 20, '#fff59d'); }
+    else if (save.story.done >= 8) { roundRect(W / 2 - 250, 60, 500, 36, 12, 'rgba(0,0,0,.5)'); text('🎉 THE END! Tap any chapter to play it again.', W / 2, 85, 18, '#fff'); }
+  },
+};
+// ---------- 🎉 THE FRIENDSHIP PARTY + 🎬 THE CREDITS ----------
+let party = null;
+function openParty() { bfHush(); party = { t: 0 }; state = 'stparty'; setSong('victory'); particles = []; }
+const CREDITS = [['📖 BOSS STORY MODE', 34, '#ffd740'], ['', 20], ['⭐ STARRING ⭐', 26, '#80d8ff'], ['Robo', 24, '#fff'], ['', 12]]
+  .concat(STORY.map(c => [bossName(c.boss) + '  (' + ((BOSSES[c.boss] && BOSSES[c.boss].game) || '') + ')', 20, '#fff']))
+  .concat([['', 20], ['🗺️ The places', 26, '#80d8ff']], STORY.map(c => [c.icon + ' ' + c.name, 19, '#fff59d']),
+    [['', 20], ['🎶 Music + bonks', 26, '#80d8ff'], ['the Boss Master Studio band', 20, '#fff'], ['', 20], ['🏭 Made in the Game Factory', 24, '#ffd740'], ['', 30], ['THE END', 44, '#ff80ab'], ['Thanks for playing!', 26, '#fff']]);
+MORE_STATES.stparty = {
+  u() {
+    frame++; const P = party; if (!P) { openMap(); return; } P.t++;
+    if (frame % 5 === 0) burst(Math.random() * W, -10, ['#ffd740', '#ff4081', '#40c4ff', '#69f0ae', '#e040fb'], 3, 2);
+    for (const p of particles) { p.x += p.vx; p.y += p.vy; p.vy += 0.06; p.life--; } particles = particles.filter(p => p.life > 0);
+    if (P.t % 90 === 1) sfx.giggle();
+    if (inBox(tap, SC_SKIP) || press.esc || (P.t > 150 && (ok() || tap)) || P.t > 900) { party = null; particles = []; state = 'stcredits'; P.t = 0; credY = H + 20; sfx.page(); }
+  },
+  d() {
+    const t = frame;
+    ctx.fillStyle = '#1a0b3a'; ctx.fillRect(0, 0, W, H);
+    for (let i = 0; i < 6; i++) { ctx.save(); ctx.globalAlpha = 0.16; ctx.translate(W / 2, -10); ctx.rotate(Math.sin(t * 0.02 + i) * 0.6); mPoly([0, 0, -70, 560, 70, 560], ['#ff80ab', '#80d8ff', '#ccff90', '#fff59d', '#ea80fc', '#ffab91'][i]); ctx.restore(); }
+    ctx.globalAlpha = 1; circle(W / 2, 40, 28, '#e0e0e0'); for (let k = 0; k < 10; k++) { const a = k * 0.63 + t * 0.05; circle(W / 2 + Math.cos(a) * 20, 40 + Math.sin(a) * 20, 5, k % 2 ? '#fff' : '#b0bec5'); }   // 🪩 a disco ball
+    ctx.fillStyle = '#4a148c'; ctx.fillRect(0, 440, W, 80); for (let x = 0; x < W; x += 60) { ctx.fillStyle = (x / 60 + (t >> 4)) % 2 ? '#ff80ab' : '#80d8ff'; ctx.fillRect(x, 440, 60, 8); }
+    for (let i = 0; i < 14; i++) mPoly([i * 70, 80, i * 70 + 35, 80, i * 70 + 17, 110], ['#ff4081', '#ffd740', '#40c4ff', '#69f0ae'][i % 4]);   // the party banner flags
+    const guests = STORY.map(c => c.boss);
+    guests.forEach((id, i) => {
+      const row = i < 4 ? 0 : 1, x = row ? 110 + (i - 4) * 190 : 120 + i * 240, feet = row ? 440 : 330, hop = Math.abs(Math.sin(t * 0.14 + i * 0.9)) * 22;
+      ctx.save(); ctx.translate(0, -hop); drawPreview(id, x, feet, row ? 150 : 120, { cos: Object.assign({ h: 1 }, save.cos[id] || {}), lv: save.evoOn ? evoLv(id) : 1 }); ctx.restore();   // 🥳 party hats for everybody (unless they wear their own hat)
+    });
+    drawRoboAt(870, 440 - Math.abs(Math.sin(t * 0.2)) * 30, 2.2, curLook().pal || PAL_ROBO, { face: -1 });
+    for (const p of particles) { ctx.fillStyle = p.c; ctx.fillRect(p.x, p.y, p.s, p.s * 1.6); }
+    const k = 1 + Math.sin(t * 0.1) * 0.04; ctx.save(); ctx.translate(W / 2, 150); ctx.scale(k, k); text('🎉 THE BIG FRIENDSHIP PARTY! 🎉', 0, 0, 38, '#ffd740'); ctx.restore();
+    text('Everybody is friends now! Even Shadow Glitch!', W / 2, 186, 20, '#fff');
+    button(SC_SKIP, '⏭ SKIP', 'rgba(0,0,0,.5)', 18);
+  },
+};
+let credY = H;
+MORE_STATES.stcredits = {
+  u() {
+    frame++; credY -= ok() || keys.jump ? 4 : 0.9;
+    const total = CREDITS.reduce((n, c) => n + c[1] * 1.6, 0);
+    if (inBox(tap, SC_SKIP) || press.esc || credY < -total - 40) { openMap(); return; }
+  },
+  d() {
+    ctx.fillStyle = '#05060f'; ctx.fillRect(0, 0, W, H);
+    for (let i = 0; i < 50; i++) circle((i * 97) % W, (i * 53 + frame * 0.3) % H, 1.5, 'rgba(255,255,255,.6)');
+    let y = credY; for (const [s, size, col] of CREDITS) { y += size * 1.6; if (s && y > -40 && y < H + 40) text(s, W / 2, y, size, col || '#fff'); }
+    drawFace('shadowglitch', 90, 440, 90); drawRoboAt(870, 480, 1.6, curLook().pal || PAL_ROBO, { face: -1 });
+    button(SC_SKIP, '⏭ SKIP', 'rgba(0,0,0,.5)', 18);
+  },
+};
+// ---------- the 📖 STORY menu tab (tab 9) ----------
+const ST_CARDS = [
+  { k: 'story', icon: '📖', name: 'BOSS STORY MODE', col: '#5e35b1', sub: () => save.story.done >= 8 ? '🎉 THE END! Play again!' : `Chapter ${save.story.done + 1} of 8`, tip: '📖 Robo travels across the world map! Every boss he bonks becomes a friend and joins his team.' },
+  { k: 'cos', icon: '🎨', name: 'COSTUME SHOP', col: '#ec407a', sub: () => `👕 ${cosIds().filter(cosDressed).length} dressed up`, tip: '🎨 Dress up every boss with hats, glasses, capes, bow ties and colors! Try them on in the mirror.' },
+  { k: 'gal', icon: '🌟', name: 'EVOLUTION GALLERY', col: '#ff8f00', sub: () => `${cosIds().filter(id => evoLv(id) > 1).length} evolved`, tip: '🌟 Beat a boss 3, 7 and 15 times and it EVOLVES: Shiny, SUPER, then MEGA!' },
+  { k: 'evo', icon: '💪', name: 'EVOLVED BOSSES', get col() { return save.evoOn ? '#43a047' : '#616161'; }, sub: () => save.evoOn ? '✅ ON (+HP)' : '⬜ OFF', tip: '💪 ON: evolved bosses have +1 HP per level in fights. OFF: every boss is the normal one.' },
+];
+const stCards = () => ST_CARDS.map(m => ({ kind: 'st', m, tip: m.tip }));
+TAB_BTNS.push({ x: 0, y: 424, w: 0, h: 46 });
+TAB_BTNS.forEach((b, i) => { b.x = 8 + i * 105.8; b.w = 100; });              // (9 tabs now: the 📖 STORY tab is the last one)
+const _stMenuCards = menuCards;
+menuCards = function (tab) { return tab === ST_TAB ? stCards() : _stMenuCards.apply(this, arguments); };
+const _stDrawCard = drawCard;
+drawCard = function (c, r, selected) { return c.kind === 'st' ? drawFmCard(c, r, selected) : _stDrawCard.apply(this, arguments); };
+const _stActivate = activateCard;
+activateCard = function (c) {
+  if (c.kind !== 'st') return _stActivate.apply(this, arguments);
+  sfx.click();
+  if (c.m.k === 'story') openMap();
+  else if (c.m.k === 'cos') openCostumes();
+  else if (c.m.k === 'gal') openGallery();
+  else if (c.m.k === 'evo') { save.evoOn = !save.evoOn; writeSave(); menuMsg = save.evoOn ? '💪 Evolved bosses are ON (a little tougher!)' : 'Evolved bosses are OFF: every boss is the normal one.'; menuMsgT = 150; }
+};
+const _stDrawMenu = drawMenu;
+drawMenu = function () {
+  if (menuTab !== ST_TAB) { _stDrawMenu.apply(this, arguments); button(TAB_BTNS[ST_TAB], '📖 STORY', 'rgba(0,0,0,.45)', 20, false); return; }
+  drawArena('royal'); overlay(0.25);
+  button(BACK_BTN, '⬅', 'rgba(0,0,0,.45)', 22);
+  text('📖 STORY + COSTUMES 📖', W / 2, 40, 30, '#fff');
+  text('👑 ' + crownCount(), W - 50, 36, 24, '#ffd740');
+  drawMods(52);
+  stCards().forEach((c, k) => drawCard(c, cardRect(k), k === menuSel));
+  const lab = ['🏆 CHALLENGES', `🎛️ MY MIXES (${save.mixes.length})`, (hardOpen() ? '🔥' : '🔒') + ' HARD (' + HARD.filter(c => save.beaten[c.id]).length + '/' + HARD.length + ')', '✨ MORE FUN', '⚔️ FIGHT MORE', '🏟️ BOSS ARENA', '🎈 BOSS FUN', '🏆 TOURNAMENTS'];
+  lab.forEach((l, i) => button(TAB_BTNS[i], l, 'rgba(0,0,0,.45)', 20, false));
+  button(TAB_BTNS[ST_TAB], '📖 STORY', '#5e35b1', 20, true);
+  if (menuMsgT > 0) { roundRect(W / 2 - 300, 476, 600, 36, 12, 'rgba(0,0,0,.7)'); text(menuMsg, W / 2, 500, 18, '#fff59d'); }
+  else { const c = stCards()[menuSel]; fitText(c ? c.tip : '', W / 2, 500, 17, 900, '#d1c4e9'); }
+};
+//@@STORY-END@@
 </script>
