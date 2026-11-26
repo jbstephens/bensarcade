@@ -219,7 +219,10 @@ function lowpass(f, q, t) { const b = actx.createBiquadFilter(); b.type = 'lowpa
 function leadVoice(m, t, dur, vol, kind, out, echo = true) {
   const f = midi(m), end = t + dur + 0.25;
   let g;
-  if (kind === 'steel' || kind === 'bell') {           // hit-and-ring voices (steel drum, crystal bell)
+  if (kind === 'toy') {                                // 🎹 TOY XYLOPHONE: a tiny "tink!" that dies away fast
+    g = envGain(t, 0.003, vol, 0.08, Math.min(dur, 0.16), 0.1, out);
+    for (const [k, v] of [[1, 1], [3, 0.22], [5.95, 0.06]]) { const pg = actx.createGain(); pg.gain.value = v; osc('sine', f * k, t, end).connect(pg); pg.connect(g); }
+  } else if (kind === 'steel' || kind === 'bell') {    // hit-and-ring voices (steel drum, crystal bell)
     g = envGain(t, 0.004, vol, 0.25, Math.min(dur, 0.6), 0.25, out);
     const parts = kind === 'steel' ? [[1, 1], [2, 0.35], [3.01, 0.12]] : [[1, 1], [2.01, 0.25], [4.02, 0.12], [5.4, 0.05]];
     for (const [k, v] of parts) { const pg = actx.createGain(); pg.gain.value = v; osc('sine', f * k, t, end).connect(pg); pg.connect(g); }
@@ -268,6 +271,11 @@ function padVoice(notes, t, dur, vol, kind, out) {
 // 🎸 BASS: punchy filter envelope
 function bassVoice(m, t, dur, vol, kind, out) {
   const f = midi(m), end = t + dur + 0.1;
+  if (kind === 'pluck') {                              // 🪕 a tiny plucky bass (no big low rumble)
+    const pg = envGain(t, 0.004, vol, 0.12, Math.min(dur, 0.2), 0.06, out);
+    osc('triangle', f, t, end).connect(pg); const h = actx.createGain(); h.gain.value = 0.3; osc('sine', f * 2, t, end).connect(h); h.connect(pg);
+    return;
+  }
   const g = envGain(t, 0.006, vol, 0.7, dur, 0.06, out);
   const lp = lowpass(kind === 'slap' ? 3200 : 1600, kind === 'slap' ? 8 : 5, t);
   lp.frequency.setTargetAtTime(kind === 'slap' ? 380 : 260, t + 0.01, kind === 'slap' ? 0.05 : 0.09);
@@ -503,6 +511,12 @@ STYLES.kingboss = {
   V: { k: 'x.x...x.x.x...x.', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', t: '..............xx', bass: 'R.RRR.RRR.RRR.RO', arp: '0.1.2.1.0.1.2.1.' },
   C: { k: 'x.x.x.x.x.x.x.x.', s: '....x.......x...', c: '....x.......x...', h: 'xxxxxxxxxxxxxxxx', o: '..x...x...x...x.', bass: 'R.R.O.R.R.R.O.R5', arp: '0121312101213121' },
   B: { k: 'x...x...x...x...', s: '....x..x....x.xx', t: 'x..x..x.x..x..x.', bass: 'R-.R-.R-R-.R-.O.', arp: '0...1...2...3...' } };
+STYLES.tiny = {                                        // 🐭 TINY TROUBLE: brush ticks, soft claps, wood-block tocks and little off-beat stabs (no big drums)
+  dv: { h: 0.8, c: 0.45, q: 0.6, w: 0.5 }, nofill: true,
+  I: { h: '..x...x...x...x.', bass: 'R.......5.......', stab: '..x...x...x...x.' },
+  V: { q: 'x.......x.......', c: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', bass: 'R...3...5...3...', stab: '..x...x...x...x.' },
+  C: { q: 'x.......x.......', c: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', w: '......x.......x.', bass: 'R...3...5...O...', stab: '..x...x...x...x.', arp: '0...1...2...1...' },
+  B: { h: '..x...x...x...x.', c: '............x...', bass: 'R.......5.......', stab: '..x.......x.....' } };
 STYLES.keys = {                                        // 🔑 the main theme: a jingly ring of keys on the off-beats
   I: { k: 'x.......x.......', y: '....x.......x...', bass: 'R-------R-------', arp: '0...1...2...1...' },
   V: { k: 'x.....x.x.......', s: '....x.......x...', h: 'x.x.x.x.x.x.x.x.', y: '......x.......x.', bass: 'R..R..R.R..R..O.', arp: '0.1.2.1.0.1.2.1.' },
@@ -538,22 +552,29 @@ function chordAt(S, b, st) { const c = S.secs[b.key].ch[b.i]; return c[st < S.sp
 function scheduleStep(S, pos, t) {
   const b = S.bars[Math.floor(pos / S.spb)], st = pos % S.spb, sd = stepDur(S), sec = S.secs[b.key], key = S.base + b.tr;
   const out = songOut, inst = S.inst, sk = sec.st || b.key, sty = (b.f === 'V' && b.rep > 1 && S.style.V2) ? S.style.V2 : S.style[sk] || S.style.V;
-  const swing = st % 2 ? (S.swing || 0) * sd : 0, tt = t + swing;
+  const swing = S.swing8 ? (st % 4 === 2 ? S.swing8 * sd : 0) : st % 2 ? (S.swing || 0) * sd : 0, tt = t + swing;   // swing8 = a bouncy shuffle on the 8ths
+  const dv = S.style.dv || {};
   const ch = chordAt(S, b, st);
   for (const d of ['k', 's', 'h', 'o', 'c', 'r', 't', 'g', 'w', 'q', 'j', 'n', 'y']) {
     let pat = sty[d];
-    if (b.last && st >= S.spb - 4 && (d === 's' || d === 't') && b.f !== 'T') pat = 'xxxxxxxxxxxxxxxx';   // drum fill at the end of each part
+    if (b.last && st >= S.spb - 4 && (d === 's' || d === 't') && b.f !== 'T' && !S.style.nofill) pat = 'xxxxxxxxxxxxxxxx';   // drum fill at the end of each part
     if (b.f === 'V' && b.rep === 1 && b.i < 2 && d === 's') continue;                                    // verse 1 starts gently
-    if (pat && pat[st] === 'x') { drumX(d, tt, DRUM_VOL[d] * (d === 's' && b.last && st >= S.spb - 4 ? 0.6 + (st - S.spb + 4) * 0.12 : 1), out); logNote('drum' + d, 0, b); }
+    if (pat && pat[st] === 'x') { drumX(d, tt, DRUM_VOL[d] * (dv[d] || 1) * (d === 's' && b.last && st >= S.spb - 4 ? 0.6 + (st - S.spb + 4) * 0.12 : 1), out); logNote('drum' + d, 0, b); }
   }
-  if (st === 0 && b.i === 0 && (sk === 'C' || b.f === 'B')) { drumHit('x', t, DRUM_VOL.x, out); logNote('drumx', 0, b); }
+  if (st === 0 && b.i === 0 && (sk === 'C' || b.f === 'B') && !S.style.nofill) { drumHit('x', t, DRUM_VOL.x, out); logNote('drumx', 0, b); }
   const bp = sty.bass;
   if (bp && bp[st] !== '.' && bp[st] !== '-') {
     let n = 1; while (bp[st + n] === '-') n++;
-    const r = ((key + ch[0]) % 12 + 12) % 12 + 33, off = { R: 0, O: 12, 5: 7, 3: ch[1] - ch[0] }[bp[st]] || 0;
+    const r = ((key + ch[0]) % 12 + 12) % 12 + 33 + 12 * (inst.bassOct || 0), off = { R: 0, O: 12, 5: 7, 3: ch[1] - ch[0] }[bp[st]] || 0;
     bassVoice(r + off, tt, n * sd * 0.92, 0.17 * (inst.bassVol || 1), inst.bass, out); logNote('bass', r + off, b);
   }
-  if (st === 0 || (st === S.spb / 2 && sec.ch[b.i].length > 1)) {
+  const stp = sty.stab;                                // 🎺 little off-beat "stab" chords (soft and short)
+  if (stp && stp[st] === 'x') {
+    const ns = ch.slice(0, 3).map(s => { let m = key + s; while (m < S.base - 10) m += 12; while (m >= S.base + 2) m -= 12; return m; });
+    for (const m of ns) pluckVoice(m, tt, sd * 1.1, 0.02 * (inst.stabVol || 1), inst.stab || 'square', out);
+    logNote('stab', ns[0], b);
+  }
+  if (inst.pad !== 'none' && (st === 0 || (st === S.spb / 2 && sec.ch[b.i].length > 1))) {
     const len = sec.ch[b.i].length > 1 ? S.spb / 2 : S.spb, base = S.base - 12;
     const notes = ch.map(s => { let m = key + s; while (m < base - 9) m += 12; while (m > base + 4) m -= 12; return m; });
     padVoice(notes, t, len * sd * 0.98, 0.034 * (inst.padVol || 1) * (b.f === 'I' ? 0.8 : 1), inst.pad, out); logNote('pad', notes[0], b);
@@ -638,18 +659,27 @@ function noiseFlip() { if (!actx || !noiseBuf) return; noiseHit(actx.currentTime
 // ---------- THE SONGS (all brand-new for Robo Jump 16!) ----------
 // Melody: one token per 8th note (1-7 = scale degree, ' = octave up, , = octave down, b/# = flat/sharp, - = hold, . = rest, | = bar).
 // Chords: one per bar ("4/5" = two in one bar). Every melody note that starts on beat 1 or beat 3 is a note of its chord (tested!).
-const SONG_DEFS = {
-  // ⚡ MAIN THEME "Tiny Trouble": a bouncy F major hook ("Ti-ny trou-ble! Ti-ny trou-ble!"), a climbing pre-chorus and a KEY CHANGE
-  title: { bpm: 144, base: 65, style: 'pop', kc: 2, form: ['I', 'V', 'P', 'C', 'V', 'P', 'C', 'B', 'C', 'K', 'T'],
-    inst: { lead: 'saw', harm: 'square', pad: 'saw', bass: 'saw', arp: 'pluck' },
-    sec: {
+// (the OLD smooth main theme's parts: Victory and the Credits song still use them)
+const TT_OLD_SEC = {
       I: { ch: '1 4 5 1', mel: "5 - 3 - 1 - 3 - | 4 - 6 - 1' - 6 - | 5 - 7 - 2' - 7 - | 1' - - - . . . ." },
       V: { ch: '1 6 4 5 1 6 4 5',
            mel: "1 . 1 2 3 . 5 . | 6 . 5 6 1' - . . | 4 . 4 5 6 . 1' . | 5 - - - 2 - . . | 1 . 1 2 3 . 5 . | 6 . 1' 7 6 - 3 . | 4 . 6 5 4 - 1 . | 2 - - - 7, - 5, -" },
       P: { ch: '4 5 6 5', mel: "1' - 6 - 4 - 6 1' | 2' - 7 - 5 - 7 2' | 3' - 1' - 6 - 1' 3' | 5' - - - 2' - 7 -" },
       C: { ch: '1 5 6 4 1 5 4/5 1',
            mel: "3' - 3' 2' 1' - 5 . | 2' - 2' 1' 7 - 5 . | 1' - 1' 7 6 - 3' . | 4' - - - 1' - . . | 3' - 3' 2' 1' - 3' 5' | 5' - 4' 3' 2' - 7 . | 1' - 6 - 7 - 2' - | 1' - - - . 5 6 7" },
-      B: { ch: '6 3 4 5', mel: "6 - 1' - 3' - 1' - | 7 - 5 - 3 - 5 - | 4 - 6 - 1' - 6 - | 5 - 7 - 2' - 4' -" } } },
+      B: { ch: '6 3 4 5', mel: "6 - 1' - 3' - 1' - | 7 - 5 - 3 - 5 - | 4 - 6 - 1' - 6 - | 5 - 7 - 2' - 4' -" } };
+const SONG_DEFS = {
+  // ⚡ MAIN THEME "Tiny Trouble": a TINY toy-xylophone tune in C, bouncy and swung.
+  // The hook: "doo, dee, doo... ba-ba-ba bum bum bum bum, ba-ba-ba bum bum bum bum", then a "ba-ba-ba-ba-ba-ba-ba" part.
+  title: { bpm: 144, base: 72, style: 'tiny', swing8: 0.4, form: ['I', 'V', 'C', 'V', 'B', 'V'],
+    inst: { lead: 'toy', harm: 'toy', pad: 'none', bass: 'pluck', bassOct: 1, bassVol: 0.8, arp: 'bell', arpOct: 1, arpVol: 0.6, stab: 'square', leadVol: 1.1 },
+    sec: {
+      I: { ch: '1 6 4 5', mel: "5 . 6 . 5 . . . | 6 . 1' . 6 . . . | 4 . 6 . 4 . . . | 5 . 7 . 2' . . ." },
+      V: { ch: '1 4 4/5 5 1 4 4/5 5/1',
+           mel: "5 . 6 . 5 . . . | 1' 1' 1' . 6 . 5 . | 4 . 3 . 5 5 5 . | 5 . 6 . 7 . 5 . | 5 . 6 . 5 . . . | 1' 1' 1' . 6 . 5 . | 4 . 3 . 5 5 5 . | 5 . 4 . 3 . 1 ." },
+      C: { ch: '4 5 1 6 4 5 1 5',
+           mel: "6 6 6 6 6 6 6 . | 2' . 1' . 7 . 5 . | 5 5 5 5 5 5 5 . | 6 . 1' . 3' . . . | 1' 1' 1' 1' 1' 1' 1' . | 2' . 7 . 5 . 7 . | 1' . 5 . 3 . 5 . | 2' . . . 7 . 5 ." },
+      B: { ch: '6 3 4 5', mel: "3' . 1' . 6 . 1' . | 7 . 5 . 3 . 5 . | 6 . 4 . 1 . 4 . | 5 5 5 . 7 . 2' ." } } },
   // 📝 World 1: THE GIANT DESK ("Pencil Path": a chunky old-school square-wave march)
   desk: { bpm: 128, base: 67, style: 'retro', kc: 2, inst: { lead: 'square', harm: 'square', pad: 'saw', bass: 'square', arp: 'pluck' },
     sec: {
@@ -734,13 +764,13 @@ const SONG_DEFS = {
 };
 // 🏆 VICTORY: the main theme as a big brass march (extra choruses!)
 SONG_DEFS.victory = { bpm: 150, base: 65, style: 'march', kc: 2, form: ['I', 'C', 'V', 'C', 'B', 'C', 'K', 'K', 'T'],
-  inst: { lead: 'brass', harm: 'brass', pad: 'saw', bass: 'saw', arp: 'pluck' }, sec: SONG_DEFS.title.sec };
+  inst: { lead: 'brass', harm: 'brass', pad: 'saw', bass: 'saw', arp: 'pluck' }, sec: TT_OLD_SEC };
 // 🎬 CREDITS "Big Where It Counts": the main theme and Mini Max's theme (in a happy MAJOR key!) on steel drums
 SONG_DEFS.credits = { bpm: 120, base: 65, style: 'calypso', kc: 2, swing: 0.07, form: ['I', 'V', 'C', 'D', 'E', 'C', 'K', 'T'],
   inst: { lead: 'steel', harm: 'glass', pad: 'organ', padVol: 0.9, bass: 'slap', arp: 'bell', arpOct: 1 },
-  sec: { I: SONG_DEFS.title.sec.I, V: SONG_DEFS.title.sec.V, C: SONG_DEFS.title.sec.C,
+  sec: { I: TT_OLD_SEC.I, V: TT_OLD_SEC.V, C: TT_OLD_SEC.C,
          D: { st: 'C', ch: SONG_DEFS.minimax.sec.C.ch.replace(/5M/g, '5'), mel: SONG_DEFS.minimax.sec.C.mel.replace(/#7/g, '7') },
-         E: { st: 'B', ch: SONG_DEFS.title.sec.B.ch, mel: SONG_DEFS.title.sec.B.mel } } };
+         E: { st: 'B', ch: TT_OLD_SEC.B.ch, mel: TT_OLD_SEC.B.mel } } };
 // 🤫 MAX'S SECRET NOOK: Mini Max's theme as a little music box of crystal bells
 SONG_DEFS.secretroom = { bpm: 100, base: 72, scale: 'minor', style: 'sparkle', kc: 2, inst: { lead: 'bell', harm: 'glass', pad: 'choir', bass: 'sub', arp: 'bell', arpOct: 1, leadVol: 1.2 },
   sec: SONG_DEFS.minimax.sec };
