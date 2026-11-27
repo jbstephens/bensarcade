@@ -989,6 +989,7 @@ function hurt(knock = true) {
   if (p.shield) { p.shield = false; p.inv = 60; sfx.pop(); burst(p.x + p.w / 2, p.y + p.h / 2, ['#ff80ab', '#fff', '#ea80fc'], 18, 5); banner = '💖 The Time Shield saved you!'; bannerT = 60; return false; }
   p.hp--; p.inv = 90; shake = 10; sfx.ouch();
   if (knock) { p.vy = -7; p.vx = -p.face * 4; }
+  if (p.hp <= 0 && l50Mode()) { p.hp = L50_HP; p.inv = 120; burst(p.x + p.w / 2, p.y + p.h / 2, ['#ff80ab', '#fff', '#ffd740'], 24, 6); banner = '💖 BOING! Robo is back with 10 hearts!'; bannerT = 90; return true; }   // 💗 50-hearts modes: no game over
   if (p.hp <= 0) { state = 'oops'; timer = 0; burst(p.x + p.w / 2, p.y + p.h / 2, ['#fff', '#40c4ff', '#3d5afe'], 24, 6); }
   return true;
 }
@@ -1302,6 +1303,7 @@ function clonesContact(b) {
 }
 function updateBoss(step) {
   const b = boss;
+  if (b.kind === 'laser50') { l50Update(b, step); return; }
   if (b.kind === 'mirror') { updateMirror(b, step); return; }
   if (b.kind === 'laserheart') {
     updateLaserheart(b, step); clonesContact(b);
@@ -1322,6 +1324,258 @@ function updateBoss(step) {
     if (s.x < -40 || s.x > W + 40 || s.y < -60 || s.y > H + 40) s.dead = true;
   }
   shots = shots.filter(s => !s.dead);
+}
+// ---------- 💗 50 LASERHEARTS AT ONCE! (Ben's magic word: ?laser50=1) 50 silly MINI Laserhearts. One bonk = POP! ----------
+const L50_TOTAL = 50, L50_WAVE = 10, L50_MAX = 15, L50_HP = 10;
+let l50Confetti = [];
+const l50Squeak = () => { note(1400, 0, 0.07, 'sine', 0.06, 2000); note(1900, 0.06, 0.09, 'sine', 0.045, 2600); };
+const l50Mode = () => boss && boss.kind === 'laser50';
+function startL50() {                                    // straight into Laserheart's Time Core... with 50 tiny hearts!
+  startStage(FINAL_ID, true); shots = []; marks = []; boss2 = null; l50Confetti = [];
+  boss = { kind: 'laser50', name: '50 MINI LASERHEARTS', minis: [], spawned: 0, popped: 0, pending: L50_WAVE, wave: 1, dropT: 0,
+           atk: 220, combo: 0, comboT: 0, best: 0, pops: [], st: 'fight', t: 0, conga: [] };
+  player.hp = L50_HP; respawn = { x: player.x, y: player.y };
+  banner = '💗 50 MINI LASERHEARTS! Jump on them to POP them!'; bannerT = 170;
+}
+function l50Path(g, tt) {                                // 💃 the conga line's wiggly path
+  return { x: W / 2 - 18 + 370 * Math.sin(tt * 0.011 + g * 2), y: 320 + 45 * Math.sin(tt * 0.033 + g) };
+}
+function l50Spawn(b) {
+  const k = b.spawned % L50_WAVE, w = 36, h = 34, pat = k < 4 ? 'bounce' : k < 7 ? 'wiggle' : 'conga';
+  const m = { x: T + 20 + Math.random() * (W - 2 * T - 40 - w), y: -50, w, h, vx: 0, vy: 0, pat, t: 0, drop: true, warn: 0,
+              baseY: 220 + Math.random() * 170, g: b.wave, ci: k - 7, ph: Math.random() * 6 };
+  if (pat === 'bounce') { m.vx = (Math.random() < 0.5 ? -1 : 1) * (1.2 + Math.random() * 0.9); m.vy = (Math.random() < 0.5 ? -1 : 1) * (0.8 + Math.random() * 0.7); m.ty = 160 + Math.random() * 200; }
+  if (pat === 'wiggle') { m.vx = (Math.random() < 0.5 ? -1 : 1) * (1 + Math.random() * 0.6); m.ty = m.baseY; }
+  b.minis.push(m); b.spawned++; sfx.spring();
+}
+function l50Pop(b, m) {
+  m.dead = true; b.popped++;
+  b.combo = b.comboT > 0 ? b.combo + 1 : 1; b.comboT = 100; b.best = Math.max(b.best, b.combo);
+  const cx = m.x + m.w / 2, cy = m.y + m.h / 2;
+  burst(cx, cy, ['#ff80ab', '#ff4081', '#fff', '#ffd740', '#ea80fc'], 18, 5);
+  for (let k = 0; k < 5; k++) { const a = k / 5 * 6.28; particles.push({ x: cx, y: cy, vx: Math.cos(a) * 3, vy: Math.sin(a) * 3 - 2, life: 40, c: '#ff4081', s: 9, heart: true }); }
+  b.pops.push({ x: cx, y: cy - 10, t: 0, str: b.combo >= 2 ? `POP! x${b.combo}` : 'POP!' });
+  l50Squeak(); if (b.combo >= 5 && b.combo % 5 === 0) sfx.coin();
+}
+function l50Contact(b) {                                 // 🦘 one bonk (from above) or one dash = POP!  Bumping from the side is just a gentle push
+  const p = player;
+  for (const m of b.minis) {
+    if (m.dead || m.drop || !hitBox(p, m)) continue;
+    const fromAbove = p.vy > 0 && p.y + p.h - p.vy <= m.y + 18;
+    if (fromAbove || p.dashT > 0) { l50Pop(b, m); if (fromAbove) { p.vy = -10; p.jumps = 1; p.fuel = 90; } return; }
+    p.vx = p.x + p.w / 2 < m.x + m.w / 2 ? -4 : 4;
+  }
+}
+function l50Update(b, step) {
+  if (b.comboT > 0) b.comboT--; else b.combo = 0;
+  for (const q of b.pops) q.t++;
+  b.pops = b.pops.filter(q => q.t < 50);
+  if (b.st === 'merge') { b.t++; if (b.t > 100) l50Win(b); return; }
+  if (step) b.t++;
+  if (b.grumpy) grumpyUpdate(b, step); else happyUpdate(b, step);
+  b.minis = b.minis.filter(m => !m.dead);
+  if (b.popped >= L50_TOTAL && !b.minis.length) {          // 🎉 ALL 50! They come back together...
+    b.st = 'merge'; b.t = 0; shots = []; marks = []; sfx.shard(); banner = b.grumpy ? '' : '💗 Wait... what are they doing?!'; bannerT = 100;
+    if (b.grumpy) l50Win(b);
+  }
+}
+function happyUpdate(b, step) {
+  const alive = b.minis.length, left = L50_TOTAL - b.spawned;
+  if (b.pending === 0 && left > 0 && alive <= 5) { b.pending = Math.min(L50_WAVE, left); b.wave++; banner = `💗 WAVE ${b.wave}! Here come ${b.pending} more!`; bannerT = 100; }
+  if (b.pending > 0 && alive < L50_MAX && step && ++b.dropT % 14 === 0) { l50Spawn(b); b.pending--; }
+  if (!step) { l50Contact(b); l50Bubbles(b, false); return; }
+  const lo = T, hi = W - T - 36;
+  for (const m of b.minis) {
+    m.t++;
+    let tx = m.x, ty = m.ty;
+    if (m.pat === 'conga') { const q = l50Path(m.g, b.t - m.ci * 24); tx = q.x; ty = q.y; }
+    if (m.drop) { m.x += (tx - m.x) * 0.2; m.y += 5; if (m.y >= ty) { m.y = ty; m.drop = false; } continue; }
+    if (m.pat === 'bounce') {
+      m.x += m.vx; m.y += m.vy;
+      if (m.x < lo || m.x > hi) { m.vx = -m.vx; m.x = Math.max(lo, Math.min(hi, m.x)); }
+      if (m.y < 150 || m.y > FLOOR - m.h - 2) { m.vy = -m.vy; m.y = Math.max(150, Math.min(FLOOR - m.h - 2, m.y)); }
+    } else if (m.pat === 'wiggle') {
+      m.x += m.vx; if (m.x < lo || m.x > hi) { m.vx = -m.vx; m.x = Math.max(lo, Math.min(hi, m.x)); }
+      m.y = m.baseY + Math.sin(m.t * 0.12 + m.ph) * 16;
+    } else { m.x = tx; m.y = ty; }
+    if (m.warn > 0 && --m.warn === 0) {                      // 🫧 a slow little heart bubble
+      const cx = m.x + m.w / 2, cy = m.y + m.h / 2, a = Math.atan2(player.y + player.h / 2 - cy, player.x + player.w / 2 - cx);
+      shots.push({ kind: 'bubble', x: cx, y: cy, vx: Math.cos(a) * 1.7, vy: Math.sin(a) * 1.7, r: 11, life: 0 }); sfx.pop();
+    }
+  }
+  if (b.t > 180 && --b.atk <= 0) {                           // "!" over a few minis... then bubbles (≥55 frames of warning)
+    const ready = b.minis.filter(m => !m.drop && !m.warn);
+    for (let k = 0; k < 3 && ready.length; k++) ready.splice(Math.floor(Math.random() * ready.length), 1)[0].warn = 60;
+    b.atk = 150 + Math.floor(Math.random() * 70); sfx.warn();
+  }
+  l50Contact(b); l50Bubbles(b, true);
+}
+function l50Bubbles(b, step) {
+  for (const s of shots) {
+    if (step) {
+      if (s.kind === 'bubble') { s.life++; s.x += s.vx; s.y += s.vy + Math.sin(s.life * 0.1) * 0.4; if (s.life > 420) s.dead = true; }
+      else { s.x += s.vx; s.y += s.vy; }
+    }
+    if (hitCircle(player, s.x, s.y, s.r)) { if (hurt()) { s.dead = true; burst(s.x, s.y, ['#ff80ab', '#fff'], 8, 3); } }
+    if (s.x < T - 10 || s.x > W - T + 10 || s.y < -60 || s.y > FLOOR + 10) s.dead = true;
+  }
+  shots = shots.filter(s => !s.dead);
+}
+function l50Win(b) {
+  state = 'l50win'; timer = 0; shots = []; marks = []; l50Confetti = []; b.pops = [];
+  trophy(b.grumpy ? 'grumpy50' : 'laser50'); sfx.win(); setSong('victory');
+}
+function l50WinUpdate() {
+  timer++;
+  if (l50Confetti.length < 160) for (let k = 0; k < 3; k++) l50Confetti.push({ x: Math.random() * W, y: -10 - Math.random() * 40, vx: (Math.random() - 0.5) * 1.5, vy: 1.5 + Math.random() * 1.5, r: Math.random() * 6, c: RAINBOW7[Math.floor(Math.random() * 7)] });
+  for (const q of l50Confetti) { q.x += q.vx + Math.sin(frame * 0.05 + q.r) * 0.5; q.y += q.vy; q.r += 0.1; if (q.y > H + 10) { q.y = -10; q.x = Math.random() * W; } }
+  if (timer < 60) return;
+  const again = boss && boss.grumpy ? startGrumpy : startL50;
+  if (press.jump || press.enter || inBox(tap, NEXT_BTN)) { sfx.click(); again(); }
+  else if (press.esc || inBox(tap, MAP_BTN)) { sfx.click(); state = 'map'; mapSel = FINAL_ID; setSong('title'); }
+}
+// 😠 GRUMPY HEARTS (?grumpy50=1): 50 FULL-SIZE Laserhearts, 3 at a time, 1-2 bonks each. Only ONE attacks at a time (fair!)
+const GR_SLOTS = [110, 415, 720], GR_SEQ = ['eyes', 'sweep', 'bolts'];
+function startGrumpy() {
+  startL50(); const b = boss;
+  b.grumpy = true; b.name = '50 GRUMPY LASERHEARTS'; b.atk = 90; b.busy = null; b.spawnT = 0; b.seq = 0;
+  banner = '😠 HMPH! 50 GRUMPY LASERHEARTS! Bonk them when they get tired!'; bannerT = 180;
+}
+function grumpySpawn(b) {
+  const used = b.minis.map(g => g.slot), slot = [0, 1, 2].find(s => !used.includes(s));
+  if (slot === undefined) return;
+  b.minis.push({ x: GR_SLOTS[slot], y: -140, w: 130, h: 120, slot, hp: b.spawned % 3 === 2 ? 2 : 1, st: 'drop', t: 0, inv: 0, ph: Math.random() * 6 });
+  b.minis[b.minis.length - 1].max = b.minis[b.minis.length - 1].hp;
+  b.spawned++; sfx.boss();
+}
+function grumpyAttack(b, g) {
+  const a = GR_SEQ[b.seq++ % GR_SEQ.length], pcx = player.x + player.w / 2;
+  g.st = a; g.t = 0; b.busy = g; marks = [];
+  if (a === 'eyes') { marks.push({ kind: 'vbeam', x: Math.max(60, Math.min(W - 60, pcx)), w: 56 }); const x2 = pcx < W / 2 ? pcx + 300 : pcx - 300; marks.push({ kind: 'vbeam', x: Math.max(60, Math.min(W - 60, x2)), w: 56 }); sfx.laserWarn(); }
+  if (a === 'sweep') { marks.push({ kind: 'hbeam', y: FLOOR - 34, h: 28, left: 75 }); sfx.laserWarn(); }
+  if (a === 'bolts') sfx.warn();
+}
+function grumpyUpdate(b, step) {
+  if (b.minis.length < 3 && b.spawned < L50_TOTAL && step && ++b.spawnT > 70) { b.spawnT = 0; grumpySpawn(b); }
+  const p = player;
+  for (const g of b.minis) {
+    if (g.inv > 0) g.inv--;
+    if (!step) continue;
+    g.t++;
+    const cx = g.x + g.w / 2, cy = g.y + g.h / 2;
+    if (g.st === 'drop') { g.y += 4; if (g.y >= 100) { g.y = 100; g.st = 'float'; g.t = 0; } }
+    else if (g.st === 'float' || g.st === 'rise') { g.y += (100 + Math.sin(frame * 0.05 + g.ph) * 10 - g.y) * 0.08; if (g.st === 'rise' && g.y < 112) g.st = 'float'; }
+    else if (g.st === 'eyes' || g.st === 'sweep') {
+      const w0 = g.st === 'sweep' ? 75 : 65;
+      for (const m of marks) { m.on = g.t >= w0 && g.t < w0 + 26; m.left = w0 - g.t; }
+      if (g.t === w0) { sfx.laser(); shake = 5; }
+      for (const m of marks) if (m.on && (m.kind === 'hbeam' ? p.y + p.h > m.y && p.y < m.y + m.h : p.x + p.w > m.x - m.w / 2 && p.x < m.x + m.w / 2)) hurt();
+      if (g.t > w0 + 30) { marks = []; grumpyTired(b, g); }
+    } else if (g.st === 'bolts') {                             // "!" for 60 frames, then 3 slow heart bolts
+      if (g.t >= 60 && (g.t - 60) % 30 === 0) { const a = Math.atan2(p.y + p.h / 2 - cy, p.x + p.w / 2 - cx); shots.push({ kind: 'bolt', x: cx, y: cy + 20, vx: Math.cos(a) * 2.8, vy: Math.sin(a) * 2.8, r: 12 }); sfx.pop(); }
+      if (g.t > 60 + 30 * 2 + 20) grumpyTired(b, g);
+    } else if (g.st === 'cool') {
+      g.y += (FLOOR - g.h - g.y) * 0.08;
+      if (frame % 8 === 0) particles.push({ x: g.x + Math.random() * g.w, y: g.y + 10, vx: (Math.random() - .5), vy: -2, life: 40, c: 'rgba(255,255,255,.7)', s: 8 });
+      if (g.t > 260) { g.st = 'rise'; g.t = 0; }
+    }
+  }
+  if (step && !b.busy && --b.atk <= 0) {                       // next grumpy heart's turn to attack
+    const ready = b.minis.filter(g => g.st === 'float');
+    if (ready.length) { grumpyAttack(b, ready[Math.floor(Math.random() * ready.length)]); } else b.atk = 20;
+  }
+  for (const g of b.minis) {                                  // 🦘 bonk a TIRED one from above (or dash into it)
+    if (g.dead || !hitBox(p, g)) continue;
+    const fromAbove = p.vy > 0 && p.y + p.h - p.vy <= g.y + 26;
+    if (g.st === 'cool' && g.inv === 0 && (fromAbove || p.dashT > 0)) {
+      g.hp--; g.inv = 50; shake = 8; sfx.bossHit(); p.vy = -12; p.jumps = 1; p.dashT = 0;
+      burst(g.x + g.w / 2, g.y + 10, ['#fff', '#ffd740', '#ff4081', '#40c4ff'], 22, 6);
+      b.combo = b.comboT > 0 ? b.combo + 1 : 1; b.comboT = 240; b.best = Math.max(b.best, b.combo);
+      if (g.hp <= 0) { g.dead = true; b.popped++; b.pops.push({ x: g.x + g.w / 2, y: g.y, t: 0, str: 'HMPH! FINE!' }); l50Squeak(); burst(g.x + g.w / 2, g.y + g.h / 2, ['#ff80ab', '#fff', '#ea80fc'], 30, 6); }
+      else { g.st = 'rise'; g.t = 0; b.pops.push({ x: g.x + g.w / 2, y: g.y, t: 0, str: 'BONK! HMPH!' }); }
+    } else if (fromAbove) { p.vy = -10; p.jumps = 1; sfx.clank(); }
+    else p.vx = p.x + p.w / 2 < g.x + g.w / 2 ? -5 : 5;
+  }
+  l50Bubbles(b, step);
+}
+function grumpyTired(b, g) { g.st = 'cool'; g.t = 0; b.busy = null; b.atk = 50; banner = '💨 A grumpy heart is TIRED! Jump on it and BONK it!'; bannerT = 90; }
+function l50Crown(cx, ty, s) {                           // 👑 a teeny tiny crown
+  ctx.fillStyle = '#ffd740'; ctx.beginPath();
+  ctx.moveTo(cx - s, ty); ctx.lineTo(cx - s * 1.1, ty - s); ctx.lineTo(cx - s * 0.45, ty - s * 0.4); ctx.lineTo(cx, ty - s * 1.3);
+  ctx.lineTo(cx + s * 0.45, ty - s * 0.4); ctx.lineTo(cx + s * 1.1, ty - s); ctx.lineTo(cx + s, ty); ctx.closePath(); ctx.fill();
+  circle(cx, ty - s * 0.3, s * 0.22, '#ff1744');
+}
+function l50PartyHat(cx, ty, s) {                        // 🥳 a stripy party hat with a pompom
+  ctx.save(); ctx.beginPath(); ctx.moveTo(cx - s * 0.32, ty); ctx.lineTo(cx + s * 0.32, ty); ctx.lineTo(cx + s * 0.05, ty - s * 0.85); ctx.closePath();
+  ctx.fillStyle = '#40c4ff'; ctx.fill(); ctx.clip();
+  for (let k = 0; k < 5; k++) { ctx.fillStyle = k % 2 ? '#ffeb3b' : '#e040fb'; ctx.fillRect(cx - s, ty - s * 0.85 + k * s * 0.2, s * 2, s * 0.09); }
+  ctx.restore(); circle(cx + s * 0.05, ty - s * 0.85, s * 0.1, frame % 20 < 10 ? '#fff' : '#ff80ab');
+}
+function l50Draw(b) {
+  drawMarks();
+  if (b.st === 'merge') {                                 // 💫 all 50 swirl together into ONE giant heart
+    const k = Math.min(1, b.t / 90), cx = W / 2, cy = 240;
+    for (let i = 0; i < 24; i++) { const a = i / 24 * 6.28 + b.t * 0.08, r = (1 - k) * 380 + 20; ctx.fillStyle = i % 2 ? '#ff4081' : '#ff80ab'; heartPath(cx + Math.cos(a) * r, cy + Math.sin(a) * r * 0.6, 14); ctx.fill(); }
+    if (k > 0.5) drawLaserheart(cx - 90 * k, cy - 82 * k, 180 * k, 165 * k, { nice: true, mini: true });
+  }
+  for (const m of b.minis) {
+    if (b.grumpy) { grumpyDraw(b, m); continue; }
+    const cx = m.x + m.w / 2, cy = m.y + m.h / 2;
+    ctx.save();
+    if (m.pat === 'wiggle' || m.pat === 'conga') { ctx.translate(cx, cy); ctx.rotate(Math.sin(m.t * (m.pat === 'conga' ? 0.2 : 0.15) + m.ph) * 0.3); ctx.translate(-cx, -cy); }
+    drawLaserheart(m.x, m.y, m.w, m.h, { mini: true });
+    ellipse(cx + 2, cy + 7, 3.5, 4.5, '#ff80ab');         // 😛 silly tongue
+    l50Crown(cx, m.y + 2, 6);
+    ctx.restore();
+    if (m.warn > 0) bang(cx, m.y - 12);
+  }
+  for (const s of shots) {
+    if (s.kind === 'bolt') { ctx.fillStyle = '#ff1744'; heartPath(s.x, s.y, s.r); ctx.fill(); ctx.fillStyle = '#ffcdd2'; heartPath(s.x, s.y, s.r * 0.5); ctx.fill(); }
+    else { circle(s.x, s.y, s.r, 'rgba(255,128,171,.35)'); ctx.strokeStyle = 'rgba(255,255,255,.8)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, 7); ctx.stroke(); ctx.fillStyle = '#ff4081'; heartPath(s.x, s.y + 1, 5); ctx.fill(); circle(s.x - 4, s.y - 4, 2.5, '#fff'); }
+  }
+  for (const q of b.pops) { ctx.globalAlpha = Math.max(0, 1 - q.t / 50); text(q.str, q.x, q.y - q.t * 0.8, b.grumpy ? 24 : 20, '#fff59d'); }
+  ctx.globalAlpha = 1;
+}
+function grumpyDraw(b, g) {
+  const cx = g.x + g.w / 2, cy = g.y + g.h / 2, s = g.w / 2, cool = g.st === 'cool';
+  if (!(g.inv > 0 && frame % 6 < 3)) {
+    drawLaserheart(g.x, g.y, g.w, g.h, { crown: true, dizzy: cool, firing: marks.some(m => m.on) && b.busy === g });
+    ctx.strokeStyle = '#1a0010'; ctx.lineWidth = 4; ctx.lineCap = 'round';   // 😠 grumpy eyebrows + a big frown
+    for (const d of [-1, 1]) { ctx.beginPath(); ctx.moveTo(cx + d * s * 0.52, cy - s * 0.32); ctx.lineTo(cx + d * s * 0.12, cy - s * 0.2); ctx.stroke(); }
+    ctx.beginPath(); ctx.arc(cx, cy + s * 0.42, s * 0.18, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke();
+  }
+  if (g.max > 1) for (let k = 0; k < g.max; k++) { ctx.fillStyle = k < g.hp ? '#ff1744' : 'rgba(255,255,255,.3)'; heartPath(cx - 10 + k * 20, g.y + g.h + 12, 7); ctx.fill(); }
+  if (cool) text('BONK IT!', cx, g.y - 26, 22, '#ffeb3b');
+  else if (g.st === 'bolts' && g.t < 60) bang(cx, g.y - 8);
+  else if ((g.t + g.slot * 80) % 260 < 60 && g.st !== 'drop') { roundRect(cx + s * 0.6, g.y - 6, 78, 30, 12, 'rgba(255,255,255,.92)'); text('Hmph!', cx + s * 0.6 + 39, g.y + 15, 17, '#c2185b'); }
+}
+function l50HUD(b) {
+  const left = L50_TOTAL - b.popped;
+  roundRect(W / 2 - 135, 8, 270, 48, 16, 'rgba(0,0,0,.55)');
+  text(b.grumpy ? `😠 ${left} grumpy hearts left!` : `💗 ${left} left!`, W / 2, 41, b.grumpy ? 20 : 32, b.grumpy ? '#ff8a80' : '#ff80ab');
+  if (b.combo >= 2 && b.comboT > 0) { const z = 1 + Math.max(0, b.comboT - (b.grumpy ? 225 : 85)) / 30; text(`x${b.combo} COMBO!`, W / 2, 92, 30 * z, frame % 10 < 5 ? '#ffeb3b' : '#fff'); }
+}
+function l50WinDraw() {
+  const b = boss, k = Math.min(1, timer / 30);
+  ctx.fillStyle = 'rgba(20,0,20,.35)'; ctx.fillRect(0, 0, W, H);
+  if (b.grumpy) {                                         // 😊 ALL 50 turn happy at once!
+    for (let i = 0; i < L50_TOTAL; i++) { const x = 70 + (i % 10) * 91, y = 150 + Math.floor(i / 10) * 44 + Math.sin(frame * 0.1 + i) * 4;
+      ctx.fillStyle = '#ff80ab'; heartPath(x, y, 18 * k); ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y + 1, 5 * k, 0.2, Math.PI - 0.2); ctx.stroke(); }
+  } else {
+    const s = 180 * k, y = 160 + Math.sin(frame * 0.06) * 8;
+    drawLaserheart(W / 2 - s / 2, y, s, s * 0.92, { nice: true, mini: true });
+    ctx.save(); ctx.translate(W / 2 + s * 0.18, y + s * 0.46 - s * 0.24); ctx.rotate(0.3); l50PartyHat(0, 0, s / 2); ctx.restore();
+  }
+  const msg = b.grumpy ? "Hmph... okay, you're pretty good. Let's be friends!" : "OK OK, you win! Let's be friends!";
+  roundRect(W / 2 - 360, 40, 720, 70, 24, 'rgba(255,255,255,.95)');
+  text(msg, W / 2, 86, b.grumpy ? 25 : 30, '#c2185b');
+  for (const q of l50Confetti) { ctx.save(); ctx.translate(q.x, q.y); ctx.rotate(q.r); ctx.fillStyle = q.c; ctx.fillRect(-4, -2, 8, 4); ctx.restore(); }
+  text(`${b.grumpy ? "You beat" : "You popped"} all 50!  Best combo: x${b.best}`, W / 2, 360, 20, '#fff59d');
+  if (timer >= 60) {
+    roundRect(NEXT_BTN.x, NEXT_BTN.y, NEXT_BTN.w, NEXT_BTN.h, 18, '#ff4081'); text('🔁 Again', NEXT_BTN.x + NEXT_BTN.w / 2, NEXT_BTN.y + 40, 26);
+    roundRect(MAP_BTN.x, MAP_BTN.y, MAP_BTN.w, MAP_BTN.h, 18, '#3d5afe'); text('🏠 Map', MAP_BTN.x + MAP_BTN.w / 2, MAP_BTN.y + 40, 26);
+  }
 }
 function endGame() {                                    // 🏆 Laserheart is calm... the friends come back!
   save.done[FINAL_ID] = 1; save.won = 1; writeSave();
@@ -1599,6 +1853,7 @@ function update() {
     if (timer > 30 && (press.jump || press.enter || inBox(tap, NEXT_BTN))) nextStage();
     else if (timer > 30 && (press.esc || inBox(tap, MAP_BTN))) { state = 'map'; mapSel = Math.min(stageId + 1, FINAL_ID); }
   } else if (state === 'warp') updateWarp();
+  else if (state === 'l50win') l50WinUpdate();
   else if (state === 'credits') { endT++; if (endT > 120 && (press.jump || press.enter || press.esc || tap)) { state = 'map'; mapSel = FINAL_ID; } }
   for (const k in press) press[k] = false;
   tap = null;
@@ -2026,7 +2281,7 @@ function drawMarks() {
       if (m.on) { ctx.fillStyle = 'rgba(255,23,68,.55)'; ctx.fillRect(T, m.y - 6, W - 2 * T, m.h + 12); ctx.fillStyle = '#ffebee'; ctx.fillRect(T, m.y + m.h / 2 - 4, W - 2 * T, 8); }
       else {
         ctx.strokeStyle = frame % 10 < 5 ? '#ff1744' : '#ffcdd2'; ctx.setLineDash([14, 10]); ctx.lineWidth = 3; ctx.strokeRect(T, m.y, W - 2 * T, m.h); ctx.setLineDash([]);
-        const left = boss ? lhWarn(boss, 80) - boss.t : 0; text(left > 28 ? 'Get ready to JUMP... (hold JUMP to hover!)' : '⬆ JUMP NOW! ⬆', W / 2, m.y - 16, left > 28 ? 22 : 34, left > 28 ? '#ffcdd2' : (frame % 8 < 4 ? '#ffeb3b' : '#fff'));
+        const left = m.left != null ? m.left : boss ? lhWarn(boss, 80) - boss.t : 0; text(left > 28 ? 'Get ready to JUMP... (hold JUMP to hover!)' : '⬆ JUMP NOW! ⬆', W / 2, m.y - 16, left > 28 ? 22 : 34, left > 28 ? '#ffcdd2' : (frame % 8 < 4 ? '#ffeb3b' : '#fff'));
       }
     }
     if (m.kind === 'vbeam') {
@@ -2038,6 +2293,7 @@ function drawMarks() {
 function drawBossArena() {
   const b = boss;
   if (b.kind === 'mirror') { drawMirrorArena(b); return; }
+  if (b.kind === 'laser50') { l50Draw(b); return; }
   if (riftT > 0 || (boss2 && boss2.y < 0)) { drawPortalSwirl(W / 2, 70, 70 * Math.min(1, riftT / 40 + 0.2), 0.9); text('TIME RIFT!', W / 2, 160, 22, '#e1bee7'); }
   drawMarks();
   if (b.kind === 'laserheart') {
@@ -2073,7 +2329,8 @@ function drawHUD() {
   const p = player;
   roundRect(BACK_BTN.x, BACK_BTN.y, BACK_BTN.w, BACK_BTN.h, 12, 'rgba(0,0,0,.45)'); text('⬅ MAP', BACK_BTN.x + 55, BACK_BTN.y + 29, 18);
   roundRect(MUSIC_BTN.x, MUSIC_BTN.y, MUSIC_BTN.w, MUSIC_BTN.h, 12, 'rgba(0,0,0,.45)'); text(musicOn ? '🎵' : '🔇', MUSIC_BTN.x + 27, MUSIC_BTN.y + 29, 20);
-  for (let i = 0; i < Math.max(p.hp, 0); i++) { ctx.fillStyle = '#ff1744'; heartPath(150 + i * 30, 32, 12); ctx.fill(); }
+  const hs = l50Mode() ? 18 : 30;
+  for (let i = 0; i < Math.max(p.hp, 0); i++) { ctx.fillStyle = '#ff1744'; heartPath(150 + i * hs, 32, hs * 0.4); ctx.fill(); }
   text('🪙 ' + levelCoins, 150, 76, 20, '#ffd740', 'left');
   if (!boss && !curStage.secret) for (let k = 0; k < 3; k++) { if (gotShards[k]) drawShard(260 + k * 30, 74, 0.6); else { ctx.globalAlpha = 0.3; drawShard(260 + k * 30, 74, 0.6); ctx.globalAlpha = 1; } }
   // ⏳ TIME SLOW meter (tap it or press Z)
@@ -2083,7 +2340,8 @@ function drawHUD() {
   text(slowT > 0 ? '⏳ SLOW!' : full ? '⏳ Z: TIME SLOW' : '⏳ charging...', SLOW_BTN.x + SLOW_BTN.w / 2, SLOW_BTN.y + 22, 15);
   if (boss) {
     const b = boss;
-    if (b.kind === 'laserheart') bossBar(b, 340, 10, 380, LH_TOTAL, (4 - b.phase) * 3 + Math.max(0, b.hp), '#ff4081');
+    if (b.kind === 'laser50') l50HUD(b);
+    else if (b.kind === 'laserheart') bossBar(b, 340, 10, 380, LH_TOTAL, (4 - b.phase) * 3 + Math.max(0, b.hp), '#ff4081');
     else if (b.kind === 'mirror') bossBar(b, 340, 10, 380, MR_TOTAL, (3 - b.phase) * 3 + Math.max(0, b.hp), '#80d8ff');
     else bossBar(b, 340, 10, 380, b.max, b.hp, '#76ff03');
     if (boss2 && boss2.st !== 'dead') bossBar(boss2, 380, 64, 300, boss2.max, boss2.hp, '#b388ff');
@@ -2371,7 +2629,8 @@ function draw() {
   else if (state === 'play' || state === 'oops') {
     drawGame(); drawHUD();
     if (state === 'oops') { ctx.fillStyle = 'rgba(0,0,0,.4)'; ctx.fillRect(0, 0, W, H); text('OOPS! Try again!', W / 2, H / 2, 54, '#fff'); text(boss && (boss.kind === 'laserheart' || boss.kind === 'mirror') ? '⏰ back to the start of this phase (unlimited tries!)' : 'unlimited tries!', W / 2, H / 2 + 44, 20, '#ffd740'); }
-  } else if (state === 'clear') drawClear();
+  } else if (state === 'l50win') { drawGame(); l50WinDraw(); }
+  else if (state === 'clear') drawClear();
   else if (state === 'warp') drawWarp();
   else if (state === 'credits') drawCredits();
   if (!actx && state === 'title' && frame % 60 < 40) text('🔊 tap or press a key for sound', W / 2, 240, 16, '#ddd');
@@ -2394,5 +2653,10 @@ requestAnimationFrame(loop);
 if (/[?&]zip=1/.test(location.search)) {
   writeSave = function () {};   // a ZIP fight never changes your real save
   setTimeout(() => { try { startStage(FINAL_ID, true); bannerT = 0; } catch (e) { console.error(e); } }, 400);
+}
+// 💗 ?laser50=1 = HAPPY HEARTS (50 silly mini Laserhearts)   😠 ?grumpy50=1 = GRUMPY HEARTS (50 full-size grumpy ones). Never saved.
+if (/[?&](laser50|grumpy50)=1/.test(location.search)) {
+  writeSave = function () {};
+  setTimeout(() => { try { /[?&]grumpy50=1/.test(location.search) ? startGrumpy() : startL50(); } catch (e) { console.error(e); } }, 400);
 }
 </script>
