@@ -342,44 +342,145 @@ const sfx = {
 };
 
 // ---------- Music ----------
-let musicOn = true, nextNoteTime = 0, step = 0;
-const CHORDS = [[64, 67, 71], [60, 64, 67], [62, 66, 69], [59, 62, 66]];   // a brand new song for the far-away galaxy
-const ARP = CHORDS.flatMap(([a, b, c]) => [a, b, c, a + 12, c, b, a, b]);
-const MELODY = [
-  76,0,79,0, 83,0,81,79, 76,0,0,74, 76,0,0,0, 72,0,76,0, 79,0,77,76, 72,0,0,71, 72,0,0,0,
-  74,0,78,0, 81,0,79,78, 74,0,76,0, 78,0,81,0, 83,0,81,0, 78,0,74,0, 71,0,74,0, 78,0,0,0,
-];
-const BASS = CHORDS.flatMap(([r]) => [r - 24, 0, 0, 0, r - 24, 0, r - 12, 0]);
-// 👑 FINAL BOSS song (The Big Glitch): its very own epic-but-gentle E-minor tune. Em, C, D, B... and back to Em!
-const FB_BPM = 150;
-const FB_CHORDS = [[64, 67, 71], [60, 64, 67], [62, 66, 69], [59, 63, 66]];
-const FB_ARP = FB_CHORDS.flatMap(([a, b, c]) => [a, b, c, a + 12, c, b, a, b]);
-const FB_MELODY = [
-  71,0,0,76, 79,0,76,0, 79,0,0,76, 72,0,67,0, 69,0,74,0, 78,0,74,0, 75,0,0,0, 71,0,66,0,
-  83,0,0,81, 79,0,0,0, 76,0,0,0, 79,0,76,0, 78,0,0,0, 74,0,69,0, 66,0,71,0, 75,0,0,0,
-];
-const FB_BASS = FB_CHORDS.flatMap(([r]) => [r - 24, 0, 0, 0, r - 24, 0, r - 12, 0]);
-let wasFinal = false;
+// 🎶 Every world has its OWN song, plus a boss song and an even BIGGER final-boss song.
+// A song: bpm (mbpm = the slower 🌙 lullaby speed), bar = steps per chord (8 = march, 6 = waltz), ch = chords,
+// mel = melody (MIDI notes, 0 = rest), arp = chord-tone pattern (0 root, 1 third, 2 fifth, 3-5 an octave up, 6 two up, -1 rest),
+// bass (1 low root, 2 root, 3 low fifth), kick/tick = soft drum taps (never noise), pad = soft held chord,
+// intro = the boss's "here it comes!" sting, keyUp = key change in the boss's last phase.
+// Music never uses Math.random, so replays stay exactly the same.
 const midi = n => 440 * Math.pow(2, (n - 69) / 12);
-const JB_SONG = (window.JUKEBOX && window.JUKEBOX.song) || '';   // 🎶 the book's Music Factory can ask for a song (?song=boss, ?song=finalboss); normal play never sets it
+const beats = a => a.flatMap(n => [n, 0]);   // quarter notes -> steps
+function mnote(f, t, dur, wave, vol, att, glide) {   // a soft-start music note (no sudden loud clicks)
+  if (!actx || !vol) return;
+  if (false) vol = Math.min(vol * 0.6, 0.08);
+  const s = actx.currentTime + t, o = actx.createOscillator(), g = actx.createGain();
+  o.type = wave; o.frequency.setValueAtTime(f * (glide || 1), s);
+  if (glide) o.frequency.exponentialRampToValueAtTime(f, s + Math.min(0.12, dur * 0.5));
+  att = Math.min(att || 0.012, dur * 0.4);
+  g.gain.setValueAtTime(0.0001, s); g.gain.linearRampToValueAtTime(vol * Math.pow(0.001 / vol, att / dur), s + att);   // a quick fade-in, then the same fade-out as before
+  g.gain.exponentialRampToValueAtTime(0.001, s + dur);
+  o.connect(g); g.connect(actx.destination);
+  o.start(s); o.stop(s + dur + 0.02);
+}
+const tone = (c, i) => i < 3 ? c[i] : i < 6 ? c[i - 3] + 12 : c[0] + 24;
+let musicOn = true, nextNoteTime = 0, step = 0, curSong = '', musKey = 0;
+const JB_SONG = (window.JUKEBOX && window.JUKEBOX.song) || '';   // 🎶 the book's Music Factory can ask for a song (?song=boss, ?song=finalboss, ?song=<world>); normal play never sets it
+function songNow() {
+  if (JB_SONG) return SONGS[JB_SONG] ? JB_SONG : 'main';
+  if (bossState === 'fight') return levelIndex === MAIN_LEVELS - 1 ? 'finalboss' : 'boss';   // 👑 the last boss has its OWN song
+  if (state === 'title' || state === 'win') return 'main';
+  return WORLD_SONGS[levelIndex] || 'main';
+}
 function playMusic() {
   if (!actx || !musicOn) return;
-  const final = JB_SONG === 'finalboss' || (bossState === 'fight' && levelIndex === MAIN_LEVELS - 1);   // 👑 the last boss has its OWN song
-  if (final !== wasFinal) { wasFinal = final; step = 0; }
-  const fight = !final && (JB_SONG === 'boss' || bossState === 'fight');
-  const stepDur = 60 / (final ? FB_BPM : fight ? 165 : 140) / 2, shift = fight ? -3 : 0;
-  const MEL = final ? FB_MELODY : MELODY, BAS = final ? FB_BASS : BASS, ARPS = final ? FB_ARP : ARP;
+  const id = songNow(), S = SONGS[id], night = false;
+  if (id !== curSong) { curSong = id; step = 0; musKey = 0; }
+  const stepDur = 60 / (night ? S.mbpm : S.bpm) / 2, bar = S.bar || 8, intro = S.introLen || 0;
   if (nextNoteTime < actx.currentTime) nextNoteTime = actx.currentTime + 0.05;
   while (nextNoteTime < actx.currentTime + 0.2) {
     const t = nextNoteTime - actx.currentTime;
-    const m = MEL[step % MEL.length], b = BAS[step % BAS.length], a = ARPS[step % ARPS.length];
-    note(midi(a + shift), t, stepDur * 0.8, 'triangle', 0.035);
-    if (m && step % 64 === 60) for (let k = 0; k < 4; k++) note(midi(m + shift + 12), t + k * stepDur / 4, stepDur / 5, 'square', 0.03);   // glitchy stutter!
-    else if (m) note(midi(m + shift), t, stepDur * 3, 'sine', 0.07);
-    if (b) note(midi(b + shift), t, stepDur * 0.9, 'triangle', 0.09);
+    if (step < intro) {                                  // ⚡ boss intro sting: rising chords + a soft drum roll
+      S.intro.forEach(([at, ns, len]) => {
+        if (at !== step) return;
+        ns.forEach(n => mnote(midi(n), t, stepDur * len, night ? 'sine' : 'triangle', night ? 0.025 : 0.028, night ? 0.08 : 0.04));
+        mnote(midi(ns[0] - 12), t, stepDur * len, night ? 'sine' : 'triangle', 0.05, 0.04);
+      });
+      if (!night && S.roll && S.roll.includes(step)) mnote(65, t, 0.14, 'sine', 0.035, 0.006, 2.2);
+    } else {
+      const k = step - intro, mlen = S.mel.length, j = k % bar;
+      if (j === 0 && S.keyUp) {                          // 🔑 last phase = key change (the music jumps up!)
+        const last = boss ? boss.hp <= Math.ceil(boss.maxHp / 3) : Math.floor(k / mlen) % 2 === 1;
+        musKey = last ? S.keyUp : 0;
+      }
+      const sh = musKey, c = S.ch[Math.floor(k / bar) % S.ch.length];
+      const m = S.mel[k % mlen], a = S.arp ? S.arp[j % S.arp.length] : -1, b = S.bass[j % S.bass.length];
+      if (a >= 0) {
+        if (!night) mnote(midi(tone(c, a) + sh), t, stepDur * (S.al || 0.8), S.aw || 'triangle', S.av === undefined ? 0.035 : S.av);
+        else if (k % 2 === 0) mnote(midi(tone(c, a) + sh), t, stepDur * 1.6, 'sine', 0.025);   // 🌙 soft music-box sparkle
+      }
+      if (S.pad && j === 0) c.forEach(n => mnote(midi(n + sh), t, stepDur * bar, 'sine', S.pad, stepDur * 2));
+      if (m) {
+        if (S.stutter && !night && k % 64 === 60) for (let q = 0; q < 4; q++) mnote(midi(m + sh + 12), t + q * stepDur / 4, stepDur / 5, 'square', 0.03);   // glitchy stutter!
+        else mnote(midi(m + sh), t, stepDur * (S.ml || 3), night ? 'sine' : S.mw || 'sine', S.mv || 0.07, 0.012, night ? 0 : S.glide);
+        if (S.dbl && !night) mnote(midi(m + sh - 12), t, stepDur * (S.ml || 3), 'triangle', S.dbl);
+      }
+      if (b) mnote(midi((b === 1 ? c[0] - 24 : b === 2 ? c[0] - 12 : c[2] - 24) + sh), t, stepDur * (S.bl || 0.9),
+                   night ? 'sine' : S.bw || 'triangle', night ? 0.05 : S.bv || 0.09);
+      if (!night && S.kick && S.kick[j % S.kick.length]) mnote(65, t, 0.16, 'sine', S.kv || 0.045, 0.006, 2.2);
+      if (!night && S.tick && S.tick[j % S.tick.length]) mnote(midi(96), t, 0.035, 'triangle', S.tv || 0.012, 0.003);
+    }
     nextNoteTime += stepDur; step++;
   }
 }
+const BOSS_BEAT = { bpm: 168, mbpm: 100, arp: [0, 2, 3, 2, 0, 2, 3, 2], av: 0.022, bass: [1, 2, 1, 2, 1, 2, 1, 2], bv: 0.05, bl: 0.8,
+  kick: [1, 0, 0, 0, 1, 0, 0, 0], kv: 0.035, tick: [0, 0, 1, 0, 0, 0, 1, 0], mw: 'triangle', mv: 0.06, ml: 2.5, dbl: 0.02, keyUp: 2, introLen: 16, roll: [8, 10, 12, 13, 14, 15] };
+const SONGS = {
+  // 👾 Pixel Planet (and the title screen): the Robo Jump 2 main theme
+  main: { bpm: 140, mbpm: 90, stutter: true, ch: [[64, 67, 71], [60, 64, 67], [62, 66, 69], [59, 62, 66]],
+    arp: [0, 1, 2, 3, 2, 1, 0, 1], bass: [1, 0, 0, 0, 1, 0, 2, 0], mel: [
+    76,0,79,0, 83,0,81,79, 76,0,0,74, 76,0,0,0, 72,0,76,0, 79,0,77,76, 72,0,0,71, 72,0,0,0,
+    74,0,78,0, 81,0,79,78, 74,0,76,0, 78,0,81,0, 83,0,81,0, 78,0,74,0, 71,0,74,0, 78,0,0,0] },
+  // 🙃 Upside-Down Moon: "Topsy-Turvy", the tune climbs up, then tumbles back down
+  upsidedown: { bpm: 120, mbpm: 78, ch: [[67, 71, 74], [62, 66, 69], [64, 67, 71], [60, 64, 67]],
+    arp: [3, 2, 1, 0, 1, 2, 3, 2], aw: 'sine', av: 0.03, mw: 'triangle', mv: 0.065, ml: 2.5,
+    bass: [1, 0, 0, 2, 0, 0, 1, 0], bv: 0.08, mel: [
+    67,0,71,0, 74,0,79,0, 78,0,0,0, 74,0,0,0, 76,0,74,0, 71,0,67,0, 72,0,0,0, 0,0,0,0,
+    83,0,79,0, 74,0,71,0, 69,0,0,0, 74,0,0,0, 71,0,74,0, 79,0,83,0, 84,0,0,0, 0,0,0,0] },
+  // 🌀 Warp Nebula: "Swirly Warp", dreamy swirling notes that slide into place
+  nebula: { bpm: 108, mbpm: 70, ch: [[65, 69, 72], [62, 65, 69], [58, 62, 65], [60, 64, 67]],
+    arp: [0, 1, 2, 3, 4, 5, 4, 3], aw: 'sine', av: 0.025, al: 1.2, pad: 0.01, mw: 'sine', mv: 0.06, ml: 4, glide: 0.94,
+    bass: [1, 0, 0, 0, 2, 0, 0, 0], bv: 0.065, bl: 3, mel: [
+    81,0,0,0, 79,0,77,0, 74,0,0,0, 77,0,0,0, 79,0,0,0, 77,0,74,0, 76,0,0,0, 0,0,0,0,
+    84,0,0,0, 81,0,79,0, 77,0,0,0, 81,0,0,0, 82,0,81,0, 79,0,77,0, 79,0,0,0, 0,0,0,0] },
+  // ⚡ Static Storm: "Zap Zap Boogie", zippy and electric (with a glitchy stutter)
+  storm: { bpm: 150, mbpm: 92, stutter: true, ch: [[57, 60, 64], [57, 60, 64], [53, 57, 60], [55, 59, 62]],
+    arp: [0, 3, 0, 3, 0, 3, 0, 3], av: 0.02, al: 0.5, mw: 'triangle', mv: 0.065, ml: 1,
+    bass: [1, 0, 2, 0, 1, 0, 2, 2], bv: 0.075, bl: 0.7, kick: [1, 0, 0, 0, 1, 0, 0, 0], kv: 0.045, tick: [0, 1, 0, 1, 0, 1, 0, 1], tv: 0.01, mel: [
+    69,0,69,72, 0,69,76,0, 74,0,72,0, 69,0,67,0, 69,0,69,72, 0,69,77,0, 76,0,74,0, 71,0,0,0,
+    81,0,81,79, 0,76,79,0, 81,0,84,0, 81,0,76,0, 77,0,76,0, 74,0,72,0, 71,0,74,0, 79,0,0,0] },
+  // 🪞 Mirror Moon: "Mirror Mirror", a tune that sounds the SAME played backwards
+  mirror: { bpm: 112, mbpm: 74, ch: [[60, 64, 67], [57, 60, 64], [53, 57, 60], [55, 59, 62], [55, 59, 62], [53, 57, 60], [57, 60, 64], [60, 64, 67]],
+    arp: [0, 1, 2, 3, 3, 2, 1, 0], aw: 'sine', av: 0.03, al: 1.2, mw: 'triangle', mv: 0.065, ml: 1.8,
+    bass: [1, 0, 0, 0, 0, 0, 0, 1], bv: 0.08, bl: 2,
+    mel: (h => beats(h.concat(h.slice().reverse())))([72, 76, 79, 76, 81, 79, 77, 76, 77, 81, 84, 81, 79, 77, 74, 71]) },
+  // 🌱 Spring Circuit: "Boing Boing", bouncy notes that spring up into place
+  spring: { bpm: 144, mbpm: 88, ch: [[65, 69, 72], [58, 62, 65], [65, 69, 72], [60, 64, 67]],
+    arp: [0, -1, 3, -1, 2, -1, 3, -1], av: 0.025, mw: 'triangle', mv: 0.06, ml: 2, glide: 0.8,
+    bass: [1, 0, 2, 0, 1, 0, 2, 0], bv: 0.08, bl: 0.8, kick: [1, 0, 0, 0, 1, 0, 0, 0], kv: 0.04, mel: [
+    65,0,77,0, 72,0,77,0, 70,0,82,0, 77,0,74,0, 72,0,0,77, 81,0,84,0, 79,0,0,0, 76,0,0,0,
+    77,0,77,0, 81,0,77,0, 82,0,0,0, 81,0,79,0, 77,0,72,0, 69,0,72,0, 76,0,79,0, 77,0,0,0] },
+  // 🧭 Warp Maze: "Tiptoe Puzzle", sneaky plucky steps through the maze
+  maze: { bpm: 126, mbpm: 80, ch: [[62, 65, 69], [55, 58, 62], [57, 61, 64], [62, 65, 69]],
+    arp: [0, -1, 1, -1, 2, -1, 1, -1], av: 0.025, mw: 'triangle', mv: 0.065, ml: 0.9,
+    bass: [1, 0, 0, 0, 3, 0, 0, 0], bv: 0.08, tick: [0, 1, 0, 1, 0, 1, 0, 1], tv: 0.01, mel: [
+    74,0,77,0, 76,0,74,0, 70,0,74,0, 72,0,70,0, 69,0,73,0, 76,0,79,0, 77,0,0,0, 74,0,0,0,
+    81,0,0,77, 0,74,0,0, 79,0,0,74, 0,70,0,0, 76,0,73,0, 69,0,73,0, 74,0,0,0, 0,0,0,0] },
+  // 🔴 The Glitch Core: "Core Countdown", dark and driving (with glitchy stutters)
+  core: { bpm: 140, mbpm: 88, stutter: true, ch: [[59, 62, 66], [55, 59, 62], [62, 66, 69], [57, 61, 64]],
+    arp: [0, 2, 3, 2, 0, 2, 3, 2], av: 0.025, mw: 'triangle', mv: 0.065, ml: 2.5,
+    bass: [1, 2, 1, 2, 1, 2, 1, 2], bv: 0.065, bl: 0.8, kick: [1, 0, 0, 0, 1, 0, 0, 0], kv: 0.04, mel: [
+    71,0,0,71, 74,0,78,0, 79,0,78,0, 74,0,71,0, 74,0,0,74, 78,0,81,0, 81,0,79,0, 76,0,73,0,
+    83,0,0,81, 78,0,74,0, 79,0,0,78, 74,0,71,0, 78,0,0,0, 81,0,0,0, 85,0,0,0, 81,0,0,0] },
+  // 🌈 Rainbow Byte (secret): "Rainbow Run", happy scales running up and down the rainbow
+  rainbow: { bpm: 140, mbpm: 88, ch: [[60, 64, 67], [55, 59, 62], [57, 60, 64], [53, 57, 60]],
+    arp: [3, 4, 5, 6, 5, 4, 3, 4], aw: 'sine', av: 0.025, mw: 'triangle', mv: 0.06, ml: 2,
+    bass: [1, 0, 2, 0, 1, 0, 2, 0], bv: 0.08, tick: [0, 0, 1, 0, 0, 0, 1, 0], mel: [
+    72,74,76,77, 79,0,84,0, 83,0,79,0, 74,0,79,0, 81,79,77,76, 74,0,72,0, 77,0,81,0, 84,0,0,0,
+    84,83,81,79, 77,76,74,72, 71,0,74,0, 79,0,83,0, 84,0,0,81, 76,0,81,0, 77,0,0,0, 81,0,0,0] },
+  // 👹 Boss: "Glitch Brawl", C minor, a driving beat + heroic tune; a chromatic rising sting first, key change at the end
+  boss: Object.assign({}, BOSS_BEAT, { stutter: true, mv: 0.055, dbl: 0.017, ch: [[60, 63, 67], [56, 60, 63], [58, 62, 65], [55, 59, 62]],
+    intro: [[0, [60, 63, 67], 3], [3, [61, 65, 68], 3], [6, [62, 66, 69], 2], [8, [55, 59, 62, 67], 8]], mel: [
+    72,0,0,72, 75,0,79,0, 80,0,0,79, 75,0,72,0, 74,0,0,74, 77,0,82,0, 79,0,0,0, 74,0,71,0,
+    84,0,0,82, 79,0,75,0, 80,0,84,0, 87,0,84,0, 82,0,0,79, 77,0,74,0, 79,0,0,0, 83,0,0,0] }),
+  // 👑 Final boss (The Big Glitch): "Reboot the Galaxy", E minor, faster, bigger, with soft held chords
+  finalboss: Object.assign({}, BOSS_BEAT, { bpm: 176, mbpm: 92, pad: 0.012, dbl: 0.024, stutter: true,
+    ch: [[64, 67, 71], [60, 64, 67], [67, 71, 74], [62, 66, 69], [64, 67, 71], [60, 64, 67], [62, 66, 69], [59, 63, 66]],
+    intro: [[0, [64, 67, 71], 3], [3, [65, 69, 72], 3], [6, [66, 70, 73], 2], [8, [59, 63, 66, 71], 8]], mel: [
+    76,0,0,76, 79,0,0,83, 84,0,0,0, 79,0,76,0, 79,0,0,83, 86,0,0,91, 90,0,0,0, 86,0,81,0,
+    88,0,86,0, 83,0,79,0, 84,0,0,0, 88,0,84,0, 86,0,0,81, 78,0,81,0, 87,0,0,0, 83,0,0,0] }),
+};
+// which song each level plays (same order as LEVELS)
+const WORLD_SONGS = ['main', 'upsidedown', 'nebula', 'storm', 'mirror', 'spring', 'maze', 'core', 'rainbow'];
 
 // ---------- Input ----------
 const keys = { left: false, right: false, jump: false };

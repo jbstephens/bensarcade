@@ -446,44 +446,134 @@ const sfx = {
 };
 
 // ---------- Music ----------
-let musicOn = true, nextNoteTime = 0, step = 0;
-const CHORDS = [[69, 72, 76], [65, 69, 72], [60, 64, 67], [67, 71, 74]];
-const ARP = CHORDS.flatMap(([a, b, c]) => [a, b, c, a + 12, c, b, a, b]);
-const MELODY = [
-  81,0,0,0, 79,0,76,0, 77,0,0,0, 76,0,72,0, 76,0,0,0, 74,0,72,0, 74,0,0,0, 0,0,0,0,
-  81,0,0,0, 84,0,83,0, 81,0,0,0, 77,0,76,0, 79,0,0,0, 76,0,72,0, 71,0,0,0, 0,0,0,0,
-];
-const BASS = CHORDS.flatMap(([r]) => [r - 24, 0, 0, 0, r - 24, 0, r - 12, 0]);
-// 👑 FINAL BOSS song (Mothership Max): its very own epic-but-gentle A-minor tune. Am, F, G, E... and back to Am!
-const FB_BPM = 150;
-const FB_CHORDS = [[69, 72, 76], [65, 69, 72], [67, 71, 74], [64, 68, 71]];
-const FB_ARP = FB_CHORDS.flatMap(([a, b, c]) => [a, b, c, a + 12, c, b, a, b]);
-const FB_MELODY = [
-  76,0,0,81, 84,0,81,0, 84,0,0,81, 77,0,72,0, 74,0,79,0, 83,0,79,0, 80,0,0,0, 76,0,71,0,
-  88,0,0,86, 84,0,0,0, 81,0,0,0, 84,0,81,0, 83,0,0,0, 79,0,74,0, 71,0,76,0, 80,0,0,0,
-];
-const FB_BASS = FB_CHORDS.flatMap(([r]) => [r - 24, 0, 0, 0, r - 24, 0, r - 12, 0]);
-let wasFinal = false;
+// 🎶 Every world has its OWN song, plus a boss song and an even BIGGER final-boss song.
+// A song: bpm (mbpm = the slower 🌙 lullaby speed), bar = steps per chord (8 = march, 6 = waltz), ch = chords,
+// mel = melody (MIDI notes, 0 = rest), arp = chord-tone pattern (0 root, 1 third, 2 fifth, 3-5 an octave up, 6 two up, -1 rest),
+// bass (1 low root, 2 root, 3 low fifth), kick/tick = soft drum taps (never noise), pad = soft held chord,
+// intro = the boss's "here it comes!" sting, keyUp = key change in the boss's last phase.
+// Music never uses Math.random, so replays stay exactly the same.
 const midi = n => 440 * Math.pow(2, (n - 69) / 12);
-const JB_SONG = (window.JUKEBOX && window.JUKEBOX.song) || '';   // 🎶 the book's Music Factory can ask for a song (?song=boss, ?song=finalboss); normal play never sets it
+const beats = a => a.flatMap(n => [n, 0]);   // quarter notes -> steps
+function mnote(f, t, dur, wave, vol, att, glide) {   // a soft-start music note (no sudden loud clicks)
+  if (!actx || !vol) return;
+  if (MID) vol = Math.min(vol * 0.6, 0.08);
+  const s = actx.currentTime + t, o = actx.createOscillator(), g = actx.createGain();
+  o.type = wave; o.frequency.setValueAtTime(f * (glide || 1), s);
+  if (glide) o.frequency.exponentialRampToValueAtTime(f, s + Math.min(0.12, dur * 0.5));
+  att = Math.min(att || 0.012, dur * 0.4);
+  g.gain.setValueAtTime(0.0001, s); g.gain.linearRampToValueAtTime(vol * Math.pow(0.001 / vol, att / dur), s + att);   // a quick fade-in, then the same fade-out as before
+  g.gain.exponentialRampToValueAtTime(0.001, s + dur);
+  o.connect(g); g.connect(actx.destination);
+  o.start(s); o.stop(s + dur + 0.02);
+}
+const tone = (c, i) => i < 3 ? c[i] : i < 6 ? c[i - 3] + 12 : c[0] + 24;
+let musicOn = true, nextNoteTime = 0, step = 0, curSong = '', musKey = 0;
+const JB_SONG = (window.JUKEBOX && window.JUKEBOX.song) || '';   // 🎶 the book's Music Factory can ask for a song (?song=boss, ?song=finalboss, ?song=<world>); normal play never sets it
+function songNow() {
+  if (JB_SONG) return SONGS[JB_SONG] ? JB_SONG : 'main';
+  if (bossState === 'fight') return levelIndex === MAIN_LEVELS - 1 ? 'finalboss' : 'boss';   // 👑 the last boss has its OWN song
+  if (state === 'title' || state === 'win') return 'main';
+  return WORLD_SONGS[levelIndex] || 'main';
+}
 function playMusic() {
   if (!actx || !musicOn) return;
-  const final = JB_SONG === 'finalboss' || (bossState === 'fight' && levelIndex === MAIN_LEVELS - 1);   // 👑 the last boss has its OWN song
-  if (final !== wasFinal) { wasFinal = final; step = 0; }
-  const fight = !final && (JB_SONG === 'boss' || bossState === 'fight');
-  const stepDur = 60 / (MID ? (final ? 92 : fight ? 100 : 84) : (final ? FB_BPM : fight ? 165 : 130)) / 2, shift = fight ? -3 : 0;   // 🌙 lullaby = slower
-  const MEL = final ? FB_MELODY : MELODY, BAS = final ? FB_BASS : BASS, ARPS = final ? FB_ARP : ARP;
+  const id = songNow(), S = SONGS[id], night = MID;
+  if (id !== curSong) { curSong = id; step = 0; musKey = 0; }
+  const stepDur = 60 / (night ? S.mbpm : S.bpm) / 2, bar = S.bar || 8, intro = S.introLen || 0;
   if (nextNoteTime < actx.currentTime) nextNoteTime = actx.currentTime + 0.05;
   while (nextNoteTime < actx.currentTime + 0.2) {
     const t = nextNoteTime - actx.currentTime;
-    const m = MEL[step % MEL.length], b = BAS[step % BAS.length], a = ARPS[step % ARPS.length];
-    if (!MID) note(midi(a + shift), t, stepDur * 0.8, 'triangle', 0.035);
-    else if (step % 2 === 0) note(midi(a + shift), t, stepDur * 1.6, 'sine', 0.025);   // 🌙 soft music-box sparkle
-    if (m) note(midi(m + shift), t, stepDur * 3, 'sine', 0.07);
-    if (b) note(midi(b + shift), t, stepDur * 0.9, MID ? 'sine' : 'triangle', MID ? 0.05 : 0.09);
+    if (step < intro) {                                  // ⚡ boss intro sting: rising chords + a soft drum roll
+      S.intro.forEach(([at, ns, len]) => {
+        if (at !== step) return;
+        ns.forEach(n => mnote(midi(n), t, stepDur * len, night ? 'sine' : 'triangle', night ? 0.025 : 0.028, night ? 0.08 : 0.04));
+        mnote(midi(ns[0] - 12), t, stepDur * len, night ? 'sine' : 'triangle', 0.05, 0.04);
+      });
+      if (!night && S.roll && S.roll.includes(step)) mnote(65, t, 0.14, 'sine', 0.035, 0.006, 2.2);
+    } else {
+      const k = step - intro, mlen = S.mel.length, j = k % bar;
+      if (j === 0 && S.keyUp) {                          // 🔑 last phase = key change (the music jumps up!)
+        const last = boss ? boss.hp <= Math.ceil(boss.maxHp / 3) : Math.floor(k / mlen) % 2 === 1;
+        musKey = last ? S.keyUp : 0;
+      }
+      const sh = musKey, c = S.ch[Math.floor(k / bar) % S.ch.length];
+      const m = S.mel[k % mlen], a = S.arp ? S.arp[j % S.arp.length] : -1, b = S.bass[j % S.bass.length];
+      if (a >= 0) {
+        if (!night) mnote(midi(tone(c, a) + sh), t, stepDur * (S.al || 0.8), S.aw || 'triangle', S.av === undefined ? 0.035 : S.av);
+        else if (k % 2 === 0) mnote(midi(tone(c, a) + sh), t, stepDur * 1.6, 'sine', 0.025);   // 🌙 soft music-box sparkle
+      }
+      if (S.pad && j === 0) c.forEach(n => mnote(midi(n + sh), t, stepDur * bar, 'sine', S.pad, stepDur * 2));
+      if (m) {
+        if (S.stutter && !night && k % 64 === 60) for (let q = 0; q < 4; q++) mnote(midi(m + sh + 12), t + q * stepDur / 4, stepDur / 5, 'square', 0.03);   // glitchy stutter!
+        else mnote(midi(m + sh), t, stepDur * (S.ml || 3), night ? 'sine' : S.mw || 'sine', S.mv || 0.07, 0.012, night ? 0 : S.glide);
+        if (S.dbl && !night) mnote(midi(m + sh - 12), t, stepDur * (S.ml || 3), 'triangle', S.dbl);
+      }
+      if (b) mnote(midi((b === 1 ? c[0] - 24 : b === 2 ? c[0] - 12 : c[2] - 24) + sh), t, stepDur * (S.bl || 0.9),
+                   night ? 'sine' : S.bw || 'triangle', night ? 0.05 : S.bv || 0.09);
+      if (!night && S.kick && S.kick[j % S.kick.length]) mnote(65, t, 0.16, 'sine', S.kv || 0.045, 0.006, 2.2);
+      if (!night && S.tick && S.tick[j % S.tick.length]) mnote(midi(96), t, 0.035, 'triangle', S.tv || 0.012, 0.003);
+    }
     nextNoteTime += stepDur; step++;
   }
 }
+const BOSS_BEAT = { bpm: 168, mbpm: 100, arp: [0, 2, 3, 2, 0, 2, 3, 2], av: 0.022, bass: [1, 2, 1, 2, 1, 2, 1, 2], bv: 0.05, bl: 0.8,
+  kick: [1, 0, 0, 0, 1, 0, 0, 0], kv: 0.035, tick: [0, 0, 1, 0, 0, 0, 1, 0], mw: 'triangle', mv: 0.06, ml: 2.5, dbl: 0.02, keyUp: 2, introLen: 16, roll: [8, 10, 12, 13, 14, 15] };
+const SONGS = {
+  // 🌕 Moon Base (and the title screen): the Robo Jump main theme
+  main: { bpm: 130, mbpm: 84, ch: [[69, 72, 76], [65, 69, 72], [60, 64, 67], [67, 71, 74]],
+    arp: [0, 1, 2, 3, 2, 1, 0, 1], bass: [1, 0, 0, 0, 1, 0, 2, 0], mel: [
+    81,0,0,0, 79,0,76,0, 77,0,0,0, 76,0,72,0, 76,0,0,0, 74,0,72,0, 74,0,0,0, 0,0,0,0,
+    81,0,0,0, 84,0,83,0, 81,0,0,0, 77,0,76,0, 79,0,0,0, 76,0,72,0, 71,0,0,0, 0,0,0,0] },
+  // 💎 Crystal Planet: "Crystal Chimes", sparkly bell arpeggios in E major
+  crystal: { bpm: 120, mbpm: 78, ch: [[64, 68, 71], [61, 64, 68], [57, 61, 64], [59, 63, 66]],
+    arp: [3, 4, 5, 4, 3, 5, 4, 2], aw: 'sine', av: 0.03, al: 1.2, mw: 'triangle', mv: 0.06, ml: 2.5,
+    bass: [1, 0, 0, 2, 0, 0, 1, 0], bv: 0.08, mel: [
+    76,0,80,0, 83,0,80,0, 80,0,0,0, 76,0,73,0, 76,0,0,73, 76,0,81,0, 78,0,0,0, 0,0,0,0,
+    83,0,0,80, 83,0,88,0, 85,0,0,0, 83,0,80,0, 81,0,80,0, 78,0,76,0, 75,0,0,0, 71,0,0,0] },
+  // 🛰️ Star Station: "Floating in Space", slow and dreamy with soft held chords
+  station: { bpm: 100, mbpm: 66, ch: [[62, 65, 69], [58, 62, 65], [65, 69, 72], [60, 64, 67]],
+    arp: [0, 2, 3, 5, 3, 2, 0, 2], aw: 'sine', av: 0.03, al: 1.5, pad: 0.01, mw: 'sine', mv: 0.06, ml: 5,
+    bass: [1, 0, 0, 0, 0, 0, 0, 0], bl: 6, bv: 0.065, mel: [
+    74,0,0,0, 0,0,77,0, 74,0,0,0, 70,0,0,0, 72,0,0,0, 77,0,81,0, 79,0,0,0, 0,0,0,0,
+    81,0,0,0, 79,0,77,0, 74,0,0,0, 77,0,0,0, 76,0,0,0, 72,0,0,0, 74,0,0,0, 0,0,0,0] },
+  // 🌋 Lava Planet: "Hot Rock Hop", a bouncy drum song
+  lava: { bpm: 150, mbpm: 92, ch: [[57, 60, 64], [55, 59, 62], [53, 57, 60], [55, 59, 62]],
+    arp: [0, -1, 2, -1, 0, -1, 2, -1], av: 0.02, mw: 'triangle', mv: 0.065, ml: 1.5,
+    bass: [1, 0, 2, 0, 1, 2, 0, 2], bv: 0.075, bl: 0.8, kick: [1, 0, 0, 0, 1, 0, 0, 1], kv: 0.05, tick: [0, 0, 1, 0, 0, 0, 1, 0], mel: [
+    69,0,72,0, 76,0,72,0, 74,0,71,0, 67,0,71,0, 72,0,69,0, 65,0,69,72, 71,0,0,0, 74,0,0,0,
+    76,0,76,0, 79,0,76,0, 74,0,74,0, 79,0,74,0, 72,0,74,0, 76,0,77,0, 79,0,0,0, 71,0,0,0] },
+  // ❄️ Ice Comet: "Snowflake Waltz", a twinkly 1-2-3 waltz
+  ice: { bpm: 132, mbpm: 84, bar: 6, ch: [[67, 71, 74], [64, 67, 71], [60, 64, 67], [62, 66, 69]],
+    arp: [-1, 3, 5, 4, 6, 5], aw: 'sine', av: 0.028, al: 1.4, mw: 'sine', mv: 0.06, ml: 4,
+    bass: [1, 0, 0, 0, 3, 0], bv: 0.065, bl: 1.6, mel: [
+    74,0,79,0,83,0, 86,0,0,0,83,0, 84,0,0,0,79,0, 81,0,0,0,0,0,
+    83,0,81,0,79,0, 76,0,0,0,79,0, 81,0,0,0,78,0, 79,0,0,0,0,0] },
+  // 👽 Alien Mothership: "Sneaky Saucers", a spooky-silly alien march with wobbly notes
+  mothership: { bpm: 120, mbpm: 78, ch: [[64, 67, 71], [60, 64, 67], [64, 67, 71], [59, 63, 66]],
+    arp: [0, 2, 1, 2, 0, 2, 1, 2], aw: 'sine', av: 0.03, mw: 'sine', mv: 0.06, ml: 2.5, glide: 0.95,
+    bass: [1, 0, 2, 0, 1, 0, 2, 0], bv: 0.07, kick: [1, 0, 0, 0, 0, 0, 0, 0], kv: 0.04, mel: [
+    71,0,0,70, 71,0,76,0, 72,0,0,0, 71,0,67,0, 71,0,0,70, 71,0,79,0, 78,0,0,0, 75,0,0,0,
+    76,0,79,0, 83,0,82,0, 79,0,0,0, 76,0,72,0, 71,0,74,0, 76,0,79,0, 78,0,0,0, 0,0,0,0] },
+  // 🪙 Coin Galaxy (secret): "Jingle Jackpot", with the coin sound hidden in the tune
+  coins: { bpm: 140, mbpm: 88, ch: [[60, 64, 67], [57, 60, 64], [53, 57, 60], [55, 59, 62]],
+    arp: [3, 4, 5, 6, 5, 4, 3, 4], aw: 'sine', av: 0.025, mw: 'triangle', mv: 0.06, ml: 2,
+    bass: [1, 0, 2, 0, 1, 0, 2, 0], bv: 0.08, tick: [0, 0, 1, 0, 0, 0, 1, 0], mel: [
+    72,0,76,0, 79,0,84,0, 83,0,88,0, 84,0,0,0, 81,0,77,0, 81,0,84,0, 83,0,88,0, 86,0,0,0,
+    84,0,83,0, 84,0,79,0, 76,0,79,0, 81,0,84,0, 86,0,84,0, 81,0,77,0, 79,0,83,0, 84,0,0,0] },
+  // 👹 Boss: "Robo Rumble", D minor, a driving beat + heroic tune; a chromatic rising sting first, key change at the end
+  boss: Object.assign({}, BOSS_BEAT, { ch: [[62, 65, 69], [58, 62, 65], [60, 64, 67], [57, 61, 64]],
+    intro: [[0, [62, 65, 69], 3], [3, [63, 67, 70], 3], [6, [64, 68, 71], 2], [8, [57, 61, 64, 69], 8]], mel: [
+    74,0,0,74, 77,0,74,0, 77,0,79,0, 81,0,0,0, 79,0,0,76, 72,0,76,0, 73,0,0,0, 76,0,0,0,
+    81,0,0,79, 77,0,74,0, 82,0,0,81, 79,0,77,0, 79,0,81,0, 84,0,79,0, 81,0,0,0, 73,0,76,0] }),
+  // 👑 Final boss (Mothership Max): "Last Stand on the Mothership", A minor, faster, bigger, with soft held chords
+  finalboss: Object.assign({}, BOSS_BEAT, { bpm: 176, mbpm: 92, pad: 0.012, dbl: 0.024,
+    ch: [[57, 60, 64], [53, 57, 60], [60, 64, 67], [55, 59, 62], [57, 60, 64], [53, 57, 60], [55, 59, 62], [52, 56, 59]],
+    intro: [[0, [57, 60, 64], 3], [3, [58, 62, 65], 3], [6, [59, 62, 66], 2], [8, [52, 56, 59, 64], 8]], mel: [
+    76,0,0,76, 81,0,0,83, 84,0,0,0, 81,0,77,0, 79,0,0,79, 84,0,0,86, 88,0,0,0, 86,0,83,0,
+    84,0,83,0, 81,0,76,0, 77,0,81,0, 84,0,89,0, 88,0,0,86, 83,0,79,0, 80,0,0,0, 83,0,0,0] }),
+};
+// which song each level plays (same order as LEVELS)
+const WORLD_SONGS = ['main', 'crystal', 'station', 'lava', 'ice', 'mothership', 'coins'];
 
 // ---------- Input ----------
 const keys = { left: false, right: false, jump: false };
